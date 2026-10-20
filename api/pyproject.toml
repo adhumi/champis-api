@@ -1,0 +1,26 @@
+[project]
+name = "champis-api"
+version = "0.1.0"
+description = "API Champis : indice météo M, fenêtre Φ, tuiles, observations"
+requires-python = ">=3.12"
+dependencies = [
+    "champis-pipeline",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.28",
+    "pydantic>=2.8",
+]
+
+[project.scripts]
+champis-vectors = "champis_api.vectors:main"
+champis-api = "champis_api.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.5,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+
+[tool.uv.sources]
+champis-pipeline = { workspace = true }

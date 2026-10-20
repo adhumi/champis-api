@@ -1,0 +1,30 @@
+[project]
+name = "champis-pipeline"
+version = "0.1.0"
+description = "Pipeline terrain Champis : BD Forêt, BD ALTI, SoilGrids → potentiel T → PMTiles"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "rasterio>=1.4",
+    "geopandas>=1.0",
+    "pyogrio>=0.10",
+    "shapely>=2.0",
+    "pmtiles>=3.4",
+    "httpx>=0.28",
+    "py7zr>=0.22",
+    "tqdm>=4.66",
+    "mercantile>=1.2",
+    "pillow>=10.0",
+    "boto3>=1.35",
+    "python-dotenv>=1.0",
+]
+
+[project.scripts]
+champis-pipeline = "champis_pipeline.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.5,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""

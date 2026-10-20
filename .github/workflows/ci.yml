@@ -1,0 +1,39 @@
+# CI : lint, format, tests, vecteurs de parité, fichiers espèces. Tout tourne sans réseau
+# (fixtures synthétiques), donc rien à mocker : un échec ici est un vrai échec.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - run: uv sync --group dev --locked
+
+      - name: Ruff (lint + format)
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Tests
+        run: uv run pytest
+
+      - name: Vecteurs de parité à jour
+        run: uv run champis-vectors --check
+
+      - name: Fichiers espèces
+        run: uv run python species/validate.py

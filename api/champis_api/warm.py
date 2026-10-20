@@ -1,0 +1,45 @@
+"""Pré-chauffe du cache météo : parcourt toute la grille, lentement, pour que la navigation ne
+touche jamais Open-Meteo. À lancer par cron une fois par seau de 12 h (skill open-meteo)."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+
+from .grid import Cell, WeatherGrid
+from .weather_client import OpenMeteoClient
+
+log = logging.getLogger(__name__)
+
+WARM_BATCH = 50  # cellules par lot : ≤ BATCH_ARCHIVE, le plus petit des lots non climatologiques
+WARM_INTERVAL_S = 2.0  # une requête toutes les 2 s : loin sous la limite par minute
+
+
+@dataclass
+class WarmReport:
+    cells: int
+    unavailable: dict[str, str]
+    stale: int
+
+    @property
+    def ok(self) -> bool:
+        return not self.unavailable
+
+
+async def warm(grid: WeatherGrid, client: OpenMeteoClient) -> WarmReport:
+    cells: list[Cell] = list(grid.cells.values())
+    unavailable: dict[str, str] = {}
+    stale = 0
+    for i in range(0, len(cells), WARM_BATCH):
+        batch = cells[i : i + WARM_BATCH]
+        res = await client.fetch_cells_partial(batch)
+        unavailable |= res.unavailable
+        stale += sum(1 for r in res.raws.values() if r.stale)
+        log.info(
+            "pré-chauffe %d/%d : %d indisponibles, %d périmées",
+            min(i + WARM_BATCH, len(cells)),
+            len(cells),
+            len(unavailable),
+            stale,
+        )
+    return WarmReport(len(cells), unavailable, stale)
