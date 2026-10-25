@@ -125,7 +125,9 @@ def cmd_publish(args) -> None:
     cfg = S3Config.from_env()
     if cfg is None:
         raise SystemExit("bucket non configuré : CHAMPIS_S3_ENDPOINT et CHAMPIS_S3_BUCKET requis")
-    manifest = publish.publish(Bucket(cfg), batch.parse_depts(args.depts), _species(args))
+    manifest = publish.publish(
+        Bucket(cfg), batch.parse_depts(args.depts), _species(args), prune=args.prune
+    )
     for t in manifest["tiles"]:
         print(f"{t['name']}  {t['bytes'] / 1e6:.1f} Mo")
     print(f"{len(manifest['tiles'])} fichiers dans {cfg.bucket}/{manifest and 'tiles/'}")
@@ -173,6 +175,9 @@ def main(argv: list[str] | None = None) -> int:
         p.set_defaults(fn=fn)
     p = sub.add_parser("publish", parents=[common])
     p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")
+    p.add_argument(
+        "--prune", action="store_true", help="supprimer du bucket les autres jeux de départements"
+    )
     p.set_defaults(fn=cmd_publish)
     p = sub.add_parser("batch", parents=[common])
     p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")
