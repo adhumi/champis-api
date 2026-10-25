@@ -67,14 +67,14 @@ Le client choisit la classe d'altitude de son pixel ; le score affiché est `T �
 | Historique J−200 → J−61 | Les ~60 jours passés de chaque prévision, **accumulés** dans SQLite (`history`) | Automatique, à chaque prévision fraîche |
 | Historique initial + climatologie du sol (10 ans → 11 quantiles/mois) | **Amorçage** `champis-api seed` sur l'archive ERA5-Land **gratuite**, hors Railway | Une fois par grille → `data/weather_seed.json`, versionné, importé au démarrage |
 
-L'API historique n'est pas dans le plan Standard et l'IP de sortie Railway est bridée sur l'API gratuite : en service, Railway ne parle donc **qu'à la prévision**. Les dates d'amorçage sont remplacées par la prévision dès qu'elle les couvre (même modèle avant et après J). Une valeur absente de la prévision et de l'historique → 502 nommant la variable et les dates, jamais une approximation.
+L'API historique n'est pas dans le plan Standard (Professional seulement, pris le temps de l'amorçage France) et l'IP de sortie Railway est bridée sur l'API gratuite : en service, Railway ne parle donc **qu'à la prévision**, en ne demandant que les jours de passé absents de l'historique (`past_days` 1 à 92 ; poids Open-Meteo = points × jours/14 × variables/10, journalisé à chaque pré-chauffe). Les dates d'amorçage sont remplacées par la prévision dès qu'elle les couvre (même modèle avant et après J). Une valeur absente de la prévision et de l'historique → 502 nommant la variable et les dates, jamais une approximation.
 
 ```bash
 uv run champis-api seed                     # depuis ton poste : ~265 cellules × 2 requêtes, 5 s d'intervalle ≈ 45 min
 git add data/weather_seed.json && git commit -m "amorçage météo Doubs" && git push
 ```
 
-Un 429 (quota horaire de l'archive gratuite) ne fait pas échouer la commande : elle attend (`Retry-After`, sinon 1 → 15 min) et reprend la même cellule ; laisse-la tourner. Reprise possible (les cellules déjà dans le fichier ne sont pas refaites). Après un `weather-grid` qui ajoute des cellules, relancer `seed` : seules les nouvelles sont faites.
+Avec `CHAMPIS_OPEN_METEO_API_KEY` (plan Professional), l'archive passe par `customer-archive-api` ; sans clé, archive gratuite. Un 429 (quota) ne fait pas échouer la commande : elle attend (`Retry-After`, sinon 1 → 15 min) et reprend la même cellule ; laisse-la tourner. Reprise possible (les cellules déjà dans le fichier ne sont pas refaites). Après un `weather-grid` qui ajoute des cellules, relancer `seed` : seules les nouvelles sont faites.
 
 **Quotas** : lissage 250 ms entre requêtes (2 s en pré-chauffe, 5 s en amorçage), lots de 100 points, `/weather/bbox` plafonné à 40 cellules (422 « zoomez »), 429 court réessayé une fois sinon indisponibilité (cache périmé, cellule `unavailable`, 503 + `Retry-After`). Une cellule sans climatologie amorcée est `unavailable` avec la raison « amorçage requis ».
 

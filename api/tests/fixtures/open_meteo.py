@@ -42,6 +42,7 @@ class Scenario:
     fail_once: bool = False  # la panne ne dure qu'une requête (limite par minute)
     retry_after: str = "42"
     calls: list[str] = field(default_factory=list)
+    past_days: list[int] = field(default_factory=list)  # past_days de chaque appel prévision
     # jours de prévision renvoyés `null` (toutes variables) : le modèle ne remonte que ~60 j
     forecast_null_before: date | None = None
 
@@ -119,6 +120,7 @@ def transport(sc: Scenario, today: date) -> httpx.MockTransport:
             return httpx.Response(400, json={"reason": "clé inattendue sur l'API gratuite"})
         if host in ("api.open-meteo.com", "customer-api.open-meteo.com"):
             kind = "forecast"
+            sc.past_days.append(int(q["past_days"][0]))
             body = _forecast_body(sc, today, int(q["past_days"][0]), int(q["forecast_days"][0]))
         else:
             start, end = (

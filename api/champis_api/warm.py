@@ -20,6 +20,7 @@ class WarmReport:
     cells: int
     unavailable: dict[str, str]
     stale: int
+    weight: float = 0.0  # appels pondérés Open-Meteo estimés pour ce passage
 
     @property
     def ok(self) -> bool:
@@ -30,6 +31,7 @@ async def warm(grid: WeatherGrid, client: OpenMeteoClient) -> WarmReport:
     cells: list[Cell] = list(grid.cells.values())
     unavailable: dict[str, str] = {}
     stale = 0
+    weight0 = client.weight
     for i in range(0, len(cells), WARM_BATCH):
         batch = cells[i : i + WARM_BATCH]
         res = await client.fetch_cells_partial(batch)
@@ -42,4 +44,11 @@ async def warm(grid: WeatherGrid, client: OpenMeteoClient) -> WarmReport:
             len(unavailable),
             stale,
         )
-    return WarmReport(len(cells), unavailable, stale)
+    weight = client.weight - weight0
+    log.info(
+        "pré-chauffe terminée : %d cellules, ≈ %.0f appels pondérés Open-Meteo (%.2f par cellule)",
+        len(cells),
+        weight,
+        weight / len(cells) if cells else 0.0,
+    )
+    return WarmReport(len(cells), unavailable, stale, weight)

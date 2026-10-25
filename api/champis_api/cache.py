@@ -118,6 +118,13 @@ class WeatherCache:
         ).fetchall()
         return {day: dict(zip(HISTORY_VARS, json.loads(js), strict=True)) for day, js in rows}
 
+    def last_history_day(self, cell_id: str) -> date | None:
+        """Dernier jour présent dans l'historique (amorçage ou prévision), None si aucun."""
+        row = self.db.execute(
+            "SELECT MAX(day) FROM history WHERE cell_id = ?", (cell_id,)
+        ).fetchone()
+        return date.fromisoformat(row[0]) if row and row[0] else None
+
     def history_days(self, cell_id: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM history WHERE cell_id = ?", (cell_id,)

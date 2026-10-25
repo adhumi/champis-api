@@ -279,7 +279,7 @@ async def test_forecast_past_days_accumulate_in_history(grid, scenario):
     scenario.fail = set()
     res = await client.fetch_cells_partial([_cell(grid)])
     assert CELL in res.unavailable and "amorçage" in res.unavailable[CELL]  # pas de climatologie
-    assert client.cache.history_days(CELL) == 60  # mais le passé de la prévision est rangé
+    assert client.cache.history_days(CELL) == 92  # mais le passé de la prévision est rangé (max)
     rows = client.cache.history(CELL, TODAY - timedelta(days=60), TODAY)
     assert (TODAY - timedelta(days=1)).isoformat() in rows and TODAY.isoformat() not in rows
 
@@ -305,9 +305,7 @@ async def test_seed_command_writes_file_and_imports(grid, scenario, tmp_path):
     from champis_api.cache import WeatherCache
     from champis_api.seed import import_seed, load_seed, seed
 
-    client = make_client(
-        scenario, seeded=False, api_key="test-key"
-    )  # la clé ne sert qu'à la prévision
+    client = make_client(scenario, seeded=False, api_key="test-key")  # archive via customer-*
     out = tmp_path / "weather_seed.json"
     data = await seed(grid, client, out, today=TODAY)
     assert set(data["cells"]) == set(grid.cells)
@@ -352,10 +350,12 @@ async def test_seed_does_not_retry_a_non_quota_error(grid, scenario, tmp_path):
 @pytest.mark.asyncio
 async def test_missing_in_both_sources_is_an_error(grid, scenario):
     raw = (await make_client(scenario).fetch_cells([_cell(grid)]))[CELL]
-    k = (TODAY - timedelta(days=30)).isoformat()
+    k = (
+        TODAY - timedelta(days=1)
+    ).isoformat()  # hier : dans la prévision (past_days=1) et l'historique
     raw.forecast["rain"][raw.forecast["dates"].index(k)] = None
     raw.history[k]["rain"] = None
-    with pytest.raises(SeriesGapError, match="`rain_sum` manquant sur 2026-09-17"):
+    with pytest.raises(SeriesGapError, match="`rain_sum` manquant sur 2026-10-16"):
         build_series(raw)
 
 
@@ -375,6 +375,37 @@ async def test_warm_fills_cache_then_costs_nothing(grid, scenario):
 
 
 @pytest.mark.asyncio
+async def test_past_days_follows_the_history_gap(grid, scenario):
+    """Quota (25 oct. 2026) : la prévision ne demande que les jours absents de l'historique."""
+    from champis_api.cache import WeatherCache
+    from champis_api.warm import warm
+    from champis_api.weather_client import call_weight
+    from conftest import seed_from_scenario
+
+    cell = _cell(grid)
+    # jamais amorcée → maximum (92) ; amorcée jusqu'à hier → 1 ; trou de 5 jours → 5
+    assert make_client(scenario, seeded=False).past_days_needed(CELL, TODAY) == 92
+    assert make_client(scenario).past_days_needed(CELL, TODAY) == 1
+    cache = WeatherCache()
+    seed_from_scenario(cache, scenario, [CELL])
+    cache.db.execute(
+        "DELETE FROM history WHERE cell_id = ? AND day > ?",
+        (CELL, (TODAY - timedelta(days=5)).isoformat()),
+    )
+    assert make_client(scenario, cache=cache, seeded=False).past_days_needed(CELL, TODAY) == 5
+    # le lot demande le maximum de ses cellules et le poids est compté
+    client = make_client(scenario)  # les deux cellules amorcées jusqu'à hier
+    report = await warm(grid, client)
+    assert scenario.past_days == [1]  # un seul appel groupé, past_days=1
+    assert report.weight == pytest.approx(call_weight(2, 9, 9))  # 2 points, 1+8 jours, 6+3 vars
+    assert report.weight / report.cells < 1
+    # cellule froide dans le même lot → tout le lot à 92
+    client2 = make_client(scenario, cache=cache, seeded=False)  # trou de 5 ; l'autre jamais amorcée
+    await client2.fetch_cells_partial([cell, grid.get("c_0935_6680")])
+    assert scenario.past_days[-1] == 92
+
+
+@pytest.mark.asyncio
 async def test_warm_reports_unavailable(grid, scenario):
     from champis_api.warm import warm
 
@@ -388,7 +419,8 @@ async def test_warm_reports_unavailable(grid, scenario):
 async def test_api_key_switches_to_customer_hosts(grid, scenario):
     client = make_client(scenario, api_key="test-key")
     assert client.forecast_url.startswith("https://customer-api.")
-    assert client.archive_url.startswith("https://archive-api.")  # l'archive reste gratuite
+    assert client.archive_url.startswith("https://customer-archive-api.")
+    assert make_client(scenario).archive_url.startswith("https://archive-api.")  # sans clé
     raws = await client.fetch_cells([_cell(grid)])
     assert raws[CELL].stale is False  # la clé est acceptée par customer-api
     bad = make_client(scenario, api_key="mauvaise")

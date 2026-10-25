@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 SEED_VERSION = 1
 BACKOFF_MIN_S = 60  # premier délai sur un 429 sans Retry-After exploitable
-BACKOFF_MAX_S = 900  # l'archive gratuite compte à l'heure : attendre, pas abandonner
+BACKOFF_MAX_S = 900  # les quotas se comptent à l'heure : attendre, pas abandonner
 
 
 def load_seed(path: Path) -> dict[str, Any]:
@@ -54,7 +54,7 @@ async def seed(
 ) -> dict[str, Any]:
     """Complète `out` avec les cellules de la grille qui y manquent ; écrit après chaque cellule.
 
-    Un 429 (quota de l'archive gratuite) ou une coupure réseau ne fait pas échouer l'amorçage :
+    Un 429 (quota de l'archive) ou une coupure réseau ne fait pas échouer l'amorçage :
     on attend (Retry-After, sinon un délai qui double jusqu'à 15 min) et on reprend la même cellule.
     """
     today = today or client.today()

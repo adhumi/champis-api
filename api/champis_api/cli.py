@@ -35,7 +35,7 @@ async def _warm(interval: float) -> int:
         cache.close()
     print(
         f"{report.cells} cellules, {len(report.unavailable)} indisponibles, "
-        f"{report.stale} servies depuis un cache périmé"
+        f"{report.stale} servies depuis un cache périmé, ≈ {report.weight:.0f} appels pondérés"
     )
     for cid, reason in sorted(report.unavailable.items()):
         print(f"  {cid}: {reason}")
@@ -60,7 +60,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--interval", type=float, default=WARM_INTERVAL_S, help="secondes entre requêtes"
     )
-    p = sub.add_parser("seed", help="amorce historique + climatologie depuis l'archive gratuite")
+    p = sub.add_parser(
+        "seed", help="amorce historique + climatologie depuis l'archive (clé = plan Professional)"
+    )
     p.add_argument("--out", type=Path, default=Settings().weather_seed)
     p.add_argument("--interval", type=float, default=5.0, help="secondes entre requêtes")
     args = ap.parse_args(argv)
