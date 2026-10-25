@@ -1,0 +1,12 @@
+data/*
+!data/weather_grid.json
+!data/weather_seed.json
+reports/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.part
+.env
+.DS_Store
