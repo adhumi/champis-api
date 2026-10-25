@@ -1,6 +1,7 @@
 """CLI : `champis-api warm [--interval 2]` — pré-chauffe du cache météo (cron, sur Railway) ;
-`champis-api seed [--out data/weather_seed.db] [--interval 1]` — amorçage depuis l'archive (hors
-Railway, une fois par grille) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket."""
+`champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
+l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
+de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket."""
 
 from __future__ import annotations
 
@@ -42,19 +43,20 @@ async def _warm(interval: float) -> int:
     return 0 if report.ok else 1
 
 
-async def _seed(out: Path, interval: float) -> int:
+async def _seed(out: Path, interval: float, climatology: bool) -> int:
     settings = Settings()
     grid = WeatherGrid.load(settings.weather_grid)
     async with httpx.AsyncClient(headers={"User-Agent": "champis-api seed"}) as http:
         client = OpenMeteoClient(
             http, WeatherCache(), min_interval_s=interval, api_key=settings.open_meteo_api_key
         )
-        info = await seed(grid, client, out)
+        info = await seed(grid, client, out, climatology=climatology)
     print(
-        f"{info['cells']}/{info['grid_cells']} cellules amorcées dans {out} "
-        f"({info['bytes'] / 1e6:.0f} Mo, ≈ {client.weight:.0f} appels pondérés)"
+        f"{out} : historique {info['history_cells']}/{info['grid_cells']} cellules, "
+        f"climatologie {info['cells']}/{info['grid_cells']} ({info['bytes'] / 1e6:.0f} Mo, "
+        f"≈ {client.weight:.0f} appels pondérés)"
     )
-    return 0 if info["cells"] == info["grid_cells"] else 1
+    return 0 if info["history_cells"] == info["grid_cells"] else 1
 
 
 def _publish_seed(path: Path) -> int:
@@ -85,11 +87,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--out", type=Path, default=Settings().weather_seed_db)
     p.add_argument("--interval", type=float, default=1.0, help="secondes entre requêtes")
+    p.add_argument(
+        "--climatology",
+        action="store_true",
+        help="aussi la climatologie des cellules qui n'en ont pas (lourd : 26 appels/cellule)",
+    )
     p = sub.add_parser("publish-seed", help="dépose la base d'amorçage dans le bucket")
     p.add_argument("--seed", type=Path, default=Settings().weather_seed_db)
     args = ap.parse_args(argv)
     if args.cmd == "seed":
-        return asyncio.run(_seed(args.out, args.interval))
+        return asyncio.run(_seed(args.out, args.interval, args.climatology))
     if args.cmd == "publish-seed":
         return _publish_seed(args.seed)
     return asyncio.run(_warm(args.interval))

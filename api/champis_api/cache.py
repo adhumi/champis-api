@@ -162,6 +162,9 @@ class WeatherCache:
     def seeded_ids(self) -> set[str]:
         return {r[0] for r in self.db.execute("SELECT cell_id FROM soil_clim")}
 
+    def history_ids(self) -> set[str]:
+        return {r[0] for r in self.db.execute("SELECT DISTINCT cell_id FROM history")}
+
     def import_seed_db(self, path: Path) -> int:
         """Importe une base d'amorçage (même schéma) par ATTACH : l'historique ne remplit que les
         trous (jamais par-dessus la prévision), la climatologie est remplacée. Rien en mémoire."""

@@ -309,17 +309,20 @@ async def test_seed_command_writes_db_and_imports(grid, scenario, tmp_path):
 
     client = make_client(scenario, seeded=False, api_key="test-key")  # archive via customer-*
     out = tmp_path / "weather_seed.db"
-    info = await seed(grid, client, out, today=TODAY)
+    info = await seed(grid, client, out, today=TODAY)  # historique seul par défaut (option a)
     assert info == {
         "version": 2,
         "generated": TODAY.isoformat(),
-        "cells": 2,
+        "cells": 0,
+        "history_cells": 2,
         "bytes": out.stat().st_size,
         "grid_cells": 2,
     }
-    assert scenario.calls == ["archive", "climatology"]  # un lot de 2 cellules : 2 requêtes
+    assert scenario.calls == ["archive"]  # un lot de 2 cellules : une requête
+    info = await seed(grid, client, out, today=TODAY, climatology=True)
+    assert scenario.calls == ["archive", "climatology"] and info["cells"] == 2
     # reprise : rien à refaire
-    await seed(grid, client, out, today=TODAY)
+    await seed(grid, client, out, today=TODAY, climatology=True)
     assert len(scenario.calls) == 2
     cache = WeatherCache()
     assert import_seed(cache, out) == 2
@@ -354,7 +357,7 @@ async def test_seed_waits_out_a_quota_429_and_resumes_the_same_batch(grid, scena
 
     client = make_client(scenario, seeded=False)
     info = await seed(grid, client, tmp_path / "seed.db", today=TODAY, sleep=fake_sleep)
-    assert info["cells"] == 2
+    assert info["history_cells"] == 2
     assert slept == [120.0]
     assert scenario.calls.count("archive") == 2  # le lot en échec est refait, pas sauté
 
@@ -409,8 +412,9 @@ async def test_seed_published_to_bucket_is_imported_once_at_startup(grid, scenar
     out = tmp_path / "weather_seed.db"
     await seed(grid, make_client(scenario, seeded=False), out, today=TODAY)
     bucket = _SeedBucket()
-    with pytest.raises(ValueError):  # base vide refusée
-        publish_seed(bucket, tmp_path / "vide.db")
+    with pytest.raises(ValueError):  # sans climatologie, rien de servable : refusé
+        publish_seed(bucket, out)
+    await seed(grid, make_client(scenario, seeded=False), out, today=TODAY, climatology=True)
     info = publish_seed(bucket, out)
     assert (
         SEED_DB_KEY in bucket.objects and bucket.json[SEED_META_KEY]["cells"] == 2 == info["cells"]
@@ -436,6 +440,37 @@ async def test_seed_published_to_bucket_is_imported_once_at_startup(grid, scenar
     cache2 = WeatherCache()
     assert sync_seed(cache2, None, out, work) == 2
     assert sync_seed(cache2, None, out, work) == 0
+
+
+@pytest.mark.asyncio
+async def test_short_history_makes_the_cell_unavailable_until_a_date(grid, scenario):
+    """Option a (25 oct. 2026) : climatologie présente, historique encore court → la cellule est
+    `unavailable` avec la date où elle sera complète ; les autres cellules sont servies."""
+    from champis_api.app import State, create_app
+    from champis_api.cache import WeatherCache
+    from conftest import seed_from_scenario
+
+    cache = WeatherCache()
+    seed_from_scenario(cache, scenario, ["c_0935_6680"])  # complète
+    months = {str(m): list(scenario.clim_quantiles) for m in range(1, 13)}
+    cache.put_soil_clim(CELL, months)  # climatologie seule : l'historique viendra de past_days=92
+    client = make_client(scenario, cache=cache, seeded=False)
+    app = create_app(state=State(grid=grid, client=client, cache=cache))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as api,
+    ):
+        r = await api.get("/weather", params={"cell": CELL, "species": "boletus_edulis"})
+        assert r.status_code == 503, r.text
+        assert "historique de 89 j, 130 j requis" in r.json()["detail"]
+        assert "complet vers le 2026-11-27" in r.json()["detail"]  # J + 41
+        r = await api.get(
+            "/weather/bbox",
+            params={"min_lon": 6.3, "min_lat": 47.0, "max_lon": 6.4, "max_lat": 47.2},
+        )
+        body = r.json()
+        assert r.status_code == 200 and body["unavailable"] == [CELL]
+        assert [c["cell"]["id"] for c in body["cells"]] == ["c_0935_6680"]
 
 
 @pytest.mark.asyncio

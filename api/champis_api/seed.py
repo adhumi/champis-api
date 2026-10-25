@@ -1,10 +1,14 @@
-"""Amorçage : historique J−200 → J−1 et climatologie du sol depuis l'archive ERA5-Land.
+"""Amorçage : historique J−200 → J−1 et climatologie du sol, dans une base SQLite.
 
-À lancer **hors Railway** (`champis-api seed`), une fois par grille, avec la clé API (plan
-Professional le temps de l'amorçage ; décision du 25 oct. 2026) ou sur l'archive gratuite pour un
-petit secteur. Le résultat est une base SQLite `weather_seed.db` au schéma du cache (`history`
-source `seed`, `soil_clim`, `meta`), écrite par lots : à l'échelle France (~22 000 cellules,
-~400 Mo) un fichier JSON réécrit à chaque cellule ne tenait plus.
+À lancer **hors Railway** (`champis-api seed`), une fois par grille. Décision du 25 oct. 2026
+(option a) : la climatologie (10 ans par cellule, 26 des 27 appels pondérés) vient du pipeline
+(`champis-pipeline soil-clim`, ERA5-Land via le Climate Data Store, gratuit) ; `seed` ne demande
+plus à l'archive Open-Meteo gratuite que l'historique (≈ 1 appel pondéré par cellule, lots de 50 :
+la France en 2 à 3 jours à 10 000 appels par jour, reprise automatique), et la climatologie
+seulement pour les cellules qui n'en ont pas encore (`--climatology`). Le résultat est une base
+`weather_seed.db` au schéma du cache (`history` source `seed`, `soil_clim`, `meta`), écrite par
+lots : à l'échelle France (~22 000 cellules, ~400 Mo) un fichier JSON réécrit à chaque cellule ne
+tenait plus.
 
 Publication : `champis-api publish-seed` dépose la base et sa fiche
 (`weather/weather_seed.json` : generated, cells, bytes) dans le bucket. Au démarrage, l'API compare
@@ -13,7 +17,8 @@ base sur le volume et l'importe par ATTACH (`INSERT OR IGNORE` pour l'historique
 la prévision ; `INSERT OR REPLACE` pour la climatologie), sans rien charger en mémoire. Un fichier
 local (`CHAMPIS_WEATHER_SEED`, `.db` ou l'ancien `.json`) reste le repli de développement.
 
-Reprise : les cellules déjà pourvues d'une climatologie dans la base ne sont pas refaites.
+Reprise : une cellule qui a déjà un historique (resp. une climatologie) dans la base n'est pas
+refaite.
 """
 
 from __future__ import annotations
@@ -31,12 +36,17 @@ from champis_pipeline.storage import BucketLike
 
 from .cache import WeatherCache
 from .grid import Cell, WeatherGrid
-from .weather_client import OpenMeteoClient, _redact, _retry_after
+from .weather_client import (
+    BATCH_ARCHIVE,
+    BATCH_CLIMATOLOGY,
+    OpenMeteoClient,
+    _redact,
+    _retry_after,
+)
 
 log = logging.getLogger(__name__)
 
 SEED_VERSION = 2  # 1 = JSON (une entrée par cellule), 2 = SQLite au schéma du cache
-SEED_BATCH = 10  # cellules par requête : ≤ lot climatologie (la plus lourde : 10 ans par point)
 BACKOFF_MIN_S = 60  # premier délai sur un 429 sans Retry-After exploitable
 BACKOFF_MAX_S = 900  # les quotas se comptent à l'heure : attendre, pas abandonner
 SEED_DB_KEY = "weather/weather_seed.db"
@@ -53,43 +63,57 @@ async def seed(
     out: Path,
     today: date | None = None,
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    history: bool = True,
+    climatology: bool = False,
 ) -> dict[str, Any]:
-    """Complète la base `out` avec les cellules de la grille qui y manquent ; écrit par lot.
+    """Complète la base `out` : historique des cellules qui n'en ont pas, et, si `climatology`,
+    climatologie de celles qui n'en ont pas ; écrit par lot.
 
     Un 429 (quota) ou une coupure réseau ne fait pas échouer l'amorçage : on attend
     (Retry-After, sinon un délai qui double jusqu'à 15 min) et on reprend le même lot.
-    Renvoie la fiche {version, generated, cells, grid_cells}.
+    Renvoie la fiche {version, generated, cells, history_cells, bytes, grid_cells}.
     """
     today = today or client.today()
     out.parent.mkdir(parents=True, exist_ok=True)
     db = WeatherCache(out)
     try:
-        done = db.seeded_ids()
-        todo = [c for c in grid.cells.values() if c.id not in done]
-        log.info("amorçage : %d cellules à faire, %d déjà présentes", len(todo), len(done))
-        for i in range(0, len(todo), SEED_BATCH):
-            batch = todo[i : i + SEED_BATCH]
-            results = await _fetch_patiently(client, batch, today, sleep)
-            for cell, (rows, clim) in zip(batch, results, strict=True):
-                db.put_history(cell.id, rows, "seed")
-                db.put_soil_clim(cell.id, clim["months"])
-            db.meta_set(META_GENERATED, today.isoformat())
-            log.info(
-                "amorçage %d/%d (≈ %.0f appels pondérés)",
-                min(i + SEED_BATCH, len(todo)),
-                len(todo),
-                client.weight,
-            )
+        if history:
+            done = db.history_ids()
+            todo = [c for c in grid.cells.values() if c.id not in done]
+            log.info("historique : %d cellules à faire, %d déjà présentes", len(todo), len(done))
+            for i in range(0, len(todo), BATCH_ARCHIVE):
+                batch = todo[i : i + BATCH_ARCHIVE]
+                rows = await _patiently(client.fetch_archive_batch, batch, today, sleep)
+                for cell, r in zip(batch, rows, strict=True):
+                    db.put_history(cell.id, r, "seed")
+                db.meta_set(META_GENERATED, today.isoformat())
+                _progress("historique", i + len(batch), len(todo), client.weight)
+        if climatology:
+            done = db.seeded_ids()
+            todo = [c for c in grid.cells.values() if c.id not in done]
+            log.info("climatologie : %d cellules à faire, %d déjà présentes", len(todo), len(done))
+            for i in range(0, len(todo), BATCH_CLIMATOLOGY):
+                batch = todo[i : i + BATCH_CLIMATOLOGY]
+                clims = await _patiently(client.fetch_climatology_batch, batch, today, sleep)
+                for cell, clim in zip(batch, clims, strict=True):
+                    db.put_soil_clim(cell.id, clim["months"])
+                db.meta_set(META_GENERATED, today.isoformat())
+                _progress("climatologie", i + len(batch), len(todo), client.weight)
         return seed_info(db, out, len(grid.cells))
     finally:
         db.close()
+
+
+def _progress(what: str, done: int, total: int, weight: float) -> None:
+    log.info("%s %d/%d (≈ %.0f appels pondérés depuis le lancement)", what, done, total, weight)
 
 
 def seed_info(db: WeatherCache, path: Path, grid_cells: int | None = None) -> dict[str, Any]:
     info = {
         "version": SEED_VERSION,
         "generated": db.meta_get(META_GENERATED),
-        "cells": db.seeded_cells(),
+        "cells": db.seeded_cells(),  # climatologie : ce qui rend une cellule servable
+        "history_cells": len(db.history_ids()),
         "bytes": path.stat().st_size if path.exists() else 0,
     }
     if grid_cells is not None:
@@ -97,16 +121,13 @@ def seed_info(db: WeatherCache, path: Path, grid_cells: int | None = None) -> di
     return info
 
 
-async def _fetch_patiently(
-    client: OpenMeteoClient,
-    batch: list[Cell],
-    today: date,
-    sleep: Callable[[float], Awaitable[None]],
-) -> list[tuple[dict[str, dict], dict[str, Any]]]:
+async def _patiently(
+    fetch, batch: list[Cell], today: date, sleep: Callable[[float], Awaitable[None]]
+):
     backoff = BACKOFF_MIN_S
     while True:
         try:
-            return await client.fetch_seed_batch(batch, today)
+            return await fetch(batch, today)
         except (httpx.HTTPStatusError, httpx.TransportError) as e:
             ra = _retry_after(e)
             if ra is None and not isinstance(e, httpx.TransportError):
@@ -128,7 +149,10 @@ def publish_seed(bucket: BucketLike, path: Path, progress=None) -> dict[str, Any
     finally:
         db.close()
     if not info["generated"] or not info["cells"]:
-        raise ValueError(f"{path} : base d'amorçage vide (lancer `champis-api seed`)")
+        raise ValueError(
+            f"{path} : aucune climatologie dans la base (champis-pipeline soil-clim, ou "
+            "champis-api seed --climatology)"
+        )
     bucket.upload(path, SEED_DB_KEY, progress)
     bucket.put_json(SEED_META_KEY, info)
     return info
