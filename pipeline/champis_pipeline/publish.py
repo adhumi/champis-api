@@ -15,7 +15,7 @@ from typing import Any
 from .config import TILES_DIR
 from .progress import tqdm
 from .species import species_hash
-from .storage import MANIFEST_KEY, TILES_PREFIX, BucketLike, build_manifest
+from .storage import MANIFEST_KEY, TILES_PREFIX, BucketLike, build_manifest, parse_tile_name
 from .tiles import ALT_CLASS_M, _depts_hash
 
 log = logging.getLogger(__name__)
@@ -29,10 +29,23 @@ def expected_names(depts: list[str], species: list[str]) -> list[str]:
     return [*names, f"A-{ALT_CLASS_M}m-d{dh}.pmtiles"]
 
 
+def _depts_hash_of(key: str) -> str | None:
+    info = parse_tile_name(key.removeprefix(TILES_PREFIX))
+    return info["depts_hash"] if info else None
+
+
 def publish(
-    bucket: BucketLike, depts: list[str], species: list[str], tiles_dir: Path = TILES_DIR
+    bucket: BucketLike,
+    depts: list[str],
+    species: list[str],
+    tiles_dir: Path = TILES_DIR,
+    prune: bool = False,
 ) -> dict[str, Any]:
-    """Téléverse les PMTiles attendus pour (depts, species), met à jour le manifeste, le renvoie."""
+    """Téléverse les PMTiles attendus pour (depts, species), met à jour le manifeste, le renvoie.
+
+    `prune` supprime du bucket les PMTiles des autres jeux de départements (hash `d…` différent)
+    et les retire de `depts_by_hash` : il ne reste que le jeu publié.
+    """
     names = expected_names(depts, species)
     missing = [n for n in names if not (tiles_dir / n).exists()]
     if missing:
@@ -51,7 +64,14 @@ def publish(
             bucket.upload(path, TILES_PREFIX + name, progress=bar.update)
     old = bucket.get_json(MANIFEST_KEY) or {}
     depts_by_hash = dict(old.get("depts_by_hash", {}))
-    depts_by_hash[_depts_hash(depts)] = sorted(depts)
+    dh = _depts_hash(depts)
+    depts_by_hash[dh] = sorted(depts)
+    if prune:
+        stale = [k for k in bucket.list(TILES_PREFIX) if _depts_hash_of(k) not in (None, dh)]
+        if stale:
+            log.info("suppression de %d fichier(s) d'autres jeux : %s", len(stale), stale)
+            bucket.delete(stale)
+        depts_by_hash = {dh: depts_by_hash[dh]}
     manifest = build_manifest(
         bucket.list(TILES_PREFIX), depts_by_hash, datetime.now(UTC).isoformat()
     )

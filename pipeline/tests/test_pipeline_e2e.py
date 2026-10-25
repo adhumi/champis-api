@@ -504,6 +504,10 @@ class _FakeBucket:
     def put_json(self, key, obj):
         self.objects[key] = json.dumps(obj).encode()
 
+    def delete(self, keys):
+        for k in keys:
+            del self.objects[k]
+
     def get_json(self, key):
         return json.loads(self.objects[key]) if key in self.objects else None
 
@@ -514,6 +518,7 @@ class _FakeBucket:
 def test_publish_uploads_once_and_builds_manifest(tmp_path):
     from champis_pipeline import publish
     from champis_pipeline.storage import MANIFEST_KEY, parse_tile_name
+    from champis_pipeline.tiles import _depts_hash as _h
 
     names = publish.expected_names(["25"], ["boletus_edulis"])
     assert names[0].startswith("T-boletus_edulis-") and names[1].startswith("A-300m-d")
@@ -538,6 +543,16 @@ def test_publish_uploads_once_and_builds_manifest(tmp_path):
     assert parse_tile_name("random.pmtiles") is None
     with pytest.raises(FileNotFoundError):
         publish.publish(bucket, ["01"], ["boletus_edulis"], tiles_dir=tmp_path)
+    # second jeu (25 + 39) : sans prune les deux coexistent, avec prune seul le nouveau reste
+    names2 = publish.expected_names(["25", "39"], ["boletus_edulis"])
+    for n in names2:
+        (tmp_path / n).write_bytes(b"y" * 50)
+    m = publish.publish(bucket, ["25", "39"], ["boletus_edulis"], tiles_dir=tmp_path)
+    assert len(m["tiles"]) == 4 and len(m["depts_by_hash"]) == 2
+    m = publish.publish(bucket, ["25", "39"], ["boletus_edulis"], tiles_dir=tmp_path, prune=True)
+    assert sorted(t["name"] for t in m["tiles"]) == sorted(names2)
+    assert list(m["depts_by_hash"].values()) == [["25", "39"]]
+    assert MANIFEST_KEY in bucket.objects and not any("d" + _h(["25"]) in k for k in bucket.objects)
 
 
 def test_s3_config_from_env_accepts_railway_generic_names(monkeypatch):

@@ -44,7 +44,7 @@ Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket vien
 Les tuiles ne tiennent ni dans l'image ni dans le dépôt (France ≈ 2–4 Go par espèce) : elles vont dans un **Railway Storage Bucket** (S3-compatible, privé, sortie gratuite par URL présignées). Procédure :
 
 1. Créer le bucket dans le projet Railway, « Connect Service to Bucket » → service API, préréglage **AWS SDK (Generic)** ; sur ton poste, les cinq mêmes variables dans `.env` à la racine (`cp .env.example .env`).
-2. Après `champis-pipeline tiles --depts …` : `uv run champis-pipeline publish --depts … [--species …]` téléverse les PMTiles manquants et réécrit `tiles/manifest.json` (`{version, generated, depts_by_hash, tiles:[{kind, species, hash, scoring_version, depts_hash, name, key, bytes}]}`).
+2. Après `champis-pipeline tiles --depts …` : `uv run champis-pipeline publish --depts … [--species …]` téléverse les PMTiles manquants et réécrit `tiles/manifest.json` ; `--prune` supprime du bucket les PMTiles des autres jeux de départements (la carte n'affiche qu'un jeu, le plus couvrant) (`{version, generated, depts_by_hash, tiles:[{kind, species, hash, scoring_version, depts_hash, name, key, bytes}]}`).
 3. La carte appelle `GET /tiles` au chargement et ouvre chaque fichier par son URL ; le glisser-déposer reste disponible. Si le navigateur refuse les URL présignées (CORS absent sur le bucket : le statut de la carte affiche « Load failed » / « Failed to fetch » par fichier et `0/N chargés`), passer `CHAMPIS_TILES_MODE=proxy` : l'API relaie les requêtes `Range` via `/tiles/{name}` (sortie service facturée, à éviter si `presign` marche).
 
 ## Endpoints

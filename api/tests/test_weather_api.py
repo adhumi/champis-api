@@ -460,6 +460,9 @@ class _FakeBucket:
     def put_json(self, key, obj):
         raise AssertionError
 
+    def delete(self, keys):
+        raise AssertionError
+
 
 _MANIFEST = {
     "version": 1,
