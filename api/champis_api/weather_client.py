@@ -59,6 +59,7 @@ ARCHIVE_START_OFFSET = 200  # J−200 : couvre mémoire (90) + pluie (28) + pers
 CLIMATOLOGY_YEARS = 10
 QUANTILES = [i / 10 for i in range(11)]
 BATCH_POINTS = 100
+BATCH_CLIMATOLOGY = 10  # points par requête de climatologie (10 ans chacun : la plus lourde)
 MIN_REQUEST_INTERVAL_S = 0.25  # lissage : jamais de rafale vers Open-Meteo
 RETRY_MAX_WAIT_S = 10  # un seul réessai, et seulement si Open-Meteo demande une courte attente
 SOIL_DAILY = "soil_moisture_0_to_7cm_mean"
@@ -207,10 +208,23 @@ class OpenMeteoClient:
 
     async def fetch_seed(self, cell: Cell, today: date) -> tuple[dict[str, dict], dict[str, Any]]:
         """Amorçage d'une cellule depuis l'archive : (jours J−200 → J−1, climatologie)."""
-        archive = (await self._fetch("archive", [cell], today))[0]
-        clim = (await self._fetch("soil_clim", [cell], today))[0]
-        rows = {d: {v: archive[v][i] for v in HISTORY_VARS} for i, d in enumerate(archive["dates"])}
-        return rows, clim
+        return (await self.fetch_seed_batch([cell], today))[0]
+
+    async def fetch_seed_batch(
+        self, cells: list[Cell], today: date
+    ) -> list[tuple[dict[str, dict], dict[str, Any]]]:
+        """Amorçage d'un lot (≤ BATCH_CLIMATOLOGY points) : deux requêtes, archive et climatologie."""
+        if len(cells) > BATCH_CLIMATOLOGY:
+            raise ValueError(f"lot d'amorçage de {len(cells)} > {BATCH_CLIMATOLOGY} cellules")
+        archives = await self._fetch("archive", cells, today)
+        clims = await self._fetch("soil_clim", cells, today)
+        out = []
+        for archive, clim in zip(archives, clims, strict=True):
+            rows = {
+                d: {v: archive[v][i] for v in HISTORY_VARS} for i, d in enumerate(archive["dates"])
+            }
+            out.append((rows, clim))
+        return out
 
     async def _fetch_with_one_retry(
         self, kind: str, batch: list[Cell], today: date, past_days: int = MAX_PAST_DAYS

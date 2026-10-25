@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -300,28 +302,47 @@ def test_seed_never_overwrites_forecast_history():
 
 
 @pytest.mark.asyncio
-async def test_seed_command_writes_file_and_imports(grid, scenario, tmp_path):
-    """`champis-api seed` : archive gratuite → fichier versionné → import SQLite au démarrage."""
+async def test_seed_command_writes_db_and_imports(grid, scenario, tmp_path):
+    """`champis-api seed` : archive → base SQLite par lots → import par ATTACH (bucket ou local)."""
     from champis_api.cache import WeatherCache
-    from champis_api.seed import import_seed, load_seed, seed
+    from champis_api.seed import import_seed, seed
 
     client = make_client(scenario, seeded=False, api_key="test-key")  # archive via customer-*
-    out = tmp_path / "weather_seed.json"
-    data = await seed(grid, client, out, today=TODAY)
-    assert set(data["cells"]) == set(grid.cells)
-    assert sorted(scenario.calls) == ["archive", "archive", "climatology", "climatology"]
-    assert len(load_seed(out)["cells"][CELL]["history"]) == 200
+    out = tmp_path / "weather_seed.db"
+    info = await seed(grid, client, out, today=TODAY)
+    assert info == {
+        "version": 2,
+        "generated": TODAY.isoformat(),
+        "cells": 2,
+        "bytes": out.stat().st_size,
+        "grid_cells": 2,
+    }
+    assert scenario.calls == ["archive", "climatology"]  # un lot de 2 cellules : 2 requêtes
     # reprise : rien à refaire
     await seed(grid, client, out, today=TODAY)
-    assert len(scenario.calls) == 4
+    assert len(scenario.calls) == 2
     cache = WeatherCache()
     assert import_seed(cache, out) == 2
     assert cache.history_days(CELL) == 200 and cache.soil_clim(CELL) is not None
+    assert cache.meta_get("seed_generated") == TODAY.isoformat()
+    # l'ancien JSON reste importable
+    legacy = tmp_path / "weather_seed.json"
+    day = dict.fromkeys(("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil"), 1.0)
+    legacy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "generated": "2026-10-01",
+                "cells": {"x": {"history": {"2026-09-30": day}, "soil_clim": {"1": [0.1] * 11}}},
+            }
+        )
+    )
+    assert import_seed(WeatherCache(), legacy) == 1
 
 
 @pytest.mark.asyncio
-async def test_seed_waits_out_a_quota_429_and_resumes_the_same_cell(grid, scenario, tmp_path):
-    """Un 429 de l'archive gratuite ne fait pas planter l'amorçage : attente puis même cellule."""
+async def test_seed_waits_out_a_quota_429_and_resumes_the_same_batch(grid, scenario, tmp_path):
+    """Un 429 de l'archive ne fait pas planter l'amorçage : attente puis même lot."""
     from champis_api.seed import seed
 
     scenario.fail, scenario.fail_status, scenario.fail_once = {"archive"}, 429, True
@@ -332,10 +353,10 @@ async def test_seed_waits_out_a_quota_429_and_resumes_the_same_cell(grid, scenar
         slept.append(s)
 
     client = make_client(scenario, seeded=False)
-    data = await seed(grid, client, tmp_path / "seed.json", today=TODAY, sleep=fake_sleep)
-    assert set(data["cells"]) == set(grid.cells)
+    info = await seed(grid, client, tmp_path / "seed.db", today=TODAY, sleep=fake_sleep)
+    assert info["cells"] == 2
     assert slept == [120.0]
-    assert scenario.calls.count("archive") == 3  # la cellule en échec est refaite, pas sautée
+    assert scenario.calls.count("archive") == 2  # le lot en échec est refait, pas sauté
 
 
 @pytest.mark.asyncio
@@ -344,7 +365,77 @@ async def test_seed_does_not_retry_a_non_quota_error(grid, scenario, tmp_path):
 
     scenario.fail, scenario.fail_status = {"archive"}, 403
     with pytest.raises(httpx.HTTPStatusError):
-        await seed(grid, make_client(scenario, seeded=False), tmp_path / "s.json", today=TODAY)
+        await seed(grid, make_client(scenario, seeded=False), tmp_path / "s.db", today=TODAY)
+
+
+class _SeedBucket:
+    """Bucket factice : fiche + base d'amorçage, téléchargement par copie."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.json: dict[str, object] = {}
+        self.downloads: list[str] = []
+
+    def upload(self, path, key, progress=None):
+        self.objects[key] = Path(path).read_bytes()
+        if progress:
+            progress(len(self.objects[key]))
+
+    def put_json(self, key, obj):
+        self.json[key] = obj
+
+    def get_json(self, key):
+        return self.json.get(key)
+
+    def download(self, key, path):
+        self.downloads.append(key)
+        Path(path).write_bytes(self.objects[key])
+
+    def list(self, prefix):
+        return {}
+
+    def delete(self, keys):
+        raise AssertionError
+
+    def presign(self, key, expires_s):
+        raise AssertionError
+
+
+@pytest.mark.asyncio
+async def test_seed_published_to_bucket_is_imported_once_at_startup(grid, scenario, tmp_path):
+    from champis_api.cache import WeatherCache
+    from champis_api.seed import SEED_DB_KEY, SEED_META_KEY, publish_seed, seed, sync_seed
+
+    out = tmp_path / "weather_seed.db"
+    await seed(grid, make_client(scenario, seeded=False), out, today=TODAY)
+    bucket = _SeedBucket()
+    with pytest.raises(ValueError):  # base vide refusée
+        publish_seed(bucket, tmp_path / "vide.db")
+    info = publish_seed(bucket, out)
+    assert (
+        SEED_DB_KEY in bucket.objects and bucket.json[SEED_META_KEY]["cells"] == 2 == info["cells"]
+    )
+    cache = WeatherCache(tmp_path / "cache.db")
+    work = tmp_path / "vol"
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2
+    assert cache.seeded_cells() == 2 and not (work / "weather_seed.db").exists()
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 0  # même date : rien
+    assert bucket.downloads == [SEED_DB_KEY]
+    # nouvel amorçage publié (date différente) → réimporté, sans écraser la prévision
+    day = dict.fromkeys(("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil"), 7.0)
+    cache.put_history(CELL, {(TODAY - timedelta(days=1)).isoformat(): day}, "forecast")
+    bucket.json[SEED_META_KEY]["generated"] = "2026-11-01"
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2
+    assert (
+        cache.history(CELL, TODAY - timedelta(days=1), TODAY)[
+            (TODAY - timedelta(days=1)).isoformat()
+        ]["rain"]
+        == 7.0
+    )
+    # sans bucket : le fichier local sert une fois
+    cache2 = WeatherCache()
+    assert sync_seed(cache2, None, out, work) == 2
+    assert sync_seed(cache2, None, out, work) == 0
 
 
 @pytest.mark.asyncio
@@ -490,6 +581,9 @@ class _FakeBucket:
         raise AssertionError
 
     def put_json(self, key, obj):
+        raise AssertionError
+
+    def download(self, key, path):
         raise AssertionError
 
     def delete(self, keys):

@@ -19,8 +19,8 @@ COPY mapping mapping
 COPY shared shared
 COPY web web
 COPY data/weather_grid.json data/weather_grid.json
-# Optionnel : le motif [n] rend le COPY tolérant si l'amorçage n'est pas encore versionné
-# (l'API démarre alors en avertissant, toutes les cellules sont indisponibles).
+# Repli local (Doubs) tant qu'aucun amorçage n'est publié dans le bucket (weather/weather_seed.db) ;
+# le motif [n] rend le COPY tolérant si le fichier n'est pas versionné.
 COPY data/weather_seed.jso[n] data/
 RUN uv sync
 

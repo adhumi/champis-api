@@ -508,6 +508,9 @@ class _FakeBucket:
         for k in keys:
             del self.objects[k]
 
+    def download(self, key, path):
+        Path(path).write_bytes(self.objects[key])
+
     def get_json(self, key):
         return json.loads(self.objects[key]) if key in self.objects else None
 
