@@ -454,7 +454,7 @@ class _FakeBucket:
     def list(self, prefix):
         return {}
 
-    def upload(self, path, key):
+    def upload(self, path, key, progress=None):
         raise AssertionError
 
     def put_json(self, key, obj):

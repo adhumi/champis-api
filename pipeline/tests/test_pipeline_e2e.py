@@ -494,9 +494,12 @@ class _FakeBucket:
     def list(self, prefix):
         return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
 
-    def upload(self, path, key):
+    def upload(self, path, key, progress=None):
         self.objects[key] = Path(path).read_bytes()
         self.uploads.append(key)
+        if progress:
+            progress(len(self.objects[key]))
+            self.progress = getattr(self, "progress", 0) + len(self.objects[key])
 
     def put_json(self, key, obj):
         self.objects[key] = json.dumps(obj).encode()
@@ -519,6 +522,7 @@ def test_publish_uploads_once_and_builds_manifest(tmp_path):
     bucket = _FakeBucket()
     m = publish.publish(bucket, ["25"], ["boletus_edulis"], tiles_dir=tmp_path)
     assert sorted(bucket.uploads) == sorted("tiles/" + n for n in names)
+    assert bucket.progress == 200  # barre globale : octets remontés par le callback
     assert [t["kind"] for t in m["tiles"]] == ["A", "T"]  # tri par nom
     t = next(t for t in m["tiles"] if t["kind"] == "T")
     assert (

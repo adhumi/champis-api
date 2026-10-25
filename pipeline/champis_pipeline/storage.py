@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -61,7 +62,10 @@ class S3Config:
 
 class BucketLike(Protocol):
     def list(self, prefix: str) -> dict[str, int]: ...
-    def upload(self, path: Path, key: str) -> None: ...
+    def upload(self, path: Path, key: str, progress: Callable[[int], None] | None = None) -> None:
+        """`progress(n)` est appelé à chaque tranche de n octets transférés."""
+        ...
+
     def put_json(self, key: str, obj: Any) -> None: ...
     def get_json(self, key: str) -> Any | None: ...
     def presign(self, key: str, expires_s: int) -> str: ...
@@ -92,8 +96,8 @@ class Bucket:
                 out[obj["Key"]] = int(obj["Size"])
         return out
 
-    def upload(self, path: Path, key: str) -> None:
-        self._s3.upload_file(str(path), self.name, key)
+    def upload(self, path: Path, key: str, progress: Callable[[int], None] | None = None) -> None:
+        self._s3.upload_file(str(path), self.name, key, Callback=progress)
 
     def put_json(self, key: str, obj: Any) -> None:
         body = json.dumps(obj, ensure_ascii=False, indent=1).encode("utf-8")

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import TILES_DIR
+from .progress import tqdm
 from .species import species_hash
 from .storage import MANIFEST_KEY, TILES_PREFIX, BucketLike, build_manifest
 from .tiles import ALT_CLASS_M, _depts_hash
@@ -37,13 +38,17 @@ def publish(
     if missing:
         raise FileNotFoundError(f"PMTiles absents de {tiles_dir} : {missing} (lancer `tiles`)")
     present = bucket.list(TILES_PREFIX)
+    todo = [n for n in names if present.get(TILES_PREFIX + n) != (tiles_dir / n).stat().st_size]
     for name in names:
-        path, key = tiles_dir / name, TILES_PREFIX + name
-        if present.get(key) == path.stat().st_size:
+        if name not in todo:
             log.info("déjà dans le bucket : %s", name)
-            continue
-        log.info("téléversement %s (%.1f Mo)", name, path.stat().st_size / 1e6)
-        bucket.upload(path, key)
+    total = sum((tiles_dir / n).stat().st_size for n in todo)
+    log.info("à téléverser : %d fichier(s), %.1f Mo", len(todo), total / 1e6)
+    with tqdm(total=total, desc="publish", unit="B", unit_scale=True, unit_divisor=1024) as bar:
+        for i, name in enumerate(todo, 1):
+            path = tiles_dir / name
+            bar.set_postfix_str(f"{i}/{len(todo)} {name}", refresh=True)
+            bucket.upload(path, TILES_PREFIX + name, progress=bar.update)
     old = bucket.get_json(MANIFEST_KEY) or {}
     depts_by_hash = dict(old.get("depts_by_hash", {}))
     depts_by_hash[_depts_hash(depts)] = sorted(depts)
