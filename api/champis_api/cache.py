@@ -19,6 +19,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from champis_pipeline.weather_store import SCHEMA
+
 BUCKET_HOURS = 12  # deux rafraîchissements par jour (décision du 17 oct. 2026)
 HISTORY_VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil")
 HISTORY_KEEP_DAYS = 400  # au-delà, plus aucune fenêtre du modèle ne lit
@@ -33,33 +35,7 @@ def bucket_now(now: datetime) -> str:
 class WeatherCache:
     def __init__(self, path: Path | str = ":memory:"):
         self.db = sqlite3.connect(str(path), check_same_thread=False)
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS raw (
-                cell_id TEXT NOT NULL,
-                kind TEXT NOT NULL,
-                bucket TEXT NOT NULL,
-                fetched_at TEXT NOT NULL,
-                payload TEXT NOT NULL,
-                PRIMARY KEY (cell_id, kind, bucket)
-            );
-            CREATE TABLE IF NOT EXISTS history (
-                cell_id TEXT NOT NULL,
-                day TEXT NOT NULL,
-                source TEXT NOT NULL,
-                values_json TEXT NOT NULL,
-                PRIMARY KEY (cell_id, day)
-            );
-            CREATE TABLE IF NOT EXISTS soil_clim (
-                cell_id TEXT PRIMARY KEY,
-                months_json TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            """
-        )
+        self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
         self.db.commit()
 
     # ------------------------------------------------------------------ prévisions brutes
