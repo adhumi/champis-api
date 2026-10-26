@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
@@ -279,7 +281,7 @@ async def test_forecast_past_days_accumulate_in_history(grid, scenario):
     scenario.fail = set()
     res = await client.fetch_cells_partial([_cell(grid)])
     assert CELL in res.unavailable and "amorçage" in res.unavailable[CELL]  # pas de climatologie
-    assert client.cache.history_days(CELL) == 60  # mais le passé de la prévision est rangé
+    assert client.cache.history_days(CELL) == 92  # mais le passé de la prévision est rangé (max)
     rows = client.cache.history(CELL, TODAY - timedelta(days=60), TODAY)
     assert (TODAY - timedelta(days=1)).isoformat() in rows and TODAY.isoformat() not in rows
 
@@ -300,30 +302,47 @@ def test_seed_never_overwrites_forecast_history():
 
 
 @pytest.mark.asyncio
-async def test_seed_command_writes_file_and_imports(grid, scenario, tmp_path):
-    """`champis-api seed` : archive gratuite → fichier versionné → import SQLite au démarrage."""
+async def test_seed_command_writes_db_and_imports(grid, scenario, tmp_path):
+    """`champis-api seed` : archive → base SQLite par lots → import par ATTACH (bucket ou local)."""
     from champis_api.cache import WeatherCache
-    from champis_api.seed import import_seed, load_seed, seed
+    from champis_api.seed import import_seed, seed
 
-    client = make_client(
-        scenario, seeded=False, api_key="test-key"
-    )  # la clé ne sert qu'à la prévision
-    out = tmp_path / "weather_seed.json"
-    data = await seed(grid, client, out, today=TODAY)
-    assert set(data["cells"]) == set(grid.cells)
-    assert sorted(scenario.calls) == ["archive", "archive", "climatology", "climatology"]
-    assert len(load_seed(out)["cells"][CELL]["history"]) == 200
+    client = make_client(scenario, seeded=False, api_key="test-key")  # archive via customer-*
+    out = tmp_path / "weather_seed.db"
+    info = await seed(grid, client, out, today=TODAY)
+    assert info == {
+        "version": 2,
+        "generated": TODAY.isoformat(),
+        "cells": 2,
+        "bytes": out.stat().st_size,
+        "grid_cells": 2,
+    }
+    assert scenario.calls == ["archive", "climatology"]  # un lot de 2 cellules : 2 requêtes
     # reprise : rien à refaire
     await seed(grid, client, out, today=TODAY)
-    assert len(scenario.calls) == 4
+    assert len(scenario.calls) == 2
     cache = WeatherCache()
     assert import_seed(cache, out) == 2
     assert cache.history_days(CELL) == 200 and cache.soil_clim(CELL) is not None
+    assert cache.meta_get("seed_generated") == TODAY.isoformat()
+    # l'ancien JSON reste importable
+    legacy = tmp_path / "weather_seed.json"
+    day = dict.fromkeys(("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil"), 1.0)
+    legacy.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "generated": "2026-10-01",
+                "cells": {"x": {"history": {"2026-09-30": day}, "soil_clim": {"1": [0.1] * 11}}},
+            }
+        )
+    )
+    assert import_seed(WeatherCache(), legacy) == 1
 
 
 @pytest.mark.asyncio
-async def test_seed_waits_out_a_quota_429_and_resumes_the_same_cell(grid, scenario, tmp_path):
-    """Un 429 de l'archive gratuite ne fait pas planter l'amorçage : attente puis même cellule."""
+async def test_seed_waits_out_a_quota_429_and_resumes_the_same_batch(grid, scenario, tmp_path):
+    """Un 429 de l'archive ne fait pas planter l'amorçage : attente puis même lot."""
     from champis_api.seed import seed
 
     scenario.fail, scenario.fail_status, scenario.fail_once = {"archive"}, 429, True
@@ -334,10 +353,10 @@ async def test_seed_waits_out_a_quota_429_and_resumes_the_same_cell(grid, scenar
         slept.append(s)
 
     client = make_client(scenario, seeded=False)
-    data = await seed(grid, client, tmp_path / "seed.json", today=TODAY, sleep=fake_sleep)
-    assert set(data["cells"]) == set(grid.cells)
+    info = await seed(grid, client, tmp_path / "seed.db", today=TODAY, sleep=fake_sleep)
+    assert info["cells"] == 2
     assert slept == [120.0]
-    assert scenario.calls.count("archive") == 3  # la cellule en échec est refaite, pas sautée
+    assert scenario.calls.count("archive") == 2  # le lot en échec est refait, pas sauté
 
 
 @pytest.mark.asyncio
@@ -346,16 +365,88 @@ async def test_seed_does_not_retry_a_non_quota_error(grid, scenario, tmp_path):
 
     scenario.fail, scenario.fail_status = {"archive"}, 403
     with pytest.raises(httpx.HTTPStatusError):
-        await seed(grid, make_client(scenario, seeded=False), tmp_path / "s.json", today=TODAY)
+        await seed(grid, make_client(scenario, seeded=False), tmp_path / "s.db", today=TODAY)
+
+
+class _SeedBucket:
+    """Bucket factice : fiche + base d'amorçage, téléchargement par copie."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.json: dict[str, object] = {}
+        self.downloads: list[str] = []
+
+    def upload(self, path, key, progress=None):
+        self.objects[key] = Path(path).read_bytes()
+        if progress:
+            progress(len(self.objects[key]))
+
+    def put_json(self, key, obj):
+        self.json[key] = obj
+
+    def get_json(self, key):
+        return self.json.get(key)
+
+    def download(self, key, path):
+        self.downloads.append(key)
+        Path(path).write_bytes(self.objects[key])
+
+    def list(self, prefix):
+        return {}
+
+    def delete(self, keys):
+        raise AssertionError
+
+    def presign(self, key, expires_s):
+        raise AssertionError
+
+
+@pytest.mark.asyncio
+async def test_seed_published_to_bucket_is_imported_once_at_startup(grid, scenario, tmp_path):
+    from champis_api.cache import WeatherCache
+    from champis_api.seed import SEED_DB_KEY, SEED_META_KEY, publish_seed, seed, sync_seed
+
+    out = tmp_path / "weather_seed.db"
+    await seed(grid, make_client(scenario, seeded=False), out, today=TODAY)
+    bucket = _SeedBucket()
+    with pytest.raises(ValueError):  # base vide refusée
+        publish_seed(bucket, tmp_path / "vide.db")
+    info = publish_seed(bucket, out)
+    assert (
+        SEED_DB_KEY in bucket.objects and bucket.json[SEED_META_KEY]["cells"] == 2 == info["cells"]
+    )
+    cache = WeatherCache(tmp_path / "cache.db")
+    work = tmp_path / "vol"
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2
+    assert cache.seeded_cells() == 2 and not (work / "weather_seed.db").exists()
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 0  # même date : rien
+    assert bucket.downloads == [SEED_DB_KEY]
+    # nouvel amorçage publié (date différente) → réimporté, sans écraser la prévision
+    day = dict.fromkeys(("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil"), 7.0)
+    cache.put_history(CELL, {(TODAY - timedelta(days=1)).isoformat(): day}, "forecast")
+    bucket.json[SEED_META_KEY]["generated"] = "2026-11-01"
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2
+    assert (
+        cache.history(CELL, TODAY - timedelta(days=1), TODAY)[
+            (TODAY - timedelta(days=1)).isoformat()
+        ]["rain"]
+        == 7.0
+    )
+    # sans bucket : le fichier local sert une fois
+    cache2 = WeatherCache()
+    assert sync_seed(cache2, None, out, work) == 2
+    assert sync_seed(cache2, None, out, work) == 0
 
 
 @pytest.mark.asyncio
 async def test_missing_in_both_sources_is_an_error(grid, scenario):
     raw = (await make_client(scenario).fetch_cells([_cell(grid)]))[CELL]
-    k = (TODAY - timedelta(days=30)).isoformat()
+    k = (
+        TODAY - timedelta(days=1)
+    ).isoformat()  # hier : dans la prévision (past_days=1) et l'historique
     raw.forecast["rain"][raw.forecast["dates"].index(k)] = None
     raw.history[k]["rain"] = None
-    with pytest.raises(SeriesGapError, match="`rain_sum` manquant sur 2026-09-17"):
+    with pytest.raises(SeriesGapError, match="`rain_sum` manquant sur 2026-10-16"):
         build_series(raw)
 
 
@@ -375,6 +466,37 @@ async def test_warm_fills_cache_then_costs_nothing(grid, scenario):
 
 
 @pytest.mark.asyncio
+async def test_past_days_follows_the_history_gap(grid, scenario):
+    """Quota (25 oct. 2026) : la prévision ne demande que les jours absents de l'historique."""
+    from champis_api.cache import WeatherCache
+    from champis_api.warm import warm
+    from champis_api.weather_client import call_weight
+    from conftest import seed_from_scenario
+
+    cell = _cell(grid)
+    # jamais amorcée → maximum (92) ; amorcée jusqu'à hier → 1 ; trou de 5 jours → 5
+    assert make_client(scenario, seeded=False).past_days_needed(CELL, TODAY) == 92
+    assert make_client(scenario).past_days_needed(CELL, TODAY) == 1
+    cache = WeatherCache()
+    seed_from_scenario(cache, scenario, [CELL])
+    cache.db.execute(
+        "DELETE FROM history WHERE cell_id = ? AND day > ?",
+        (CELL, (TODAY - timedelta(days=5)).isoformat()),
+    )
+    assert make_client(scenario, cache=cache, seeded=False).past_days_needed(CELL, TODAY) == 5
+    # le lot demande le maximum de ses cellules et le poids est compté
+    client = make_client(scenario)  # les deux cellules amorcées jusqu'à hier
+    report = await warm(grid, client)
+    assert scenario.past_days == [1]  # un seul appel groupé, past_days=1
+    assert report.weight == pytest.approx(call_weight(2, 9, 9))  # 2 points, 1+8 jours, 6+3 vars
+    assert report.weight / report.cells < 1
+    # cellule froide dans le même lot → tout le lot à 92
+    client2 = make_client(scenario, cache=cache, seeded=False)  # trou de 5 ; l'autre jamais amorcée
+    await client2.fetch_cells_partial([cell, grid.get("c_0935_6680")])
+    assert scenario.past_days[-1] == 92
+
+
+@pytest.mark.asyncio
 async def test_warm_reports_unavailable(grid, scenario):
     from champis_api.warm import warm
 
@@ -388,7 +510,8 @@ async def test_warm_reports_unavailable(grid, scenario):
 async def test_api_key_switches_to_customer_hosts(grid, scenario):
     client = make_client(scenario, api_key="test-key")
     assert client.forecast_url.startswith("https://customer-api.")
-    assert client.archive_url.startswith("https://archive-api.")  # l'archive reste gratuite
+    assert client.archive_url.startswith("https://customer-archive-api.")
+    assert make_client(scenario).archive_url.startswith("https://archive-api.")  # sans clé
     raws = await client.fetch_cells([_cell(grid)])
     assert raws[CELL].stale is False  # la clé est acceptée par customer-api
     bad = make_client(scenario, api_key="mauvaise")
@@ -458,6 +581,9 @@ class _FakeBucket:
         raise AssertionError
 
     def put_json(self, key, obj):
+        raise AssertionError
+
+    def download(self, key, path):
         raise AssertionError
 
     def delete(self, keys):

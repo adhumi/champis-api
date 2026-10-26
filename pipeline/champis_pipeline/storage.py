@@ -68,6 +68,7 @@ class BucketLike(Protocol):
 
     def put_json(self, key: str, obj: Any) -> None: ...
     def delete(self, keys: list[str]) -> None: ...
+    def download(self, key: str, path: Path) -> None: ...
     def get_json(self, key: str) -> Any | None: ...
     def presign(self, key: str, expires_s: int) -> str: ...
 
@@ -99,6 +100,10 @@ class Bucket:
 
     def upload(self, path: Path, key: str, progress: Callable[[int], None] | None = None) -> None:
         self._s3.upload_file(str(path), self.name, key, Callback=progress)
+
+    def download(self, key: str, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._s3.download_file(self.name, key, str(path))
 
     def delete(self, keys: list[str]) -> None:
         for i in range(0, len(keys), 1000):  # limite S3 par requête

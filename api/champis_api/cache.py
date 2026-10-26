@@ -54,6 +54,10 @@ class WeatherCache:
                 cell_id TEXT PRIMARY KEY,
                 months_json TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
             """
         )
         self.db.commit()
@@ -118,6 +122,13 @@ class WeatherCache:
         ).fetchall()
         return {day: dict(zip(HISTORY_VARS, json.loads(js), strict=True)) for day, js in rows}
 
+    def last_history_day(self, cell_id: str) -> date | None:
+        """Dernier jour présent dans l'historique (amorçage ou prévision), None si aucun."""
+        row = self.db.execute(
+            "SELECT MAX(day) FROM history WHERE cell_id = ?", (cell_id,)
+        ).fetchone()
+        return date.fromisoformat(row[0]) if row and row[0] else None
+
     def history_days(self, cell_id: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM history WHERE cell_id = ?", (cell_id,)
@@ -147,6 +158,37 @@ class WeatherCache:
     def seeded_cells(self) -> int:
         """Cellules disposant d'une climatologie du sol, donc amorcées."""
         return self.db.execute("SELECT COUNT(*) FROM soil_clim").fetchone()[0]
+
+    def seeded_ids(self) -> set[str]:
+        return {r[0] for r in self.db.execute("SELECT cell_id FROM soil_clim")}
+
+    def import_seed_db(self, path: Path) -> int:
+        """Importe une base d'amorçage (même schéma) par ATTACH : l'historique ne remplit que les
+        trous (jamais par-dessus la prévision), la climatologie est remplacée. Rien en mémoire."""
+        self.db.execute("ATTACH DATABASE ? AS seed", (str(path),))
+        try:
+            self.db.execute("INSERT OR IGNORE INTO history SELECT * FROM seed.history")
+            self.db.execute("INSERT OR REPLACE INTO soil_clim SELECT * FROM seed.soil_clim")
+            n = self.db.execute("SELECT COUNT(*) FROM seed.soil_clim").fetchone()[0]
+            gen = self.db.execute(
+                "SELECT value FROM seed.meta WHERE key = 'seed_generated'"
+            ).fetchone()
+            if gen:
+                self.meta_set("seed_generated", gen[0])
+            self.db.commit()
+        finally:
+            self.db.execute("DETACH DATABASE seed")
+        return n
+
+    # ------------------------------------------------------------------ métadonnées
+
+    def meta_get(self, key: str) -> str | None:
+        row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else None
+
+    def meta_set(self, key: str, value: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()

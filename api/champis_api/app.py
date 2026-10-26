@@ -25,7 +25,7 @@ from fastapi.staticfiles import StaticFiles
 from .cache import WeatherCache
 from .grid import WeatherGrid
 from .routers import species, tiles, weather
-from .seed import import_seed
+from .seed import sync_seed
 from .settings import Settings
 from .warm import WARM_INTERVAL_S, warm
 from .weather_client import OpenMeteoClient
@@ -64,19 +64,16 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             return
         settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
         cache = WeatherCache(settings.cache_db)
-        if settings.weather_seed.exists():
-            n = import_seed(cache, settings.weather_seed)
-            log.info("amorçage importé : %d cellules (%s)", n, settings.weather_seed)
-        else:
-            log.warning(
-                "pas d'amorçage (%s) : les cellules seront indisponibles", settings.weather_seed
-            )
+        bucket = Bucket(settings.s3) if settings.s3 else None
+        if bucket is None:
+            log.warning("pas de bucket (CHAMPIS_S3_*) : /tiles vide, glisser-déposer seul")
+        try:
+            sync_seed(cache, bucket, settings.weather_seed, settings.cache_db.parent)
+        except Exception:  # un bucket injoignable ne doit pas empêcher l'API de démarrer
+            log.exception("amorçage : import impossible, on continue avec le cache existant")
         async with httpx.AsyncClient(headers={"User-Agent": "champis-api"}) as http:
             grid = WeatherGrid.load(settings.weather_grid)
             key = settings.open_meteo_api_key
-            bucket = Bucket(settings.s3) if settings.s3 else None
-            if bucket is None:
-                log.warning("pas de bucket (CHAMPIS_S3_*) : /tiles vide, glisser-déposer seul")
             app.state.champis = State(
                 grid=grid,
                 client=OpenMeteoClient(http, cache, api_key=key),

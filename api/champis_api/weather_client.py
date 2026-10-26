@@ -1,20 +1,20 @@
 """Client Open-Meteo : le seul module qui parle à Open-Meteo (skill open-meteo).
 
 Décision du 17 oct. 2026, « amorcer, puis accumuler » : en service, l'API n'appelle **que la
-prévision** (plan payant, clé API, hôte `customer-api`). Chaque réponse apporte ~60 jours de
-passé, rangés dans l'historique SQLite (`cache.history`) ; au-delà, l'historique a été amorcé une
-fois par `champis-api seed` depuis l'archive ERA5-Land gratuite (hors Railway), qui fournit aussi
-la climatologie du sol (10 ans → 11 quantiles par mois). L'archive n'est donc jamais appelée en
-service : l'API historique n'est pas dans le plan Standard, et l'IP de sortie Railway est bridée
-sur l'API gratuite.
+prévision** (plan payant, clé API, hôte `customer-api`). Chaque réponse apporte les jours de passé
+qui manquent à l'historique SQLite (`cache.history`, `past_days` dynamique, décision du 25 oct.
+2026 : quota) ; au-delà, l'historique a été amorcé une fois par `champis-api seed` depuis l'archive
+ERA5-Land (hors Railway ; avec la clé sur `customer-archive-api`, plan Professional), qui fournit
+aussi la climatologie du sol (10 ans → 11 quantiles par mois). L'archive n'est donc jamais appelée
+en service.
 
-- `forecast` : `past_days=60&forecast_days=8` (J inclus → J+7), séries journalières + humidité du
-  sol (moyenne journalière pondérée des couches horaires 0–1, 1–3 et 3–9 cm, poids 1/2/6 ≈ 0–9 cm,
+- `forecast` : `past_days=<1..92>&forecast_days=8` (J inclus → J+7), séries journalières + humidité
+  du sol (moyenne journalière pondérée des couches horaires 0–1, 1–3 et 3–9 cm, poids 1/2/6 ≈ 0–9 cm,
   l'équivalent prévision du 0–7 cm ERA5-Land). Seau de 12 h.
-- `archive` et `soil_clim` : amorçage uniquement (`fetch_seed`), toujours sur l'API gratuite.
+- `archive` et `soil_clim` : amorçage uniquement (`fetch_seed`).
 
-Quotas : Open-Meteo pondère chaque requête par le nombre de points et la longueur de la période.
-D'où : lots bornés, un intervalle minimal entre requêtes, un 429 traité comme une indisponibilité
+Quotas : Open-Meteo pondère chaque requête (points × jours/14 × variables/10, `call_weight`).
+D'où : `past_days` réduit au strict manquant, lots bornés, un intervalle minimal entre requêtes, un 429 traité comme une indisponibilité
 (cache périmé ou 503 avec `Retry-After`), un seul réessai sur 429 court.
 
 Si Open-Meteo est injoignable, on sert la dernière réponse connue avec `stale=True` ; sans
@@ -42,15 +42,24 @@ log = logging.getLogger(__name__)
 
 FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
-# Plan payant Standard (clé API, décision du 17 oct. 2026) : prévision seule, quota propre à la clé
+# Plan payant (clé API, décision du 17 oct. 2026) : hôtes customer-*, quota propre à la clé.
+# L'archive avec la clé exige le plan Professional (décision du 25 oct. 2026 : le temps de
+# l'amorçage France) ; sans clé, l'archive gratuite reste utilisable pour le développement.
 CUSTOMER_FORECAST_URL = "https://customer-api.open-meteo.com/v1/forecast"
+CUSTOMER_ARCHIVE_URL = "https://customer-archive-api.open-meteo.com/v1/archive"
 TIMEZONE = "Europe/Paris"
-PAST_DAYS = 60  # le modèle de prévision ne remonte pas plus loin ; l'archive prend le relais
+MAX_PAST_DAYS = 92  # maximum accepté par l'API de prévision
+MIN_PAST_DAYS = 1  # au moins hier : la journée d'hier se consolide au passage suivant
 FORECAST_DAYS = 8  # J inclus : J+1 … J+7
+# Pondération Open-Meteo (page tarifs, 25 oct. 2026) : appels = points × jours/14 × variables/10,
+# fractions comptées. D'où past_days dynamique : seulement les jours manquants dans l'historique.
+WEIGHT_DAYS = 14
+WEIGHT_VARS = 10
 ARCHIVE_START_OFFSET = 200  # J−200 : couvre mémoire (90) + pluie (28) + persistance (12) + J−3
 CLIMATOLOGY_YEARS = 10
 QUANTILES = [i / 10 for i in range(11)]
 BATCH_POINTS = 100
+BATCH_CLIMATOLOGY = 10  # points par requête de climatologie (10 ans chacun : la plus lourde)
 MIN_REQUEST_INTERVAL_S = 0.25  # lissage : jamais de rafale vers Open-Meteo
 RETRY_MAX_WAIT_S = 10  # un seul réessai, et seulement si Open-Meteo demande une courte attente
 SOIL_DAILY = "soil_moisture_0_to_7cm_mean"
@@ -108,7 +117,8 @@ class OpenMeteoClient:
         self.min_interval_s = min_interval_s
         self.api_key = api_key or None
         self.forecast_url = CUSTOMER_FORECAST_URL if self.api_key else FORECAST_URL
-        self.archive_url = ARCHIVE_URL  # amorçage seulement, API gratuite (hors plan Standard)
+        self.archive_url = CUSTOMER_ARCHIVE_URL if self.api_key else ARCHIVE_URL
+        self.weight = 0.0  # appels pondérés estimés depuis la création du client
         self._lock = asyncio.Lock()
         self._last_request = 0.0
 
@@ -149,8 +159,9 @@ class OpenMeteoClient:
                 forecasts[c.id] = cached
         for i in range(0, len(missing), BATCH_POINTS):
             batch = missing[i : i + BATCH_POINTS]
+            past_days = max(self.past_days_needed(c.id, today) for c in batch)
             try:
-                payloads = await self._fetch_with_one_retry("forecast", batch, today)
+                payloads = await self._fetch_with_one_retry("forecast", batch, today, past_days)
             except (httpx.HTTPError, ValueError) as e:
                 ra = _retry_after(e)
                 retry_after = max(retry_after or 0, ra) if ra is not None else retry_after
@@ -184,45 +195,72 @@ class OpenMeteoClient:
             raws[c.id] = CellRaw(forecasts[c.id], history, clim, c.id in stale)
         return FetchResult(raws, unavailable, retry_after)
 
+    def past_days_needed(self, cell_id: str, today: date) -> int:
+        """Jours de passé à demander à la prévision : ceux qui manquent à l'historique SQLite.
+
+        Historique à jour jusqu'à hier → 1 (hier se consolide) ; jamais amorcé → 92 (le maximum).
+        C'est ce qui ramène le poids d'un passage de pré-chauffe de ~5 à ~0,6 appel par cellule.
+        """
+        last = self.cache.last_history_day(cell_id)
+        if last is None:
+            return MAX_PAST_DAYS
+        return min(MAX_PAST_DAYS, max(MIN_PAST_DAYS, (today - last).days))
+
     async def fetch_seed(self, cell: Cell, today: date) -> tuple[dict[str, dict], dict[str, Any]]:
-        """Amorçage d'une cellule depuis l'archive gratuite : (jours J−200 → J−1, climatologie)."""
-        archive = (await self._fetch("archive", [cell], today))[0]
-        clim = (await self._fetch("soil_clim", [cell], today))[0]
-        rows = {d: {v: archive[v][i] for v in HISTORY_VARS} for i, d in enumerate(archive["dates"])}
-        return rows, clim
+        """Amorçage d'une cellule depuis l'archive : (jours J−200 → J−1, climatologie)."""
+        return (await self.fetch_seed_batch([cell], today))[0]
+
+    async def fetch_seed_batch(
+        self, cells: list[Cell], today: date
+    ) -> list[tuple[dict[str, dict], dict[str, Any]]]:
+        """Amorçage d'un lot (≤ BATCH_CLIMATOLOGY points) : deux requêtes, archive et climatologie."""
+        if len(cells) > BATCH_CLIMATOLOGY:
+            raise ValueError(f"lot d'amorçage de {len(cells)} > {BATCH_CLIMATOLOGY} cellules")
+        archives = await self._fetch("archive", cells, today)
+        clims = await self._fetch("soil_clim", cells, today)
+        out = []
+        for archive, clim in zip(archives, clims, strict=True):
+            rows = {
+                d: {v: archive[v][i] for v in HISTORY_VARS} for i, d in enumerate(archive["dates"])
+            }
+            out.append((rows, clim))
+        return out
 
     async def _fetch_with_one_retry(
-        self, kind: str, batch: list[Cell], today: date
+        self, kind: str, batch: list[Cell], today: date, past_days: int = MAX_PAST_DAYS
     ) -> list[dict[str, Any]]:
         """Sur un 429 à courte attente (limite par minute), attendre et réessayer une fois."""
         try:
-            return await self._fetch(kind, batch, today)
+            return await self._fetch(kind, batch, today, past_days)
         except httpx.HTTPStatusError as e:
             ra = _retry_after(e)
             if ra is None or ra > RETRY_MAX_WAIT_S:
                 raise
             log.info("Open-Meteo 429, réessai dans %d s", ra)
             await asyncio.sleep(ra)
-            return await self._fetch(kind, batch, today)
+            return await self._fetch(kind, batch, today, past_days)
 
     # ------------------------------------------------------------------ requêtes
 
-    async def _fetch(self, kind: str, batch: list[Cell], today: date) -> list[dict[str, Any]]:
+    async def _fetch(
+        self, kind: str, batch: list[Cell], today: date, past_days: int = MAX_PAST_DAYS
+    ) -> list[dict[str, Any]]:
         params: dict[str, Any] = {
             "latitude": ",".join(f"{c.lat:.4f}" for c in batch),
             "longitude": ",".join(f"{c.lon:.4f}" for c in batch),
             "timezone": TIMEZONE,
         }
-        if self.api_key and kind == "forecast":
+        if self.api_key:
             params["apikey"] = self.api_key
         if kind == "forecast":
             params |= {
                 "daily": ",".join(DAILY_VARS),
                 "hourly": ",".join(SOIL_LAYER_WEIGHTS),
-                "past_days": PAST_DAYS,
+                "past_days": past_days,
                 "forecast_days": FORECAST_DAYS,
             }
             url, norm = self.forecast_url, _normalize_forecast
+            days, n_vars = past_days + FORECAST_DAYS, len(DAILY_VARS) + len(SOIL_LAYER_WEIGHTS)
         elif kind == "archive":
             params |= {
                 "daily": ",".join([*DAILY_VARS, SOIL_DAILY]),
@@ -230,6 +268,7 @@ class OpenMeteoClient:
                 "end_date": (today - timedelta(days=1)).isoformat(),
             }
             url, norm = self.archive_url, _normalize_archive
+            days, n_vars = ARCHIVE_START_OFFSET, len(DAILY_VARS) + 1
         else:
             params |= {
                 "daily": SOIL_DAILY,
@@ -237,6 +276,8 @@ class OpenMeteoClient:
                 "end_date": f"{today.year - 1}-12-31",
             }
             url, norm = self.archive_url, _normalize_soil_climatology
+            days, n_vars = CLIMATOLOGY_YEARS * 365, 1
+        self.weight += call_weight(len(batch), days, n_vars)
         async with self._lock:  # une requête à la fois, espacées : pas de rafale
             wait = self._last_request + self.min_interval_s - time.monotonic()
             if wait > 0:
@@ -307,6 +348,11 @@ def _normalize_soil_climatology(body: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"climatologie du sol trop courte pour le mois {m}")
         months[str(m)] = [float(q) for q in np.quantile(vals, QUANTILES)]
     return {"months": months}
+
+
+def call_weight(points: int, days: int, n_vars: int) -> float:
+    """Appels pondérés Open-Meteo d'une requête (règle de la page tarifs, fractions comptées)."""
+    return points * (days / WEIGHT_DAYS) * (n_vars / WEIGHT_VARS)
 
 
 def _past_rows(forecast: dict[str, Any], today: date) -> dict[str, dict[str, float | None]]:

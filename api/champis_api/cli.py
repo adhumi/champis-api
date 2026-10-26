@@ -1,6 +1,6 @@
 """CLI : `champis-api warm [--interval 2]` — pré-chauffe du cache météo (cron, sur Railway) ;
-`champis-api seed [--out data/weather_seed.json] [--interval 5]` — amorçage depuis l'archive
-gratuite (hors Railway, une fois par grille)."""
+`champis-api seed [--out data/weather_seed.db] [--interval 1]` — amorçage depuis l'archive (hors
+Railway, une fois par grille) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import httpx
 
 from .cache import WeatherCache
 from .grid import WeatherGrid
-from .seed import seed
+from .seed import publish_seed, seed
 from .settings import Settings
 from .warm import WARM_INTERVAL_S, warm
 from .weather_client import OpenMeteoClient
@@ -35,7 +35,7 @@ async def _warm(interval: float) -> int:
         cache.close()
     print(
         f"{report.cells} cellules, {len(report.unavailable)} indisponibles, "
-        f"{report.stale} servies depuis un cache périmé"
+        f"{report.stale} servies depuis un cache périmé, ≈ {report.weight:.0f} appels pondérés"
     )
     for cid, reason in sorted(report.unavailable.items()):
         print(f"  {cid}: {reason}")
@@ -46,9 +46,29 @@ async def _seed(out: Path, interval: float) -> int:
     settings = Settings()
     grid = WeatherGrid.load(settings.weather_grid)
     async with httpx.AsyncClient(headers={"User-Agent": "champis-api seed"}) as http:
-        client = OpenMeteoClient(http, WeatherCache(), min_interval_s=interval)
-        data = await seed(grid, client, out)
-    print(f"{len(data['cells'])} cellules amorcées dans {out}")
+        client = OpenMeteoClient(
+            http, WeatherCache(), min_interval_s=interval, api_key=settings.open_meteo_api_key
+        )
+        info = await seed(grid, client, out)
+    print(
+        f"{info['cells']}/{info['grid_cells']} cellules amorcées dans {out} "
+        f"({info['bytes'] / 1e6:.0f} Mo, ≈ {client.weight:.0f} appels pondérés)"
+    )
+    return 0 if info["cells"] == info["grid_cells"] else 1
+
+
+def _publish_seed(path: Path) -> int:
+    from champis_pipeline.progress import tqdm
+    from champis_pipeline.storage import Bucket, S3Config
+
+    cfg = S3Config.from_env()
+    if cfg is None:
+        raise SystemExit("bucket non configuré : CHAMPIS_S3_ENDPOINT et CHAMPIS_S3_BUCKET requis")
+    with tqdm(
+        total=path.stat().st_size, desc="publish-seed", unit="B", unit_scale=True, unit_divisor=1024
+    ) as bar:
+        info = publish_seed(Bucket(cfg), path, progress=bar.update)
+    print(f"{info['cells']} cellules ({info['generated']}, {info['bytes'] / 1e6:.0f} Mo) publiées")
     return 0
 
 
@@ -60,12 +80,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--interval", type=float, default=WARM_INTERVAL_S, help="secondes entre requêtes"
     )
-    p = sub.add_parser("seed", help="amorce historique + climatologie depuis l'archive gratuite")
-    p.add_argument("--out", type=Path, default=Settings().weather_seed)
-    p.add_argument("--interval", type=float, default=5.0, help="secondes entre requêtes")
+    p = sub.add_parser(
+        "seed", help="amorce historique + climatologie depuis l'archive (clé = plan Professional)"
+    )
+    p.add_argument("--out", type=Path, default=Settings().weather_seed_db)
+    p.add_argument("--interval", type=float, default=1.0, help="secondes entre requêtes")
+    p = sub.add_parser("publish-seed", help="dépose la base d'amorçage dans le bucket")
+    p.add_argument("--seed", type=Path, default=Settings().weather_seed_db)
     args = ap.parse_args(argv)
     if args.cmd == "seed":
         return asyncio.run(_seed(args.out, args.interval))
+    if args.cmd == "publish-seed":
+        return _publish_seed(args.seed)
     return asyncio.run(_warm(args.interval))
 
 
