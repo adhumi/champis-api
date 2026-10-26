@@ -35,6 +35,7 @@ uv run champis-pipeline batch    --depts all --jobs 3   # download+grid+terrain,
 uv run champis-pipeline check    --dept 25              # contrôle GBIF
 uv run champis-pipeline explain  --dept 25 --species boletus_edulis
 uv run champis-pipeline publish  --depts 25 [--prune]  # PMTiles → bucket Railway + manifeste ; --prune efface les autres jeux
+uv run champis-pipeline soil-clim [--years 2016-2025]  # climatologie du sol ERA5-Land (CDS) → data/weather_seed.db
 ```
 
 ## Règles
