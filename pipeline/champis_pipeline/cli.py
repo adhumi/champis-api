@@ -9,8 +9,10 @@ import argparse
 import json
 import logging
 import sys
+from pathlib import Path
 
 from . import download, rasterize, terrain, tiles, weather_grid
+from .config import DATA_DIR
 from .species import list_species
 
 
@@ -117,6 +119,18 @@ def cmd_batch(args) -> None:
         raise SystemExit(1)
 
 
+def cmd_soil_clim(args) -> None:
+    """Climatologie du sol ERA5-Land (CDS) → soil_clim de data/weather_seed.db (une fois)."""
+    from . import soil_clim
+
+    years = None
+    if args.years:
+        a, b = (int(x) for x in args.years.split("-"))
+        years = list(range(a, b + 1))
+    n = soil_clim.build(args.grid, years, args.out)
+    print(f"{n} cellules → {args.out}")
+
+
 def cmd_publish(args) -> None:
     """PMTiles de data/tiles → bucket S3 (variables CHAMPIS_S3_*, AWS_*), manifeste tiles/manifest.json."""
     from . import batch, publish
@@ -173,6 +187,11 @@ def main(argv: list[str] | None = None) -> int:
         if name == "tiles":
             p.add_argument("--jobs", type=int, default=None, help="processus pour le niveau 15")
         p.set_defaults(fn=fn)
+    p = sub.add_parser("soil-clim")
+    p.add_argument("--grid", type=Path, default=DATA_DIR / "weather_grid.json")
+    p.add_argument("--out", type=Path, default=DATA_DIR / "weather_seed.db")
+    p.add_argument("--years", help="ex. 2016-2025 ; défaut : les 10 dernières années civiles")
+    p.set_defaults(fn=cmd_soil_clim)
     p = sub.add_parser("publish", parents=[common])
     p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")
     p.add_argument(

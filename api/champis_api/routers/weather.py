@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..grid import Cell, WeatherGrid
 from ..weather_client import OpenMeteoClient
-from ..weather_service import SeriesGapError, cell_weather
+from ..weather_service import HistoryTooShortError, SeriesGapError, cell_weather
 
 router = APIRouter(prefix="/weather", tags=["weather"])
 
@@ -46,15 +46,17 @@ async def _compute(
     """(résultats des cellules disponibles, indisponibles → raison, Retry-After éventuel)."""
     res = await client.fetch_cells_partial(cells)
     today = client.today()
-    try:
-        results = [
-            cell_weather(c, res.raws[c.id], species, today, detail=detail)
-            for c in cells
-            if c.id in res.raws
-        ]
-    except SeriesGapError as e:
-        raise HTTPException(502, f"séries Open-Meteo incomplètes : {e}") from e
-    return results, res.unavailable, res.retry_after_s
+    results, unavailable = [], dict(res.unavailable)
+    for c in cells:
+        if c.id not in res.raws:
+            continue
+        try:
+            results.append(cell_weather(c, res.raws[c.id], species, today, detail=detail))
+        except HistoryTooShortError as e:  # transitoire : l'accumulation comble un jour par jour
+            unavailable[c.id] = str(e)
+        except SeriesGapError as e:
+            raise HTTPException(502, f"séries Open-Meteo incomplètes : {e}") from e
+    return results, unavailable, res.retry_after_s
 
 
 def _retry_headers(retry_after: int | None) -> dict[str, str] | None:

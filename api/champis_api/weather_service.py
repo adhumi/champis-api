@@ -20,6 +20,18 @@ DAYS_BEFORE = 3
 DAYS_AFTER = 7
 
 
+class HistoryTooShortError(Exception):
+    """Pas assez de jours avant J pour la fenêtre mémoire : indisponible jusqu'à `complete_on`
+    (l'accumulation des prévisions comble un jour par jour), jamais une fenêtre tronquée."""
+
+    def __init__(self, species_id: str, need: int, available: int, today: date):
+        self.complete_on = today + timedelta(days=need - available)
+        super().__init__(
+            f"{species_id} : historique de {available} j, {need} j requis ; "
+            f"complet vers le {self.complete_on.isoformat()}"
+        )
+
+
 class SeriesGapError(Exception):
     """Trou ou troncature dans les séries : jamais une approximation silencieuse (SCHEMA.md)."""
 
@@ -102,9 +114,7 @@ def cell_weather(
         sp = load_species(sid)
         need = required_series_days(sp)
         if s.i(days[0]) < need:
-            raise SeriesGapError(
-                f"{sid} : {need} j requis avant {days[0]}, {s.i(days[0])} disponibles"
-            )
+            raise HistoryTooShortError(sid, need, s.i(days[0]), today)
         day_rows = []
         for d in days:
             by_alt = {}
