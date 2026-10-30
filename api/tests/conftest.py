@@ -55,9 +55,12 @@ def calm_autumn() -> DailySeries:
 TODAY = date(2026, 10, 17)
 NOW = datetime(2026, 10, 17, 14, 30, tzinfo=ZoneInfo("Europe/Paris"))
 
+# Version 2 : `t_sum` = Σ T par département, classe d'altitude et espèce (poids de l'indice par
+# département). La seconde cellule est à cheval sur le Doubs (25) et le Jura (39).
 GRID = {
-    "version": 1,
+    "version": 2,
     "cell_m": 5000,
+    "alt_class_m": 300,
     "cells": [
         {
             "id": "c_0930_6680",
@@ -65,8 +68,24 @@ GRID = {
             "lon": 6.31,
             "alt_classes": [450, 1350],
             "elevation_m": 650,
+            "t_sum": {
+                "25": {
+                    "450": {"boletus_edulis": 300.0, "cantharellus_cibarius": 120.0},
+                    "1350": {"boletus_edulis": 100.0},
+                }
+            },
         },
-        {"id": "c_0935_6680", "lat": 47.12, "lon": 6.38, "alt_classes": [150], "elevation_m": 180},
+        {
+            "id": "c_0935_6680",
+            "lat": 47.12,
+            "lon": 6.38,
+            "alt_classes": [150],
+            "elevation_m": 180,
+            "t_sum": {
+                "25": {"150": {"boletus_edulis": 50.0}},
+                "39": {"150": {"boletus_edulis": 80.0, "cantharellus_cibarius": 40.0}},
+            },
+        },
     ],
 }
 

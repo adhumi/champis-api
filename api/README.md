@@ -1,6 +1,6 @@
 # champis-api
 
-Service FastAPI sans état : scoring météo `M × Φ` par cellule, fichiers espèces, palette. Aucun calcul géographique (tout est dans les tuiles). Spec › « Backend sur Railway ».
+Service FastAPI sans état : scoring météo `M × Φ` par cellule, indice par département pour la vue France, fichiers espèces, palette. Aucun calcul géographique (tout est dans les tuiles). Spec › « Backend sur Railway ».
 
 ```bash
 uv run champis-pipeline weather-grid --depts 25        # produit data/weather_grid.json
@@ -50,7 +50,8 @@ Les tuiles ne tiennent ni dans l'image ni dans le dépôt (France ≈ 2–4 Go p
 
 ## Endpoints
 
-- `GET /health` — `{"status": "ok", "cells": n, "seeded": n}` : `seeded` = cellules amorcées (climatologie du sol présente) ; doit valoir `cells` après l'import de l'amorçage.
+- `GET /health` — `{"status": "ok", "cells": n, "seeded": n, "dept_index_at": "…"}` : `seeded` = cellules amorcées (climatologie du sol présente) ; doit valoir `cells` après l'import de l'amorçage ; `dept_index_at` = date du dernier calcul de l'indice par département (`null` avant la première pré-chauffe).
+- `GET /departements[?species=<id>…][&day=<date>]` — indice par département pour la vue France (spec › Scoring) : `I = Σ T × M_eff × Φ / Σ T` sur les pixels forestiers du département, par cellule météo et classe d'altitude, pour chaque espèce et chaque jour J−3 → J+7 (`day` pour un seul jour) ; `coverage` = part de Σ T dont la météo était disponible ; par groupe, le maximum des espèces et l'espèce `leading` (règle 9). Calculé à la fin de chaque pré-chauffe sur le cache (aucun appel Open-Meteo), 503 tant qu'il ne l'a jamais été. Les poids Σ T viennent de `weather_grid.json` version 2 (`champis-pipeline weather-grid`) ; avec une grille version 1 l'indice n'est pas calculé.
 - `GET /tiles` — `{configured, mode, generated, depts_by_hash, tiles:[{…, url}]}` ; `GET /tiles/{name}` — relais Range (mode `proxy` seulement).
 - `GET /species` — `scoring_version`, `species_hash`, `palette` (`shared/palette.json`) et chaque `species/<id>.json` tel quel : les clients n'embarquent aucune valeur.
 - `GET /weather?cell=<id>` ou `?lat=&lon=` (cellule la plus proche), `&species=<id>` répétable (défaut : toutes). Pour chaque jour de **J−3 à J+7** et chaque **classe d'altitude** de la cellule (centres 150, 450, 750… m) : `M`, `M_eff`, `phi` et `factors` (`temp`, `rain`, `trigger`, `soil_moisture`, `frost`, `water_balance`, `heat`, `memory`). Plus `stale` (cache périmé servi faute d'Open-Meteo), `cell_elevation_m`, `scoring_version`, `species_hash`.

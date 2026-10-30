@@ -1,5 +1,5 @@
-"""Service champis-api : `/species`, `/weather`, `/weather/bbox`, `/health`, et la carte web
-statique sous `/web`.
+"""Service champis-api : `/species`, `/weather`, `/weather/bbox`, `/departements`, `/health`, et la
+carte web statique sous `/web`.
 
 Sans état hors le cache météo SQLite ; aucun calcul géographique (tout est dans les tuiles).
 Pré-chauffe intégrée (`CHAMPIS_WARM_HOURS`) : une tâche de fond lance `warm` aux heures voulues,
@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
+from champis_pipeline.species import list_species
 from champis_pipeline.storage import Bucket, BucketLike
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -23,8 +24,9 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .cache import WeatherCache
+from .departements import compute as compute_dept_index
 from .grid import WeatherGrid
-from .routers import species, tiles, weather
+from .routers import departements, species, tiles, weather
 from .seed import sync_seed
 from .settings import Settings
 from .warm import WARM_INTERVAL_S, warm
@@ -101,11 +103,18 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     app.include_router(species.router)
     app.include_router(weather.router)
     app.include_router(tiles.router)
+    app.include_router(departements.router)
 
     @app.get("/health")
-    async def health() -> dict[str, str | int]:
+    async def health() -> dict[str, str | int | None]:
         st = app.state.champis
-        return {"status": "ok", "cells": len(st.grid), "seeded": st.cache.seeded_cells()}
+        meta = st.cache.dept_index_meta()
+        return {
+            "status": "ok",
+            "cells": len(st.grid),
+            "seeded": st.cache.seeded_cells(),
+            "dept_index_at": meta[0] if meta else None,
+        }
 
     if settings.serve_web:
 
@@ -158,6 +167,11 @@ async def _warm_once(grid: WeatherGrid, client: OpenMeteoClient) -> None:
         )
     except Exception:
         log.exception("pré-chauffe en échec")
+        return
+    try:  # vue France : l'indice par département se recalcule sur le cache tout juste rempli
+        await compute_dept_index(grid, client, client.cache, list_species())
+    except Exception:
+        log.exception("indice par département en échec")
 
 
 app = create_app()

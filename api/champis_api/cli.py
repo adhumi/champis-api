@@ -1,4 +1,5 @@
-"""CLI : `champis-api warm [--interval 2]` — pré-chauffe du cache météo (cron, sur Railway) ;
+"""CLI : `champis-api warm [--interval 2]` — pré-chauffe du cache météo puis indice par département
+(cron, sur Railway) ;
 `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
 l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
 de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket."""
@@ -12,8 +13,10 @@ import sys
 from pathlib import Path
 
 import httpx
+from champis_pipeline.species import list_species
 
 from .cache import WeatherCache
+from .departements import compute as compute_dept_index
 from .grid import WeatherGrid
 from .seed import publish_seed, seed
 from .settings import Settings
@@ -32,6 +35,7 @@ async def _warm(interval: float) -> int:
                 http, cache, min_interval_s=interval, api_key=settings.open_meteo_api_key
             )
             report = await warm(grid, client)
+            index = await compute_dept_index(grid, client, cache, list_species())
     finally:
         cache.close()
     print(
@@ -40,6 +44,10 @@ async def _warm(interval: float) -> int:
     )
     for cid, reason in sorted(report.unavailable.items()):
         print(f"  {cid}: {reason}")
+    print(
+        f"indice par département : {index.departements} départements, "
+        f"{index.cells} cellules ({index.cells_without_weather} sans météo)"
+    )
     return 0 if report.ok else 1
 
 

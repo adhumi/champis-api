@@ -20,7 +20,7 @@ uv run champis-pipeline all --dept 25
 2. **grid** — rasters alignés 25 m Lambert-93 dans `data/grid/25/` : `host.tif` (essence dominante), `cover.tif`, `ph.tif`, `alt.tif`, `slope.tif`, `aspect.tif`.
 3. **terrain** — `data/T/<espèce>/25-<hash>.tif`, un par espèce (7 au départ). Quelques secondes par espèce.
 4. **tiles** — `data/tiles/T-<espèce>-<hash>-p1.0.0-d<hash>.pmtiles`, niveaux 6–15, plus la couche `A-300m-d<hash>.pmtiles` (classe d'altitude du pixel, commune à toutes les espèces, lue par la carte pour appliquer gel et phénologie par pixel). Quelques minutes par espèce pour un département (z15 ≈ 7 000 tuiles).
-5. **weather-grid** — `data/weather_grid.json` : les cellules météo 5 km où T > 0, avec leurs classes d'altitude ; c'est l'entrée de l'API.
+5. **weather-grid** — `data/weather_grid.json` (version 2) : les cellules météo 5 km où T > 0, avec leurs classes d'altitude et, par département touché, classe d'altitude et espèce, la somme des T des pixels (poids de l'indice par département) ; c'est l'entrée de l'API.
 
 Plusieurs départements d'un coup : `uv run champis-pipeline batch --depts all --jobs 3` enchaîne download, grid et terrain en parallèle (un processus par département, ~2 Go chacun), garde l'état dans `data/batch_status.json` et reprend là où il s'est arrêté ; `tiles --depts …` et `weather-grid --depts …` prennent ensuite la liste.
 
@@ -35,7 +35,7 @@ Pour regarder le résultat : `python3 -m http.server 8000` à la racine du dép�
 ## Phase 2 — l'API météo
 
 ```bash
-uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/bbox — voir api/README.md
+uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/bbox, /departements — voir api/README.md
 ```
 
 ## Déploiement
@@ -44,7 +44,7 @@ Railway, un seul service (`Dockerfile`, `railway.toml`), volume sur `/data` pour
 
 ## Ce qui n'est pas encore là
 
-- `/departements`, `/tiles` (bucket + URL présignées), `/observations`.
+- `/observations` et `/coins` (retour terrain et favoris de l'app).
 - Le recalibrage pH des espèces à partir des quantiles du rapport `check`.
 
 ## Licences des données

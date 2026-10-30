@@ -1,14 +1,20 @@
 """Grille météo : les cellules ~5 km de `data/weather_grid.json` (produit par le pipeline).
 
-L'API ne connaît pas les pixels, seulement ces cellules et leurs classes d'altitude.
+L'API ne connaît pas les pixels, seulement ces cellules, leurs classes d'altitude et, en version 2,
+les poids Σ T par département, classe d'altitude et espèce qui servent à l'indice par département.
 """
 
 from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+SUPPORTED_VERSIONS = (1, 2)
+
+# département → centre de classe d'altitude (texte, « 450 ») → espèce → Σ T des pixels
+TSum = dict[str, dict[str, dict[str, float]]]
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,7 @@ class Cell:
     lon: float
     alt_classes: tuple[float, ...]  # centres des classes de 300 m présentes (150, 450, …)
     elevation_m: float | None = None  # altitude médiane de la forêt de la cellule, informative
+    t_sum: TSum = field(default_factory=dict)  # version 2 seulement ; vide en version 1
 
     def as_dict(self) -> dict:
         return {
@@ -28,16 +35,22 @@ class Cell:
             "elevation_m": self.elevation_m,
         }
 
+    @property
+    def depts(self) -> tuple[str, ...]:
+        return tuple(sorted(self.t_sum))
+
 
 class WeatherGrid:
-    def __init__(self, cells: list[Cell]):
+    def __init__(self, cells: list[Cell], version: int = 1):
         self.cells = {c.id: c for c in cells}
+        self.version = version
 
     @classmethod
     def load(cls, path: Path) -> WeatherGrid:
         raw = json.loads(path.read_text(encoding="utf-8"))
-        if raw.get("version") != 1:
-            raise ValueError(f"weather_grid.json version {raw.get('version')!r} inconnue")
+        version = raw.get("version")
+        if version not in SUPPORTED_VERSIONS:
+            raise ValueError(f"weather_grid.json version {version!r} inconnue")
         return cls(
             [
                 Cell(
@@ -46,9 +59,14 @@ class WeatherGrid:
                     lon=float(c["lon"]),
                     alt_classes=tuple(float(a) for a in c["alt_classes"]),
                     elevation_m=c.get("elevation_m"),
+                    t_sum={
+                        dept: {str(alt): dict(by_sp) for alt, by_sp in by_alt.items()}
+                        for dept, by_alt in c.get("t_sum", {}).items()
+                    },
                 )
                 for c in raw["cells"]
-            ]
+            ],
+            version=version,
         )
 
     def __len__(self) -> int:
@@ -56,6 +74,14 @@ class WeatherGrid:
 
     def get(self, cell_id: str) -> Cell | None:
         return self.cells.get(cell_id)
+
+    @property
+    def has_weights(self) -> bool:
+        """Vrai si la grille porte les Σ T (version 2) nécessaires à l'indice par département."""
+        return any(c.t_sum for c in self.cells.values())
+
+    def departements(self) -> list[str]:
+        return sorted({d for c in self.cells.values() for d in c.t_sum})
 
     def nearest(self, lat: float, lon: float) -> Cell | None:
         """Cellule la plus proche (équirectangulaire : suffisant à 5 km)."""

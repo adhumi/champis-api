@@ -34,6 +34,14 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS dept_index (
+    dept TEXT NOT NULL,
+    species TEXT NOT NULL,
+    day TEXT NOT NULL,
+    value REAL,
+    coverage REAL NOT NULL,
+    PRIMARY KEY (dept, species, day)
+);
 """
 
 META_GENERATED = "seed_generated"  # date (ISO) de l'amorçage, comparée par l'API au démarrage

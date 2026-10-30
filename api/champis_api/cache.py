@@ -159,6 +159,50 @@ class WeatherCache:
             self.db.execute("DETACH DATABASE seed")
         return n
 
+    # ------------------------------------------------------------------ indice par département
+
+    META_DEPT_INDEX_AT = "dept_index_computed_at"
+    META_DEPT_INDEX_TODAY = "dept_index_today"
+
+    def put_dept_index(
+        self, rows: list[tuple[str, str, str, float | None, float]], today: date, now: datetime
+    ) -> None:
+        """Remplace l'indice entier : (département, espèce, jour ISO, valeur ou None, couverture)."""
+        self.db.execute("DELETE FROM dept_index")
+        self.db.executemany("INSERT INTO dept_index VALUES (?, ?, ?, ?, ?)", rows)
+        self.db.execute(
+            "INSERT OR REPLACE INTO meta VALUES (?, ?)",
+            (self.META_DEPT_INDEX_AT, now.astimezone(UTC).isoformat(timespec="seconds")),
+        )
+        self.db.execute(
+            "INSERT OR REPLACE INTO meta VALUES (?, ?)",
+            (self.META_DEPT_INDEX_TODAY, today.isoformat()),
+        )
+        self.db.commit()
+
+    def dept_index(
+        self, species: list[str] | None = None, day: date | None = None
+    ) -> list[tuple[str, str, str, float | None, float]]:
+        sql = "SELECT dept, species, day, value, coverage FROM dept_index"
+        where, params = [], []
+        if species:
+            where.append(f"species IN ({','.join('?' * len(species))})")
+            params += species
+        if day is not None:
+            where.append("day = ?")
+            params.append(day.isoformat())
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        return self.db.execute(sql + " ORDER BY dept, species, day", params).fetchall()
+
+    def dept_index_meta(self) -> tuple[str, str] | None:
+        """(computed_at, today) du dernier calcul, None si jamais calculé."""
+        at, today = (
+            self.meta_get(self.META_DEPT_INDEX_AT),
+            self.meta_get(self.META_DEPT_INDEX_TODAY),
+        )
+        return (at, today) if at and today else None
+
     # ------------------------------------------------------------------ métadonnées
 
     def meta_get(self, key: str) -> str | None:

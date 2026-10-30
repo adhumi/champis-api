@@ -14,7 +14,7 @@ from champis_pipeline import config, explain, rasterize, terrain, tiles, weather
 from champis_pipeline.check import report as check_report
 from champis_pipeline.config import CRS_CALC, Grid
 from champis_pipeline.scoring import NODATA_U8, decode_u8
-from champis_pipeline.species import host_index
+from champis_pipeline.species import host_index, species_hash
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
@@ -233,7 +233,7 @@ def test_weather_grid(sandbox):
 
     out = weather_grid.build([DEPT], ["boletus_edulis"], out=sandbox["tmp"] / "weather_grid.json")
     data = json.loads(out.read_text(encoding="utf-8"))
-    assert data["version"] == 1
+    assert data["version"] == 2 and data["alt_class_m"] == 300 and data["species_hash"]
     cells = data["cells"]
     # carré de 10 km non aligné sur les 5 km → entre 4 et 9 cellules, toutes dans le Doubs
     assert 4 <= len(cells) <= 9
@@ -243,6 +243,22 @@ def test_weather_grid(sandbox):
         assert 600 <= c["elevation_m"] <= 1200
     # MNT 600 → 1 200 m : les classes 750, 1050 (et 450/1350 aux bords) doivent apparaître
     assert {750, 1050} <= {a for c in cells for a in c["alt_classes"]}
+    # version 2 : Σ T par département, classe d'altitude et espèce, poids de l'indice par département
+    for c in cells:
+        assert set(c["t_sum"]) == {DEPT}
+        by_alt = c["t_sum"][DEPT]
+        assert set(by_alt) <= {str(a) for a in c["alt_classes"]}
+        for by_sp in by_alt.values():
+            assert set(by_sp) <= {"boletus_edulis"}
+            # Σ T ≤ nombre de pixels de la classe dans la cellule (T ≤ 1), et > 0 (sinon omis)
+            assert all(0 < v <= (5000 / 25) ** 2 for v in by_sp.values())
+    total = sum(v for c in cells for by_sp in c["t_sum"][DEPT].values() for v in by_sp.values())
+    with rasterio.open(
+        sandbox["tmp"] / "t" / "boletus_edulis" / f"{DEPT}-{species_hash('boletus_edulis')}.tif"
+    ) as src:
+        t = src.read(1)
+        expected = float(np.where(t == 255, 0, t / 254.0).sum())
+    assert total == pytest.approx(expected, rel=1e-3)
 
 
 class _FakeGbif:
