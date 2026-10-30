@@ -1,13 +1,13 @@
 # Champis — monorepo
 
-Cartes de cueillette de champignons (France, 25 m) : pipeline terrain, API météo, site champis.adhumi.fr. Usage perso et proches, pas commercial. La spec vit dans le doc « Spec — Champis » ; les skills `.claude/skills/*` disent comment travailler ici — lis `champis-model` avant tout code qui touche un score.
+Cartes de cueillette de champignons (France, 25 m) : pipeline terrain, API météo, site champis.adhumi.fr. Pensé d'abord pour Adrien et ses proches, puis ouvert à tous, infrastructure financée par dons (spec, 30 oct. 2026). La spec vit dans le doc « Spec — Champis » ; les skills `.claude/skills/*` disent comment travailler ici — lis `champis-model` avant tout code qui touche un score.
 
 ## Structure
 
 ```
 species/      fichiers espèces JSON + SCHEMA.md + validate.py   (skill species-file)
 mapping/      bdforet_to_hosts.json : 32 codes TFV → hôtes
-shared/       palette.json, vectors/ (contrat de parité JS/Swift)   (skill scoring-parity)
+shared/       palette.json, vectors/ (contrat de parité Python/Swift) (skill scoring-parity)
 pipeline/     champis_pipeline : download → grid → terrain → tiles   (skill geo-pipeline)
 api/          champis_api : scoring M/Φ, vecteurs, [FastAPI à venir] (skill open-meteo)
 web/          [site à venir]
@@ -40,6 +40,7 @@ uv run champis-pipeline soil-clim [--years 2016-2025]  # climatologie du sol ERA
 
 ## Règles
 
+- Jamais de commit poussé sur `main` sans PR : branche, PR, CI verte, fusion (règle du 30 oct. 2026).
 - Jamais de valeur d'espèce dans le code : tout vient de `species/*.json`.
 - Jointure BD Forêt sur `CODE_TFV` uniquement. `rain_sum`, jamais `precipitation_sum`.
 - Tests sans réseau : fixtures et données synthétiques (`pipeline/tests/test_pipeline_e2e.py` montre comment).
