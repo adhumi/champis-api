@@ -36,7 +36,7 @@ select = ["E", "F", "I", "B", "UP", "N", "W", "SIM", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["pipeline/tests", "api/tests"]
+testpaths = ["pipeline/tests", "api/tests", "web/tests"]
 addopts = "-q"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
