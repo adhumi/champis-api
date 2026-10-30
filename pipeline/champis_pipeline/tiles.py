@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import io
 import logging
+import math
 import multiprocessing
 import os
 import sqlite3
@@ -235,10 +236,24 @@ def _render_chunk(
     return out
 
 
+WINDOW_MARGIN = 1  # pixels source ajoutés autour de la fenêtre d'une tuile
+
+
 def _source_window(src: rasterio.DatasetReader, left, bottom, right, top) -> Window | None:
-    """Fenêtre source couvrant l'emprise Web Mercator donnée, ou None si hors mosaïque."""
+    """Fenêtre source couvrant *entièrement* l'emprise Web Mercator donnée, ou None si hors mosaïque.
+
+    Bords arrondis vers l'extérieur (floor / ceil) plus `WINDOW_MARGIN` pixel : un arrondi au plus
+    proche perdait la dernière colonne ou ligne de pixels 25 m au bord de la tuile, d'où une bande
+    nodata (transparente) le long de chaque couture de tuile. Lire un pixel de trop est sans effet,
+    la reprojection ne garde que ce qui tombe dans la tuile.
+    """
     sw, ss, se, sn = transform_bounds(CRS_TILES, src.crs, left, bottom, right, top)
-    win = from_bounds(sw, ss, se, sn, src.transform).round_offsets().round_lengths()
+    raw = from_bounds(sw, ss, se, sn, src.transform)
+    col0 = math.floor(raw.col_off) - WINDOW_MARGIN
+    row0 = math.floor(raw.row_off) - WINDOW_MARGIN
+    col1 = math.ceil(raw.col_off + raw.width) + WINDOW_MARGIN
+    row1 = math.ceil(raw.row_off + raw.height) + WINDOW_MARGIN
+    win = Window(col0, row0, col1 - col0, row1 - row0)
     try:
         win = win.intersection(Window(0, 0, src.width, src.height))
     except (ValueError, rasterio.errors.WindowError):  # pas de recouvrement
