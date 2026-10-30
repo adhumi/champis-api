@@ -1,6 +1,6 @@
 # champis-api
 
-Service FastAPI sans état : scoring météo `M × Φ` par cellule, indice par département pour la vue France, fichiers espèces, palette. Aucun calcul géographique (tout est dans les tuiles). Spec › « Backend sur Railway ».
+Service FastAPI : scoring météo `M × Φ` par cellule, indice par département pour la vue France, fichiers espèces, palette ; observations terrain et « mes coins » de l'app dans Postgres, avec la notification récapitulative du matin. Aucun calcul géographique (tout est dans les tuiles). Spec › « Backend sur Railway ».
 
 ```bash
 uv run champis-pipeline weather-grid --depts 25        # produit data/weather_grid.json
@@ -19,7 +19,7 @@ Un seul service, `Dockerfile` et `railway.toml` à la racine du dépôt (spec �
 
 1. Versionner la grille météo : `uv run champis-pipeline weather-grid --depts all`, puis `git add data/weather_grid.json` (exception à `data/` ignoré). L'amorçage, lui, va dans le bucket : `uv run champis-api seed` (base SQLite `data/weather_seed.db`, reprise possible) puis `uv run champis-api publish-seed` ; l'API le télécharge et l'importe au démarrage quand sa date change. L'ancien `data/weather_seed.json` du Doubs reste un repli local tant qu'aucun amorçage n'est publié.
 2. Railway → New Project → Deploy from GitHub repo `adhumi/champis`, branche `main`. Le build utilise le `Dockerfile`.
-3. Ajouter un **volume** monté sur `/data` (le cache SQLite `weather_cache.db` y vit ; sans volume, chaque déploiement repart à froid).
+3. Ajouter un **volume** monté sur `/data` (le cache SQLite `weather_cache.db` y vit ; sans volume, chaque déploiement repart à froid). Ajouter un service **Postgres** et le connecter au service API : Railway injecte `DATABASE_URL`, les tables se créent au démarrage.
 4. Variables déjà fixées dans l'image : `CHAMPIS_WEATHER_GRID`, `CHAMPIS_CACHE_DB=/data/weather_cache.db`, `CHAMPIS_WARM_HOURS=3,15` (pré-chauffe intégrée à 3 h et 15 h Paris, pas de second service). **À ajouter : `CHAMPIS_OPEN_METEO_API_KEY`** (plan payant Open-Meteo, en variable secrète Railway : l'IP de sortie Railway est partagée et bridée sur l'API gratuite). Optionnel : `CHAMPIS_WARM_ON_START=1` pour chauffer au premier déploiement (puis à retirer : chaque redéploiement relancerait un passage complet), `CHAMPIS_CORS_ORIGINS` pour restreindre.
 5. Health check : `/health`. La carte est servie par le même service sur `/web/` (l'URL de l'API y est pré-remplie avec l'origine de la page).
 
@@ -39,6 +39,12 @@ Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket vien
 | `CHAMPIS_WARM_HOURS` | *(vide)* | Heures Paris de la pré-chauffe intégrée, ex. `3,15` ; vide = cron externe (`champis-api warm`) |
 | `CHAMPIS_WARM_ON_START` | `0` | `1` : pré-chauffe au démarrage |
 | `CHAMPIS_SERVE_WEB` | `1` | Servir `web/`, `shared/`, `species/` en statique |
+| `DATABASE_URL` (ou `CHAMPIS_DATABASE_URL`) | `sqlite:///data/champis.db` | Observations et coins : Postgres Railway (variable injectée par le service Postgres, « Connect ») ; en local sans Postgres, SQLite. Vide = `/observations` et `/coins` en 503 |
+| `CHAMPIS_APNS_KEY`, `CHAMPIS_APNS_KEY_ID`, `CHAMPIS_APNS_TEAM_ID` | *(vides)* | Clé APNs `.p8` (contenu PEM en variable secrète, ou chemin), son identifiant, l'identifiant d'équipe Apple. Sans eux, aucune notification n'est envoyée |
+| `CHAMPIS_APNS_TOPIC` | `fr.adhumi.champis` | Sujet APNs = identifiant de bundle de l'app |
+| `CHAMPIS_NOTIFY_HOURS` | `7` | Heure(s) Paris de la notification « mes coins », après la pré-chauffe de 3 h ; vide = jamais |
+| `CHAMPIS_RATE_READ`, `CHAMPIS_RATE_WRITE` | `120`, `20` | Requêtes par minute et par IP, lectures et écritures (`POST`/`PUT`/`DELETE`) ; au-delà 429 + `Retry-After` |
+| `CHAMPIS_MAX_BODY` | `262144` | Taille maximale d'un corps d'écriture (octets) ; au-delà 413 |
 
 ## PMTiles : bucket et `/tiles`
 
@@ -58,6 +64,20 @@ Les tuiles ne tiennent ni dans l'image ni dans le dépôt (France ≈ 2–4 Go p
 - `GET /weather/bbox?min_lon&min_lat&max_lon&max_lat[&species][&day]` — même chose pour toutes les cellules de l'emprise (chaque `cell` avec `id`, `lat`, `lon`, `alt_classes`, `elevation_m`), sans `factors`, pour peindre la carte d'un coup. Les cellules sans météo (Open-Meteo injoignable, rien en cache) sont listées dans `unavailable` avec `retry_after` au lieu de faire échouer la réponse.
 
 Le client choisit la classe d'altitude de son pixel ; le score affiché est `T × M_eff × phi`.
+
+### Retour terrain et mes coins (app seulement)
+
+Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier lancement et gardé dans le trousseau iCloud. Pas de compte. Tout ce qui suit est privé à cet identifiant ; `DELETE /observations` efface tout (observations, coins, jeton) : droit RGPD.
+
+- `POST /observations` — `{"observations": [{id, species, lat, lon, accuracy_m?, date, found, quantity?}]}` (≤ 200), 201 → `{"inserted", "duplicates"}`. Idempotent par `id` : renvoyer un lot après une coupure réseau ne crée rien. `quantity` 1–3 obligatoire si `found`, interdite sinon ; pas de photo, pas de texte libre.
+- `GET /observations` — les miennes, les plus récentes d'abord.
+- `DELETE /observations` — `{"deleted": n}`.
+- `PUT /coins` — `{"apns_token"?, "sandbox"?, "coins": [{id, name, lat, lon, target, alt_class, t}]}` (≤ 50) : remplace la liste complète (le serveur ne fusionne pas) et le jeton de notification. `target` = espèce ou groupe affiché ; `alt_class` = centre de la classe d'altitude du pixel (couche A) ; `t` = `{espèce: T}` lu par l'app dans les tuiles au moment où le coin est créé — le backend n'a pas les tuiles.
+- `GET /coins` — mes coins avec `score` du jour (max sur les espèces de `T_e × M_eff_e × Φ_e`, cellule la plus proche, classe d'altitude du coin), `leading`, et `best_day`/`best` si un jour de J+1 à J+7 fait mieux.
+
+**Notification** (`champis_api.coins.notify_all`, tâche intégrée à `CHAMPIS_NOTIFY_HOURS`, ou `champis-api notify` à la main) : après la pré-chauffe du matin, une seule notification par appareil, récapitulative, envoyée seulement si au moins un coin est « bon » ou « excellent » (seuil lu dans `shared/palette.json`). Un jeton refusé par APNs (`Unregistered`, `BadDeviceToken`) est retiré, on n'insiste pas. L'app ne fait aucun rafraîchissement en arrière-plan.
+
+**Protection** (service public) : seau à jetons par IP (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
 
 ## Open-Meteo (skill `open-meteo`)
 

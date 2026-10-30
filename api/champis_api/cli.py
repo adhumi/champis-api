@@ -1,5 +1,5 @@
 """CLI : `champis-api warm [--interval 2]` — pré-chauffe du cache météo puis indice par département
-(cron, sur Railway) ;
+(cron, sur Railway) ; `champis-api notify` — notification récapitulative « mes coins », une fois ;
 `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
 l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
 de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket."""
@@ -15,11 +15,14 @@ from pathlib import Path
 import httpx
 from champis_pipeline.species import list_species
 
+from .apns import ApnsClient
 from .cache import WeatherCache
+from .coins import notify_all
 from .departements import compute as compute_dept_index
 from .grid import WeatherGrid
 from .seed import publish_seed, seed
 from .settings import Settings
+from .store import Store
 from .warm import WARM_INTERVAL_S, warm
 from .weather_client import OpenMeteoClient
 
@@ -67,6 +70,39 @@ async def _seed(out: Path, interval: float, climatology: bool) -> int:
     return 0 if info["history_cells"] == info["grid_cells"] else 1
 
 
+async def _notify() -> int:
+    settings = Settings()
+    if not settings.apns_configured:
+        raise SystemExit(
+            "APNs non configuré : CHAMPIS_APNS_KEY, _KEY_ID, _TEAM_ID (et _TOPIC) requis"
+        )
+    grid = WeatherGrid.load(settings.weather_grid)
+    cache = WeatherCache(settings.cache_db)
+    store = Store(settings.database_url)
+    try:
+        async with (
+            httpx.AsyncClient(headers={"User-Agent": "champis-api notify"}) as http,
+            httpx.AsyncClient(http2=True, timeout=10.0) as http2,
+        ):
+            client = OpenMeteoClient(http, cache, api_key=settings.open_meteo_api_key)
+            apns = ApnsClient(
+                http2,
+                settings.apns_key_pem,
+                settings.apns_key_id,
+                settings.apns_team_id,
+                settings.apns_topic,
+            )
+            r = await notify_all(store, grid, client, apns)
+    finally:
+        store.close()
+        cache.close()
+    print(
+        f"{r.devices} appareils, {r.sent} notifications envoyées, {r.skipped} sans rien à annoncer, "
+        f"{r.failed} échecs ({r.tokens_cleared} jetons retirés)"
+    )
+    return 0 if r.failed == 0 else 1
+
+
 def _publish_seed(path: Path) -> int:
     from champis_pipeline.progress import tqdm
     from champis_pipeline.storage import Bucket, S3Config
@@ -102,7 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     p = sub.add_parser("publish-seed", help="dépose la base d'amorçage dans le bucket")
     p.add_argument("--seed", type=Path, default=Settings().weather_seed_db)
+    sub.add_parser("notify", help="envoie la notification récapitulative « mes coins » (une fois)")
     args = ap.parse_args(argv)
+    if args.cmd == "notify":
+        return asyncio.run(_notify())
     if args.cmd == "seed":
         return asyncio.run(_seed(args.out, args.interval, args.climatology))
     if args.cmd == "publish-seed":

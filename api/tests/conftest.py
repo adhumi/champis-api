@@ -12,6 +12,7 @@ from champis_api.app import State, create_app
 from champis_api.cache import WeatherCache
 from champis_api.grid import WeatherGrid
 from champis_api.scoring import DailySeries
+from champis_api.store import Store
 from champis_api.weather_client import OpenMeteoClient
 from fixtures.open_meteo import Scenario, transport
 
@@ -142,8 +143,14 @@ def client(scenario: Scenario) -> OpenMeteoClient:
 
 
 @pytest.fixture
-def app(grid: WeatherGrid, client: OpenMeteoClient):
-    return create_app(state=State(grid=grid, client=client, cache=client.cache))
+def store() -> Store:
+    """Observations et coins : SQLite en mémoire, même code que Postgres (SQLAlchemy Core)."""
+    return Store("sqlite://")
+
+
+@pytest.fixture
+def app(grid: WeatherGrid, client: OpenMeteoClient, store: Store):
+    return create_app(state=State(grid=grid, client=client, cache=client.cache, store=store))
 
 
 @pytest_asyncio.fixture
