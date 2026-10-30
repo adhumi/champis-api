@@ -484,6 +484,86 @@ def test_tile_reductions():
     )  # premier valide dans l'ordre (0,0),(0,1),(1,0),(1,1)
 
 
+def test_tiles_have_no_seams(tmp_path, monkeypatch):
+    """Les tuiles z15 voisines s'emboîtent sans bande nodata ni décalage.
+
+    Mosaïque Lambert-93 entièrement valide (valeurs variées) : chaque tuile intérieure doit être
+    pleine, et 2 × 2 tuiles rendues séparément doivent être identiques au rendu en une seule
+    passe de leur emprise commune (même grille de sortie, donc mêmes pixels aux coutures).
+    Régression : l'arrondi au plus proche de la fenêtre source perdait un pixel 25 m au bord.
+    Transformateur exact (`tolerance=0`) des deux côtés : l'approximation par défaut de GDAL
+    (0,125 px) dépend de l'emprise et ferait basculer quelques pixels isolés, hors sujet ici.
+    """
+    import functools
+
+    import mercantile
+    from champis_pipeline.tiles import NODATA, TILE, _render_tile
+    from rasterio.enums import Resampling
+    from rasterio.transform import from_bounds as transform_from_bounds
+    from rasterio.warp import reproject as _reproject
+    from rasterio.warp import transform_bounds
+
+    reproject = functools.partial(_reproject, tolerance=0)
+    monkeypatch.setattr(tiles, "reproject", reproject)
+
+    n = 800  # 20 km × 20 km dans le Vaucluse, aligné sur la grille France
+    g = config.Grid.aligned(880_000, 6_320_000, 880_000 + 25 * n, 6_320_000 + 25 * n, pad_m=0)
+    rng = np.random.default_rng(0)
+    data = rng.integers(0, 254, size=(n, n), dtype=np.uint8)
+    path = tmp_path / "full.tif"
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        width=n,
+        height=n,
+        count=1,
+        dtype="uint8",
+        crs=CRS_CALC,
+        transform=g.transform(),
+        nodata=NODATA,
+    ) as dst:
+        dst.write(data, 1)
+
+    with rasterio.open(path) as src:
+        w, s, e, nn = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
+        ul, lr = mercantile.tile(w, nn, tiles.MAX_ZOOM), mercantile.tile(e, s, tiles.MAX_ZOOM)
+        xs, ys = range(ul.x + 2, lr.x - 1), range(ul.y + 2, lr.y - 1)
+        assert len(xs) >= 4 and len(ys) >= 4
+        for x in xs:
+            for y in ys:
+                arr = _render_tile(src, mercantile.Tile(x, y, tiles.MAX_ZOOM))
+                assert arr is not None and not np.any(arr == NODATA), (x, y)
+
+        # 2 × 2 tuiles séparées == une passe 512 × 512 sur leur emprise commune
+        x, y = xs[1], ys[1]
+        stitched = np.empty((2 * TILE, 2 * TILE), dtype=np.uint8)
+        for i in range(2):
+            for j in range(2):
+                stitched[j * TILE : (j + 1) * TILE, i * TILE : (i + 1) * TILE] = _render_tile(
+                    src, mercantile.Tile(x + i, y + j, tiles.MAX_ZOOM)
+                )
+        bl, tr = (
+            mercantile.xy_bounds(x, y + 1, tiles.MAX_ZOOM),
+            mercantile.xy_bounds(x + 1, y, tiles.MAX_ZOOM),
+        )
+        whole = np.full((2 * TILE, 2 * TILE), NODATA, dtype=np.uint8)
+        reproject(
+            src.read(1),
+            whole,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            dst_transform=transform_from_bounds(
+                bl.left, bl.bottom, tr.right, tr.top, 2 * TILE, 2 * TILE
+            ),
+            dst_crs=config.CRS_TILES,
+            resampling=Resampling.nearest,
+            src_nodata=NODATA,
+            dst_nodata=NODATA,
+        )
+        np.testing.assert_array_equal(stitched, whole)
+
+
 class _FakeBucket:
     """Même contrat que champis_pipeline.storage.Bucket, en mémoire."""
 
