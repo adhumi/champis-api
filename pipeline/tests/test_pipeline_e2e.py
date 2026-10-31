@@ -183,6 +183,54 @@ def test_tile_position_and_value(sandbox):
         assert reader.get(15, t2.x, t2.y) is None
 
 
+def test_extract_dept_subset_of_france_set(sandbox):
+    """Un jeu par département sort du MBTiles de travail du jeu complet sans rien re-rendre : même
+    tuiles sur l'emprise entière, sous-ensemble sur une emprise réduite, tuile de la hêtraie présente."""
+    import mercantile
+    from pmtiles.reader import MmapSource, Reader
+    from rasterio.warp import transform as rio_transform
+
+    shp, grid = sandbox["shp"], sandbox["grid"]
+    rasterize.host_cover(DEPT, shp, grid)
+    rasterize.ph(DEPT, sandbox["ph"], grid)
+    rasterize.dem_products(DEPT, [sandbox["dem"]], grid)
+    terrain.compute(DEPT, "boletus_edulis")
+    full = tiles.build("boletus_edulis", [DEPT])
+    src = tiles.work_mbtiles("T", full.stem.removeprefix("T-"))
+    assert src.exists()
+    total = sqlite3.connect(src).execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+
+    bounds = tiles.dept_bounds("T", DEPT, "boletus_edulis")
+    whole = full.parent / "T-extrait-tout.pmtiles"
+    assert tiles.extract(src, whole, bounds, "T", "test") == total
+
+    # emprise réduite autour de la hêtraie : moins de tuiles, mais la sienne y est à chaque niveau
+    x, y = 930_000 + 2_500, 6_680_000 + 7_500
+    (lon,), (lat,) = rio_transform(CRS_CALC, "EPSG:4326", [x], [y])
+    small = full.parent / "T-extrait-hetraie.pmtiles"
+    n = tiles.extract(src, small, (lon - 0.01, lat - 0.01, lon + 0.01, lat + 0.01), "T", "test")
+    assert 0 < n < total
+    with open(small, "rb") as f:
+        reader = Reader(MmapSource(f))
+        for z in (10, 15):
+            t = mercantile.tile(lon, lat, z)
+            assert reader.get(z, t.x, t.y) is not None, z
+        (lon2,), (lat2,) = rio_transform(CRS_CALC, "EPSG:4326", [x - 20_000], [y])
+        t2 = mercantile.tile(lon2, lat2, 15)
+        assert reader.get(15, t2.x, t2.y) is None
+    meta = (
+        sqlite3.connect(tiles.work_mbtiles("T", "extrait-hetraie"))
+        .execute("SELECT value FROM metadata WHERE name = 'bounds'")
+        .fetchone()[0]
+    )
+    assert meta.startswith(f"{lon - 0.01}")
+
+    # build_dept : le jeu d'un seul département est déjà le jeu complet ici (même hash) ; avec un
+    # jeu complet absent, repli sur le rendu du département, qui existe déjà
+    assert tiles.build_dept("boletus_edulis", DEPT, [DEPT]) == full
+    assert tiles.build_dept("boletus_edulis", DEPT, ["00", DEPT]) == full
+
+
 def test_alt_layer_matches_weather_grid_classes(sandbox):
     """La couche A porte l'indice de classe du pixel ; son centre est une classe de la cellule météo."""
     import io
@@ -652,6 +700,40 @@ def test_publish_uploads_once_and_builds_manifest(tmp_path):
     assert sorted(t["name"] for t in m["tiles"]) == sorted(names2)
     assert list(m["depts_by_hash"].values()) == [["25", "39"]]
     assert MANIFEST_KEY in bucket.objects and not any("d" + _h(["25"]) in k for k in bucket.objects)
+
+
+def test_publish_per_dept_adds_one_set_per_department(tmp_path):
+    from champis_pipeline import publish
+    from champis_pipeline.tiles import _depts_hash as _h
+
+    assert publish.dept_sets(["39", "25"], per_dept=False) == [["25", "39"]]
+    assert publish.dept_sets(["39", "25"], per_dept=True) == [["25", "39"], ["25"], ["39"]]
+    assert publish.dept_sets(["25"], per_dept=True) == [["25"]]  # un seul : déjà son propre jeu
+
+    depts, species = ["25", "39"], ["boletus_edulis"]
+    names = {n for s in publish.dept_sets(depts, True) for n in publish.expected_names(s, species)}
+    assert len(names) == 6  # (T + A) × (France, 25, 39)
+    for n in names:
+        (tmp_path / n).write_bytes(b"z" * 10)
+    bucket = _FakeBucket()
+    m = publish.publish(bucket, depts, species, tiles_dir=tmp_path, per_dept=True)
+    assert sorted(bucket.uploads) == sorted("tiles/" + n for n in names)
+    assert m["depts_by_hash"] == {_h(depts): ["25", "39"], _h(["25"]): ["25"], _h(["39"]): ["39"]}
+    by_name = {t["name"]: t for t in m["tiles"]}
+    assert len(by_name) == 6
+    dept_of = {t["name"]: t.get("dept") for t in m["tiles"]}
+    assert sorted(d for d in dept_of.values() if d) == ["25", "25", "39", "39"]
+    france = [t for t in m["tiles"] if "dept" not in t]
+    assert len(france) == 2 and {t["depts_hash"] for t in france} == {_h(depts)}
+    # prune garde tous les jeux publiés par cet appel, et rien d'autre
+    stale = "tiles/T-boletus_edulis-00000000-p1.0.0-dabcdef.pmtiles"
+    bucket.objects[stale] = b"old"
+    m = publish.publish(bucket, depts, species, tiles_dir=tmp_path, prune=True, per_dept=True)
+    assert stale not in bucket.objects
+    assert len(m["tiles"]) == 6 and len(m["depts_by_hash"]) == 3
+    # sans per_dept et avec prune : les jeux par département disparaissent
+    m = publish.publish(bucket, depts, species, tiles_dir=tmp_path, prune=True)
+    assert len(m["tiles"]) == 2 and list(m["depts_by_hash"]) == [_h(depts)]
 
 
 def test_s3_config_from_env_accepts_railway_generic_names(monkeypatch):

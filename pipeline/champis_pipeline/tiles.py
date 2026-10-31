@@ -288,13 +288,7 @@ def _render_tile(src: rasterio.DatasetReader, t: mercantile.Tile) -> np.ndarray 
 def _mbtiles(src_path: Path, out: Path, name: str, description: str, kind: str, jobs: int) -> None:
     out.unlink(missing_ok=True)
     db = sqlite3.connect(out)
-    db.executescript(
-        """
-        CREATE TABLE metadata (name TEXT, value TEXT);
-        CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);
-        CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row);
-        """
-    )
+    db.executescript(MBTILES_SCHEMA)
     with rasterio.open(src_path) as src:
         w, south, e, n = transform_bounds(src.crs, "EPSG:4326", *src.bounds)
     db.executemany(
@@ -392,3 +386,117 @@ def _reduce_zoom(db: sqlite3.Connection, z: int, reduce) -> int:
             rows = []
     _insert(db, z, rows)
     return count + len(rows)
+
+
+# ---------------------------------------------------------------- jeux par département
+
+MBTILES_SCHEMA = """
+CREATE TABLE metadata (name TEXT, value TEXT);
+CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);
+CREATE UNIQUE INDEX tile_index ON tiles (zoom_level, tile_column, tile_row);
+"""
+
+
+def work_mbtiles(kind: str, tag: str) -> Path:
+    """MBTiles de travail laissé par `_build` (`data/tiles/_work/<kind>-<tag>/<kind>.mbtiles`)."""
+    return TILES_DIR / "_work" / f"{kind}-{tag}" / f"{kind}.mbtiles"
+
+
+def dept_bounds(
+    kind: str, dept: str, species_id: str | None = None
+) -> tuple[float, float, float, float]:
+    """Emprise WGS84 (ouest, sud, est, nord) du raster source du département : T de l'espèce
+    (`kind = "T"`) ou classes d'altitude (`kind = "A"`)."""
+    if kind == "T":
+        if species_id is None:
+            raise ValueError("species_id requis pour l'emprise T")
+        src = T_DIR / species_id / f"{dept}-{species_hash(species_id)}.tif"
+    else:
+        src = dept_dirs(dept)["grid"] / "alt.tif"
+    with rasterio.open(src) as s:
+        return transform_bounds(s.crs, "EPSG:4326", *s.bounds)
+
+
+def extract(src_mbtiles: Path, out: Path, bounds, name: str, description: str) -> int:
+    """Copie dans `out` (PMTiles) les tuiles de `src_mbtiles` dont l'emprise touche `bounds`, à tous
+    les niveaux, sans rien re-rendre : c'est ainsi qu'un jeu par département sort du jeu France en
+    quelques secondes (décision du 31 oct. 2026). Les tuiles de bord gardent les pixels des voisins,
+    qui sont exacts. Renvoie le nombre de tuiles copiées."""
+    w, s, e, n = bounds
+    work = TILES_DIR / "_work" / out.stem
+    work.mkdir(parents=True, exist_ok=True)
+    kind = out.stem.split("-")[0]
+    mbt = work / f"{kind}.mbtiles"
+    mbt.unlink(missing_ok=True)
+    db = sqlite3.connect(mbt)
+    db.executescript(MBTILES_SCHEMA)
+    db.execute("ATTACH DATABASE ? AS src", (str(src_mbtiles),))
+    meta = dict(db.execute("SELECT name, value FROM src.metadata").fetchall())
+    meta.update({"name": name, "description": description, "bounds": f"{w},{s},{e},{n}"})
+    db.executemany("INSERT INTO metadata VALUES (?, ?)", list(meta.items()))
+    count = 0
+    for z in range(MIN_ZOOM, MAX_ZOOM + 1):
+        ul = mercantile.tile(w, n, z)
+        lr = mercantile.tile(e, s, z)
+        rows = ((2**z - 1) - lr.y, (2**z - 1) - ul.y)  # schéma TMS : ligne inversée
+        cur = db.execute(
+            "INSERT INTO tiles SELECT zoom_level, tile_column, tile_row, tile_data FROM src.tiles "
+            "WHERE zoom_level = ? AND tile_column BETWEEN ? AND ? AND tile_row BETWEEN ? AND ?",
+            (z, ul.x, lr.x, rows[0], rows[1]),
+        )
+        count += cur.rowcount
+    db.commit()
+    db.execute("DETACH DATABASE src")
+    db.close()
+    from pmtiles.convert import mbtiles_to_pmtiles
+
+    out.unlink(missing_ok=True)
+    mbtiles_to_pmtiles(str(mbt), str(out), MAX_ZOOM)
+    return count
+
+
+def build_dept(
+    species_id: str, dept: str, all_depts: list[str], force: bool = False, jobs: int | None = None
+) -> Path:
+    """Jeu d'un seul département pour une espèce, pour le hors ligne de l'app : extrait du MBTiles
+    de travail du jeu `all_depts` quand il existe, sinon rendu complet du département."""
+    h = species_hash(species_id)
+    tag = f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash([dept])}"
+    out = TILES_DIR / f"T-{tag}.pmtiles"
+    if out.exists() and not force:
+        return out
+    src = work_mbtiles("T", f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash(all_depts)}")
+    if not src.exists():
+        return build(species_id, [dept], force, jobs)
+    n = extract(
+        src,
+        out,
+        dept_bounds("T", dept, species_id),
+        f"T {species_id} {dept}",
+        "Champis — potentiel terrain, gris 8 bits = T × 254, alpha 0 = hors forêt",
+    )
+    log.info("écrit %s (%d tuiles extraites)", out, n)
+    return out
+
+
+def build_alt_dept(
+    dept: str, all_depts: list[str], force: bool = False, jobs: int | None = None
+) -> Path:
+    """Couche A d'un seul département (voir `build_dept`)."""
+    tag = f"{ALT_CLASS_M}m-d{_depts_hash([dept])}"
+    out = TILES_DIR / f"A-{tag}.pmtiles"
+    if out.exists() and not force:
+        return out
+    src = work_mbtiles("A", f"{ALT_CLASS_M}m-d{_depts_hash(all_depts)}")
+    if not src.exists():
+        return build_alt([dept], force, jobs)
+    n = extract(
+        src,
+        out,
+        dept_bounds("A", dept),
+        f"A classes d'altitude {dept}",
+        f"Champis — classe d'altitude, gris 8 bits = indice k de [{ALT_CLASS_M}k, "
+        f"{ALT_CLASS_M}(k+1)[ m, alpha 0 = altitude inconnue",
+    )
+    log.info("écrit %s (%d tuiles extraites)", out, n)
+    return out

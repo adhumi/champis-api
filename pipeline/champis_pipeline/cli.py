@@ -49,9 +49,16 @@ def cmd_tiles(args) -> None:
 
     depts = parse_depts(args.depts)
     jobs = getattr(args, "jobs", None)
-    for sid in _species(args):
+    species = _species(args)
+    for sid in species:
         print(tiles.build(sid, depts, args.force, jobs))
     print(tiles.build_alt(depts, args.force, jobs))  # couche A, commune à toutes les espèces
+    if getattr(args, "per_dept", False) and len(depts) > 1:
+        # jeux par département pour le hors ligne de l'app : extraits du jeu complet, pas re-rendus
+        for d in depts:
+            for sid in species:
+                print(tiles.build_dept(sid, d, depts, args.force, jobs))
+            print(tiles.build_alt_dept(d, depts, args.force, jobs))
 
 
 def cmd_weather_grid(args) -> None:
@@ -140,7 +147,11 @@ def cmd_publish(args) -> None:
     if cfg is None:
         raise SystemExit("bucket non configuré : CHAMPIS_S3_ENDPOINT et CHAMPIS_S3_BUCKET requis")
     manifest = publish.publish(
-        Bucket(cfg), batch.parse_depts(args.depts), _species(args), prune=args.prune
+        Bucket(cfg),
+        batch.parse_depts(args.depts),
+        _species(args),
+        prune=args.prune,
+        per_dept=args.per_dept,
     )
     for t in manifest["tiles"]:
         print(f"{t['name']}  {t['bytes'] / 1e6:.1f} Mo")
@@ -186,6 +197,11 @@ def main(argv: list[str] | None = None) -> int:
         p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")
         if name == "tiles":
             p.add_argument("--jobs", type=int, default=None, help="processus pour le niveau 15")
+            p.add_argument(
+                "--per-dept",
+                action="store_true",
+                help="aussi un jeu par département, extrait du jeu complet (hors ligne de l'app)",
+            )
         p.set_defaults(fn=fn)
     p = sub.add_parser("soil-clim")
     p.add_argument("--grid", type=Path, default=DATA_DIR / "weather_grid.json")
@@ -197,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--prune", action="store_true", help="supprimer du bucket les autres jeux de départements"
     )
+    p.add_argument("--per-dept", action="store_true", help="publier aussi les jeux par département")
     p.set_defaults(fn=cmd_publish)
     p = sub.add_parser("batch", parents=[common])
     p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")

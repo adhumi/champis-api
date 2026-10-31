@@ -154,7 +154,11 @@ def build_manifest(
         info = parse_tile_name(name)
         if info is None:
             continue
-        tiles.append({**info, "name": name, "key": key, "bytes": size})
+        entry = {**info, "name": name, "key": key, "bytes": size}
+        members = depts_by_hash.get(info["depts_hash"])
+        if members and len(members) == 1:
+            entry["dept"] = members[0]  # jeu d'un seul département : hors ligne de l'app
+        tiles.append(entry)
     return {
         "version": MANIFEST_VERSION,
         "generated": generated,

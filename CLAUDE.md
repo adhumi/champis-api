@@ -29,12 +29,12 @@ uv run champis-pipeline download --dept 25
 uv run champis-pipeline grid     --dept 25
 uv run champis-pipeline terrain  --dept 25 [--species boletus_edulis]
 uv run champis-pipeline summary  --dept 25
-uv run champis-pipeline tiles    --depts 25 [--species …]
+uv run champis-pipeline tiles    --depts 25 [--species …] [--per-dept]  # --per-dept : aussi un jeu par département, extrait du jeu complet
 uv run champis-pipeline all      --dept 25
 uv run champis-pipeline batch    --depts all --jobs 3   # download+grid+terrain, parallèle, reprise
 uv run champis-pipeline check    --dept 25              # contrôle GBIF
 uv run champis-pipeline explain  --dept 25 --species boletus_edulis
-uv run champis-pipeline publish  --depts 25 [--prune]  # PMTiles → bucket Railway + manifeste ; --prune efface les autres jeux
+uv run champis-pipeline publish  --depts 25 [--prune] [--per-dept]  # PMTiles → bucket Railway + manifeste ; --prune efface les autres jeux ; --per-dept publie aussi les jeux par département (hors ligne de l'app)
 uv run champis-pipeline soil-clim [--years 2016-2025]  # climatologie du sol ERA5-Land (CDS) → data/weather_seed.db
 ```
 
