@@ -202,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _doctor(offline: bool) -> int:
     from .doctor import render, run_checks
 
-    render(run_checks(offline=offline))
+    render(run_checks(Settings(), offline=offline))
     return 0  # un état des lieux, pas un échec : `make doctor` reste silencieux côté make
 
 

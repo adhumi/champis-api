@@ -10,7 +10,7 @@ Prérequis : Python 3.12+, [uv](https://docs.astral.sh/uv/), ~5 Go de disque pou
 
 ```bash
 make setup                         # uv sync --group dev, .env depuis .env.example
-make test                          # 142 tests, dont une chaîne complète sur un département synthétique
+make test                          # ~210 tests, dont une chaîne complète sur un département synthétique
 make dept DEPT=25                  # = uv run champis-pipeline all --dept 25
 ```
 
@@ -52,6 +52,23 @@ all --dept 25 · 7 espèce(s)
 …
 25 prêt en 14 min 02 s · journal : data/logs/all-20261031-150102.log
 ```
+
+### Tests
+
+`make test` (ou `uv run pytest`) tourne sans réseau : fixtures synthétiques (département de 10 km × 10 km, faux Open-Meteo, faux bucket). La suite est écrite à partir de la spec et de `species/SCHEMA.md` ; chaque fichier de test cite la règle qu'il protège.
+
+| Fichiers | Ce qu'ils garantissent |
+| --- | --- |
+| `pipeline/tests/test_spec_contracts.py` | Palette et seuils de la spec, fichiers espèces et table TFV valides, aucune valeur d'espèce dans le code, noms de tuiles et manifeste, forme de `weather_grid.json` |
+| `pipeline/tests/test_terrain.py`, `test_pipeline_e2e.py` | T = hôte × Σ poids × facteur, règles dures, chaîne grid → terrain → tuiles → grille météo, extraction par département, GBIF, explain, publication |
+| `pipeline/tests/test_rasterize.py`, `test_download.py` | Jointure `CODE_TFV` exacte, petits polygones gagnants, pH nodata jamais moyenné, pente et exposition ; téléchargements idempotents, md5, WCS en erreur, dalles DEM absentes |
+| `pipeline/tests/test_cli.py`, `test_console.py`, `test_status.py`, `test_storage_bucket.py` | Les commandes, leur affichage et leurs codes de retour ; `status`, `publish --dry-run` ; le bucket S3 via botocore |
+| `api/tests/test_scoring.py`, `test_vectors.py`, `test_spec_rules.py` | M, Φ, M_eff, trigger « meilleur événement », correction d'altitude, gel, chaleur, mémoire, persistance, groupes ; vecteurs de parité avec l'app |
+| `api/tests/test_weather_api.py`, `test_departements.py`, `test_observations.py`, `test_coins.py`, `test_ratelimit.py` | Contrats des endpoints, cache 12 h, pannes et quotas Open-Meteo, amorçage, indice par département, retour terrain, coins et notifications, limitation de débit |
+| `api/tests/test_app_lifespan.py`, `test_api_cli.py`, `test_doctor.py` | Démarrage réel de l'API en mode dégradé, planificateurs, commandes `champis-api` de bout en bout |
+| `web/tests/test_png_decoder.py` | Le décodeur PNG du site lit les tuiles du pipeline exactement |
+
+La CI exige une couverture d'au moins 90 % du pipeline et de l'API (`make check`, `make coverage` pour le détail). Ce qui n'est pas couvert et assumé : les appels réseau réels (Géoplateforme, ISRIC, AWS, Open-Meteo, APNs, CDS) et le code du site (`web/app.js`), vérifié à la main dans le navigateur.
 
 ## Phase 2 — l'API météo
 

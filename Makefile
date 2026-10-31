@@ -43,6 +43,10 @@ setup: ## Installe l'environnement (uv sync --group dev) et crée .env depuis .e
 test: ## Tests Python (pipeline, api, web) : `make test ARGS="-k batch"` pour filtrer
 	$(UV) pytest $(ARGS)
 
+.PHONY: coverage
+coverage: ## Tests avec le détail des lignes non couvertes, par fichier
+	$(UV) pytest --cov=champis_pipeline --cov=champis_api --cov-report=term-missing
+
 .PHONY: lint
 lint: ## Ruff : lint + vérification du format, sans rien modifier
 	$(UV) ruff check .
@@ -58,9 +62,9 @@ vectors: ## Régénère shared/vectors/ (contrat de parité Python/Swift) ; à r
 	$(UV) champis-vectors
 
 .PHONY: check
-check: ## Exactement la CI : lint, format, tests, vecteurs à jour, fichiers espèces valides
+check: ## Exactement la CI : lint, format, tests avec couverture ≥ 90 %, vecteurs à jour, fichiers espèces valides
 	$(MAKE) --no-print-directory lint
-	$(UV) pytest
+	$(UV) pytest --cov=champis_pipeline --cov=champis_api --cov-report=term --cov-fail-under=90
 	$(UV) champis-vectors --check
 	$(UV) python species/validate.py
 

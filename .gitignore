@@ -10,3 +10,5 @@ __pycache__/
 *.part
 .env
 .DS_Store
+.coverage
+htmlcov/

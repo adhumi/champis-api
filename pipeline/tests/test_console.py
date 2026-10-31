@@ -197,6 +197,19 @@ def test_setup_writes_dated_log_and_rotates(tmp_path: Path, monkeypatch):
     c.close()
 
 
+def test_quiet_disables_progress_bars_even_after_import(monkeypatch):
+    """`-q` pose CHAMPIS_QUIET après le chargement des modules : la barre doit le lire à l'appel."""
+    from champis_pipeline import progress
+
+    monkeypatch.delenv("CHAMPIS_QUIET", raising=False)
+    monkeypatch.setenv("CHAMPIS_LOG_DIR", "")
+    assert progress.tqdm(total=1).disable is False
+    console.setup("tiles", quiet=True).close()
+    assert progress.tqdm(total=1).disable is True
+    monkeypatch.delenv("CHAMPIS_QUIET")
+    assert progress.tqdm(total=1, disable=True).disable is True
+
+
 def test_duration_and_size():
     assert console.duration(3.24) == "3.2 s"
     assert console.duration(42) == "42 s"

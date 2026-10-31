@@ -29,8 +29,8 @@ jobs:
           uv run ruff check .
           uv run ruff format --check .
 
-      - name: Tests
-        run: uv run pytest
+      - name: Tests (couverture ≥ 90 % du pipeline et de l'API)
+        run: uv run pytest --cov=champis_pipeline --cov=champis_api --cov-report=term --cov-fail-under=90
 
       - name: Vecteurs de parité à jour
         run: uv run champis-vectors --check
