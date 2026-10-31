@@ -1,18 +1,21 @@
-"""CLI : `champis-api warm [--interval 2]` — pré-chauffe du cache météo puis indice par département
-(cron, sur Railway) ; `champis-api notify` — notification récapitulative « mes coins », une fois ;
-`champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
-l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
-de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket."""
+"""CLI : `champis-api [-v|-q] warm [--interval 2]` — pré-chauffe du cache météo puis indice par
+département (cron, sur Railway) ; `champis-api notify` — notification récapitulative « mes coins »,
+une fois ; `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage
+de l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
+de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket.
+
+Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/)."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
-import logging
 import sys
 from pathlib import Path
 
 import httpx
+from champis_pipeline import console
+from champis_pipeline.progress import tqdm
 from champis_pipeline.species import list_species
 
 from .apns import ApnsClient
@@ -28,49 +31,81 @@ from .weather_client import OpenMeteoClient
 
 
 async def _warm(interval: float) -> int:
+    c = console.get()
     settings = Settings()
     grid = WeatherGrid.load(settings.weather_grid)
     settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
     cache = WeatherCache(settings.cache_db)
+    steps = c.steps(2, f"warm · {len(grid.cells)} cellules · une requête toutes les {interval:g} s")
     try:
         async with httpx.AsyncClient(headers={"User-Agent": "champis-api warm"}) as http:
             client = OpenMeteoClient(
                 http, cache, min_interval_s=interval, api_key=settings.open_meteo_api_key
             )
-            report = await warm(grid, client)
-            index = await compute_dept_index(grid, client, cache, list_species())
+            with steps.step("pré-chauffe du cache météo") as step:
+                with tqdm(total=len(grid.cells), desc="cellules", unit="cellule") as bar:
+
+                    def progress(done: int, total: int, unavailable: int, stale: int) -> None:
+                        bar.n = done
+                        bar.set_postfix_str(f"{unavailable} indisponibles, {stale} périmées")
+                        bar.refresh()
+
+                    report = await warm(grid, client, progress=progress)
+                step.note(
+                    f"{report.cells} cellules, {len(report.unavailable)} indisponibles, "
+                    f"{report.stale} servies depuis un cache périmé, ≈ {report.weight:.0f} appels pondérés"
+                )
+            with steps.step("indice par département") as step:
+                index = await compute_dept_index(grid, client, cache, list_species())
+                step.note(
+                    f"{index.departements} départements, {index.cells} cellules "
+                    f"({index.cells_without_weather} sans météo)"
+                )
     finally:
         cache.close()
-    print(
-        f"{report.cells} cellules, {len(report.unavailable)} indisponibles, "
-        f"{report.stale} servies depuis un cache périmé, ≈ {report.weight:.0f} appels pondérés"
-    )
     for cid, reason in sorted(report.unavailable.items()):
-        print(f"  {cid}: {reason}")
-    print(
-        f"indice par département : {index.departements} départements, "
-        f"{index.cells} cellules ({index.cells_without_weather} sans météo)"
-    )
+        c.warn(f"{cid}: {reason}")
+    c.summary("pré-chauffe terminée" if report.ok else "pré-chauffe incomplète")
     return 0 if report.ok else 1
 
 
 async def _seed(out: Path, interval: float, climatology: bool) -> int:
+    c = console.get()
     settings = Settings()
     grid = WeatherGrid.load(settings.weather_grid)
+    steps = c.steps(1, f"seed · {len(grid.cells)} cellules -> {out}")
     async with httpx.AsyncClient(headers={"User-Agent": "champis-api seed"}) as http:
         client = OpenMeteoClient(
             http, WeatherCache(), min_interval_s=interval, api_key=settings.open_meteo_api_key
         )
-        info = await seed(grid, client, out, climatology=climatology)
-    print(
-        f"{out} : historique {info['history_cells']}/{info['grid_cells']} cellules, "
-        f"climatologie {info['cells']}/{info['grid_cells']} ({info['bytes'] / 1e6:.0f} Mo, "
-        f"≈ {client.weight:.0f} appels pondérés)"
-    )
-    return 0 if info["history_cells"] == info["grid_cells"] else 1
+        with steps.step("historique" + (" + climatologie" if climatology else "")) as step:
+            bars: dict[str, tqdm] = {}
+
+            def progress(what: str, done: int, total: int, weight: float) -> None:
+                bar = bars.get(what)
+                if bar is None:
+                    bar = bars[what] = tqdm(total=total, desc=what, unit="cellule")
+                bar.n = done
+                bar.set_postfix_str(f"≈ {weight:.0f} appels pondérés")
+                bar.refresh()
+
+            try:
+                info = await seed(grid, client, out, climatology=climatology, progress=progress)
+            finally:
+                for bar in bars.values():
+                    bar.close()
+            step.note(
+                f"historique {info['history_cells']}/{info['grid_cells']} cellules, "
+                f"climatologie {info['cells']}/{info['grid_cells']} ({console.size(info['bytes'])}, "
+                f"≈ {client.weight:.0f} appels pondérés)"
+            )
+    complete = info["history_cells"] == info["grid_cells"]
+    c.summary("amorçage complet" if complete else "amorçage incomplet : relance pour reprendre")
+    return 0 if complete else 1
 
 
 async def _notify() -> int:
+    c = console.get()
     settings = Settings()
     if not settings.apns_configured:
         raise SystemExit(
@@ -92,37 +127,54 @@ async def _notify() -> int:
                 settings.apns_team_id,
                 settings.apns_topic,
             )
-            r = await notify_all(store, grid, client, apns)
+            with c.steps(1).step("notification « mes coins »") as step:
+                r = await notify_all(store, grid, client, apns)
+                step.note(
+                    f"{r.devices} appareils, {r.sent} envoyées, {r.skipped} sans rien à annoncer, "
+                    f"{r.failed} échecs ({r.tokens_cleared} jetons retirés)"
+                )
     finally:
         store.close()
         cache.close()
-    print(
-        f"{r.devices} appareils, {r.sent} notifications envoyées, {r.skipped} sans rien à annoncer, "
-        f"{r.failed} échecs ({r.tokens_cleared} jetons retirés)"
-    )
     return 0 if r.failed == 0 else 1
 
 
 def _publish_seed(path: Path) -> int:
-    from champis_pipeline.progress import tqdm
     from champis_pipeline.storage import Bucket, S3Config
 
+    c = console.get()
     cfg = S3Config.from_env()
     if cfg is None:
-        raise SystemExit("bucket non configuré : CHAMPIS_S3_ENDPOINT et CHAMPIS_S3_BUCKET requis")
-    with tqdm(
-        total=path.stat().st_size, desc="publish-seed", unit="B", unit_scale=True, unit_divisor=1024
-    ) as bar:
-        info = publish_seed(Bucket(cfg), path, progress=bar.update)
-    print(f"{info['cells']} cellules ({info['generated']}, {info['bytes'] / 1e6:.0f} Mo) publiées")
+        raise SystemExit(
+            "bucket non configuré : AWS_ENDPOINT_URL et AWS_S3_BUCKET_NAME (ou CHAMPIS_S3_*) requis ; "
+            "`cp .env.example .env` et compléter"
+        )
+    if not path.exists():
+        raise SystemExit(
+            f"{path} absent : lancer `champis-api seed` (et `champis-pipeline soil-clim`)"
+        )
+    with c.steps(1).step(
+        f"publish-seed · {path.name} ({console.size(path.stat().st_size)})"
+    ) as step:
+        with tqdm(
+            total=path.stat().st_size,
+            desc="téléversement",
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
+            info = publish_seed(Bucket(cfg), path, progress=bar.update)
+        step.note(f"{info['cells']} cellules ({info['generated']}) -> {cfg.bucket}")
+    c.summary("amorçage publié ; l'API l'importe à son prochain démarrage")
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="champis-api")
-    sub = ap.add_subparsers(dest="cmd", required=True)
-    p = sub.add_parser("warm", help="remplit le cache météo pour toute la grille")
+    ap.add_argument("-v", "--verbose", action="store_true", help="journaux bruts et traces")
+    ap.add_argument("-q", "--quiet", action="store_true", help="sans barres ni détails")
+    sub = ap.add_subparsers(dest="cmd", required=True, metavar="commande")
+    p = sub.add_parser("warm", help="remplit le cache météo pour toute la grille, puis l'indice")
     p.add_argument(
         "--interval", type=float, default=WARM_INTERVAL_S, help="secondes entre requêtes"
     )
@@ -139,7 +191,10 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("publish-seed", help="dépose la base d'amorçage dans le bucket")
     p.add_argument("--seed", type=Path, default=Settings().weather_seed_db)
     sub.add_parser("notify", help="envoie la notification récapitulative « mes coins » (une fois)")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def _dispatch(args) -> int:
     if args.cmd == "notify":
         return asyncio.run(_notify())
     if args.cmd == "seed":
@@ -147,6 +202,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "publish-seed":
         return _publish_seed(args.seed)
     return asyncio.run(_warm(args.interval))
+
+
+def main(argv: list[str] | None = None) -> int:
+    from champis_pipeline.config import load_env
+
+    load_env()
+    args = build_parser().parse_args(argv)
+    console.setup("api-" + args.cmd, verbose=args.verbose, quiet=args.quiet)
+    return console.run(_dispatch, args)
 
 
 if __name__ == "__main__":

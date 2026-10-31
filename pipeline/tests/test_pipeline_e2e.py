@@ -470,9 +470,36 @@ def test_cli_tiles_and_weather_grid_accept_all(monkeypatch):
     monkeypatch.setattr(
         weather_grid, "build", lambda depts, species: seen.append(("W", depts, species))
     )
-    cli.main(["tiles", "--depts", "all", "--species", "x", "--jobs", "3"])
-    cli.main(["weather-grid", "--depts", "1", "2a"])
+    assert cli.main(["tiles", "--depts", "all", "--species", "x", "--jobs", "3"]) == 0
+    assert cli.main(["weather-grid", "--depts", "1", "2a"]) == 0
     assert seen == [("T", "x", DEPTS_ALL, 3), ("A", DEPTS_ALL, 3), ("W", ["01", "2A"], None)]
+
+
+def test_cli_status_on_stderr_and_failure_code(capsys, monkeypatch):
+    """Étapes `[i/n]` et ECHEC sur stderr, rien sur stdout ; une exception = code 1, pas de trace."""
+    from champis_pipeline import cli, tiles
+
+    monkeypatch.setattr(tiles, "build", lambda sid, depts, force, jobs: None)
+    monkeypatch.setattr(tiles, "build_alt", lambda depts, force, jobs: None)
+    assert cli.main(["tiles", "--depts", "25", "--species", "x"]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    lines = err.splitlines()
+    assert lines[0].startswith("tiles · 1 département(s) · 1 espèce(s)")
+    assert lines[1] == "[1/2] tiles T x" and lines[2].split()[0] == "ok"
+    assert lines[3] == "[2/2] tiles A (classes d'altitude)"
+    assert lines[-1].startswith("tuiles prêtes en ") and "journal : " in lines[-1]
+
+    def boom(sid, depts, force, jobs):
+        raise RuntimeError("mosaïque impossible")
+
+    monkeypatch.setattr(tiles, "build", boom)
+    assert cli.main(["tiles", "--depts", "25", "--species", "x"]) == 1
+    err = capsys.readouterr().err
+    assert "ECHEC" in err and "RuntimeError: mosaïque impossible" in err
+    assert "Traceback" not in err
+    assert cli.main(["-v", "tiles", "--depts", "25", "--species", "x"]) == 1
+    assert "Traceback" in capsys.readouterr().err
 
 
 def test_batch_resumes_and_isolates_failures(tmp_path):

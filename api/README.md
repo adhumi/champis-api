@@ -7,6 +7,8 @@ uv run champis-pipeline weather-grid --depts 25        # produit data/weather_gr
 uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/docs
 ```
 
+Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, journal dans `data/logs/`, `-v`/`-q`) ; `make warm`, `make seed`, `make publish-seed`, `make notify` les lancent.
+
 **Pré-chauffe** (pas de temps réel : décision du 17 oct. 2026) — `uv run champis-api warm` parcourt toute la grille à une requête toutes les 2 s et remplit le cache ; sort en code 1 si des cellules restent indisponibles. À lancer par cron une fois par seau de 12 h, par exemple :
 
 ```

@@ -65,15 +65,19 @@ async def seed(
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     history: bool = True,
     climatology: bool = False,
+    progress: Callable[[str, int, int, float], None] | None = None,
 ) -> dict[str, Any]:
     """Complète la base `out` : historique des cellules qui n'en ont pas, et, si `climatology`,
     climatologie de celles qui n'en ont pas ; écrit par lot.
+
+    `progress(quoi, faites, total, appels_pondérés)` après chaque lot ; défaut : une ligne de journal.
 
     Un 429 (quota) ou une coupure réseau ne fait pas échouer l'amorçage : on attend
     (Retry-After, sinon un délai qui double jusqu'à 15 min) et on reprend le même lot.
     Renvoie la fiche {version, generated, cells, history_cells, bytes, grid_cells}.
     """
     today = today or client.today()
+    progress = progress or _progress
     out.parent.mkdir(parents=True, exist_ok=True)
     db = WeatherCache(out)
     try:
@@ -87,7 +91,7 @@ async def seed(
                 for cell, r in zip(batch, rows, strict=True):
                     db.put_history(cell.id, r, "seed")
                 db.meta_set(META_GENERATED, today.isoformat())
-                _progress("historique", i + len(batch), len(todo), client.weight)
+                progress("historique", i + len(batch), len(todo), client.weight)
         if climatology:
             done = db.seeded_ids()
             todo = [c for c in grid.cells.values() if c.id not in done]
@@ -98,7 +102,7 @@ async def seed(
                 for cell, clim in zip(batch, clims, strict=True):
                     db.put_soil_clim(cell.id, clim["months"])
                 db.meta_set(META_GENERATED, today.isoformat())
-                _progress("climatologie", i + len(batch), len(todo), client.weight)
+                progress("climatologie", i + len(batch), len(todo), client.weight)
         return seed_info(db, out, len(grid.cells))
     finally:
         db.close()

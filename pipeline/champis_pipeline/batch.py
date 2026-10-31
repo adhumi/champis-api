@@ -82,8 +82,14 @@ def batch(
     runner: Callable[[str, list[str] | None, bool], DeptResult] = run_dept,
     executor_factory: Callable[[int], Executor] | None = None,  # défaut : « spawn »
     status_path: Path = STATUS_FILE,
+    report: Callable[[DeptResult], None] | None = None,
 ) -> dict[str, dict]:
-    """Lance `runner` sur chaque département manquant, `jobs` à la fois ; écrit l'état au fil de l'eau."""
+    """Lance `runner` sur chaque département manquant, `jobs` à la fois ; écrit l'état au fil de l'eau.
+
+    `report` reçoit chaque résultat dès qu'il arrive (la CLI en fait une ligne) ; défaut : journal.
+    """
+    if report is None:
+        report = _log_result
     if executor_factory is None:
 
         def executor_factory(n: int) -> Executor:
@@ -100,12 +106,16 @@ def batch(
             r = fut.result()
             status[r.dept] = asdict(r)
             save_status(status, status_path)
-            (log.info if r.ok else log.error)(
-                "%s : %s (%.0f s)", r.dept, "ok" if r.ok else "ÉCHEC", r.seconds
-            )
-            if not r.ok:
-                log.error("%s", r.message)
+            report(r)
     return status
+
+
+def _log_result(r: DeptResult) -> None:
+    (log.info if r.ok else log.error)(
+        "%s : %s (%.0f s)", r.dept, "ok" if r.ok else "ÉCHEC", r.seconds
+    )
+    if not r.ok:
+        log.error("%s", r.message)
 
 
 def parse_depts(values: list[str]) -> list[str]:

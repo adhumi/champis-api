@@ -4,6 +4,7 @@ touche jamais Open-Meteo. À lancer par cron une fois par seau de 12 h (skill op
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from .grid import Cell, WeatherGrid
@@ -27,7 +28,12 @@ class WarmReport:
         return not self.unavailable
 
 
-async def warm(grid: WeatherGrid, client: OpenMeteoClient) -> WarmReport:
+async def warm(
+    grid: WeatherGrid,
+    client: OpenMeteoClient,
+    progress: Callable[[int, int, int, int], None] | None = None,
+) -> WarmReport:
+    """`progress(faites, total, indisponibles, périmées)` après chaque lot ; défaut : journal."""
     cells: list[Cell] = list(grid.cells.values())
     unavailable: dict[str, str] = {}
     stale = 0
@@ -37,12 +43,8 @@ async def warm(grid: WeatherGrid, client: OpenMeteoClient) -> WarmReport:
         res = await client.fetch_cells_partial(batch)
         unavailable |= res.unavailable
         stale += sum(1 for r in res.raws.values() if r.stale)
-        log.info(
-            "pré-chauffe %d/%d : %d indisponibles, %d périmées",
-            min(i + WARM_BATCH, len(cells)),
-            len(cells),
-            len(unavailable),
-            stale,
+        (progress or _log_progress)(
+            min(i + WARM_BATCH, len(cells)), len(cells), len(unavailable), stale
         )
     weight = client.weight - weight0
     log.info(
@@ -52,3 +54,7 @@ async def warm(grid: WeatherGrid, client: OpenMeteoClient) -> WarmReport:
         weight / len(cells) if cells else 0.0,
     )
     return WarmReport(len(cells), unavailable, stale, weight)
+
+
+def _log_progress(done: int, total: int, unavailable: int, stale: int) -> None:
+    log.info("pré-chauffe %d/%d : %d indisponibles, %d périmées", done, total, unavailable, stale)

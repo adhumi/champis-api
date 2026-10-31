@@ -9,10 +9,12 @@ Score d'un pixel de 25 m pour une espèce et un jour : `S = T × M × Φ` — po
 Prérequis : Python 3.12+, [uv](https://docs.astral.sh/uv/), ~5 Go de disque pour un département. Variables locales (bucket, clé Open-Meteo) : `cp .env.example .env` et compléter ; le fichier est lu par les CLI et l'API, jamais commité. Pas de GDAL système à installer : rasterio embarque le sien.
 
 ```bash
-uv sync --group dev
-uv run pytest                      # 67 tests, dont une chaîne complète sur un département synthétique
-uv run champis-pipeline all --dept 25
+make setup                         # uv sync --group dev, .env depuis .env.example
+make test                          # 142 tests, dont une chaîne complète sur un département synthétique
+make dept DEPT=25                  # = uv run champis-pipeline all --dept 25
 ```
+
+`make help` liste toutes les commandes (développement, pipeline, publication, météo) avec leur documentation ; les commandes `uv run …` ci-dessous restent valables telles quelles.
 
 `all` enchaîne :
 
@@ -31,6 +33,25 @@ Diagnostic de T : `uv run champis-pipeline explain --dept 25 --species boletus_e
 Contrôle GBIF (critère de phase 1, AUC > 0,7) : `uv run champis-pipeline check --dept 25` télécharge les occurrences GBIF du département (cache dans `data/raw/gbif/`) et écrit `reports/<espèce>-25.html` : AUC de T aux occurrences contre fond forestier, mois d'observation, quantiles pH pour recalibrer les espèces (skill `validation-gbif`).
 
 Pour regarder le résultat : `python3 -m http.server 8000` à la racine du dépôt, ouvrir <http://localhost:8000/web/> et y glisser les PMTiles (voir `web/README.md`). Sans serveur, [pmtiles.io](https://pmtiles.io) les affiche en gris brut : 0 = noir = T 0, 254 = blanc = T 1.
+
+### Affichage et journaux
+
+Chaque commande affiche ses étapes `[i/n]` avec un statut (`ok`, `deja fait`, `ECHEC`) et sa durée, des barres de progression pour les tâches longues, et un résumé final. Le statut va sur stderr, les données (`summary`) sur stdout. Couleurs sur un terminal seulement (`NO_COLOR` les coupe). Tout est aussi écrit, sans couleur, dans `data/logs/<commande>-<date>.log` (50 derniers gardés ; `make log` affiche le dernier ; `CHAMPIS_LOG_DIR` change le dossier, vide pour ne rien écrire). `-v` rétablit les journaux bruts et les traces complètes ; `-q` ne garde que les avertissements et le résultat.
+
+```
+champis-pipeline all --dept 25
+
+all --dept 25 · 7 espèce(s)
+[1/17] download 25
+      - présent : BDFORET_2-0__SHP_LAMB93_D025_2016-02-16.7z
+      ok              3 s  BD Forêt FORMATION_VEGETALE.shp · SoilGrids · DEM 4 dalle(s) · grille 3812x4620 px
+[2/17] grid 25
+      deja fait       0.4 s  host, cover, ph, alt, slope, aspect · 3812x4620 px
+[3/17] terrain boletus_edulis
+      ok             12 s  data/T/boletus_edulis/25-af34c16e.tif
+…
+25 prêt en 14 min 02 s · journal : data/logs/all-20261031-150102.log
+```
 
 ## Phase 2 — l'API météo
 

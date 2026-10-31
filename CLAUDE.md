@@ -16,13 +16,17 @@ data/         téléchargements et rasters, jamais commités
 
 ## Outillage
 
+- `make help` liste toutes les commandes du dépôt avec leur doc ; `make check` = la CI en local. Les cibles sont la référence : une commande nouvelle ou changée se reflète dans le `Makefile`.
 - `uv sync --group dev` ; `uv run pytest` ; `uv run ruff check . && uv run ruff format .`
+- Affichage des CLI : module `champis_pipeline.console` (étapes `[i/n]`, statut `ok`/`deja fait`/`ECHEC`, couleurs ANSI sur terminal seulement, **pas d'emoji**). Statut sur stderr, données sur stdout, journal dans `data/logs/` (`CHAMPIS_LOG_DIR`). `-v` journaux bruts et traces, `-q` avertissements et résultat. Une nouvelle sous-commande passe par `console.get().steps(n)` et `console.run`, pas par `print`.
 - Deux packages du workspace : `champis-pipeline` et `champis-api` (qui dépend du premier).
 - Python 3.12+, numpy, rasterio, geopandas ; **aucun outil GDAL en ligne de commande requis** (tout passe par rasterio).
 - `uv run champis-vectors` régénère `shared/vectors/` ; `--check` en CI. Si tu modifies le scoring, régénère.
 - Ne pas migrer ou supprimer l'outillage existant (skill `modern-python` donne les conventions, pas des ordres de migration) ; `ty` est optionnel.
 
 ## Commandes du pipeline
+
+Équivalents `make` : `make dept DEPT=25`, `make batch DEPTS=all JOBS=3`, `make tiles`, `make release` (tiles + publish), `make seed`, `make warm`…
 
 ```
 uv run champis-pipeline download --dept 25

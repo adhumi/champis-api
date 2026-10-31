@@ -13,7 +13,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from champis_pipeline import SCORING_VERSION
+from champis_pipeline import SCORING_VERSION, console
 from champis_pipeline.scoring import trapezoid
 from champis_pipeline.species import (
     ROOT,
@@ -224,6 +224,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", type=Path, default=OUT_DIR)
     ap.add_argument("--check", action="store_true", help="échoue si les fichiers diffèrent")
     args = ap.parse_args(argv)
+    c = console.get()
     files = build()
     args.out.mkdir(parents=True, exist_ok=True)
     stale = []
@@ -235,13 +236,12 @@ def main(argv: list[str] | None = None) -> int:
                 stale.append(name)
         else:
             path.write_text(text, encoding="utf-8")
-            print(f"✓ {path} ({len(content['cases'])} cas)")
+            c.write(f"ok  {path} ({len(content['cases'])} cas)")
     if stale:
-        print(
-            "vecteurs périmés : " + ", ".join(stale) + " — relancer `uv run champis-vectors`",
-            file=sys.stderr,
-        )
+        c.error("vecteurs périmés : " + ", ".join(stale), hint="relancer `uv run champis-vectors`")
         return 1
+    if args.check:
+        c.write(f"ok  {len(files)} fichiers de vecteurs à jour dans {args.out}")
     return 0
 
 

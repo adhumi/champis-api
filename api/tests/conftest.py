@@ -159,3 +159,10 @@ async def api(app):
         transport_ = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport_, base_url="http://test") as c:
             yield c
+
+
+@pytest.fixture(autouse=True)
+def _console_in_tests(tmp_path, monkeypatch):
+    """Les CLI écrivent leur journal dans tmp (jamais dans data/logs du dépôt) et sans couleur."""
+    monkeypatch.setenv("CHAMPIS_LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setenv("NO_COLOR", "1")
