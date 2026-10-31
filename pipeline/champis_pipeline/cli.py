@@ -1,7 +1,7 @@
 """CLI : `champis-pipeline [-v|-q] <étape> --dept 25 [--species boletus_edulis] [--force]`.
 
 Étapes : download · grid · terrain · tiles · weather-grid · all · summary · check · explain · batch ·
-publish · soil-clim. `make help` à la racine du dépôt les récapitule.
+publish · soil-clim · status. `make help` à la racine du dépôt les récapitule.
 
 Affichage (module `console`) : étapes `[i/n]` et statut sur stderr, données sur stdout, copie dans
 `data/logs/<étape>-<date>.log`. `-v` rétablit les journaux bruts et les traces, `-q` ne garde que
@@ -236,7 +236,7 @@ def cmd_batch(args) -> None:
     status = batch.batch(depts, args.species, jobs=args.jobs, force=args.force, report=report)
     failed = [d for d in depts if not status.get(d, {}).get("ok")]
     c.summary(
-        f"{len(depts) - len(failed)}/{len(depts)} départements ok · état : {batch.STATUS_FILE}"
+        f"{len(depts) - len(failed)}/{len(depts)} départements ok · état : {batch.status_file()}"
     )
     if failed:
         c.error(
@@ -259,31 +259,92 @@ def cmd_soil_clim(args) -> None:
         step.note(f"{n} cellules -> {args.out}")
 
 
+NO_BUCKET = (
+    "bucket non configuré : AWS_ENDPOINT_URL et AWS_S3_BUCKET_NAME (ou CHAMPIS_S3_*) requis ; "
+    "`cp .env.example .env` et compléter"
+)
+
+
 def cmd_publish(args) -> None:
-    """PMTiles de data/tiles → bucket S3 (variables CHAMPIS_S3_*, AWS_*), manifeste tiles/manifest.json."""
+    """PMTiles de data/tiles → bucket S3 (variables CHAMPIS_S3_*, AWS_*), manifeste tiles/manifest.json.
+
+    `--dry-run` : affiche ce qui serait téléversé et, avec `--prune`, supprimé ; n'écrit rien.
+    """
     from . import publish
     from .storage import Bucket, S3Config
 
     c = console.get()
     cfg = S3Config.from_env()
     if cfg is None:
-        raise SystemExit(
-            "bucket non configuré : AWS_ENDPOINT_URL et AWS_S3_BUCKET_NAME (ou CHAMPIS_S3_*) requis ; "
-            "`cp .env.example .env` et compléter"
-        )
+        raise SystemExit(NO_BUCKET)
     depts = _depts(args)
-    sets = publish.dept_sets(depts, args.per_dept)
-    with c.steps(1).step(
-        f"publish · {len(sets)} jeu(x) · {len(depts)} département(s) -> {cfg.bucket}"
+    species = _species(args)
+    bucket = Bucket(cfg)
+    steps = c.steps(
+        1 if args.dry_run else 2,
+        f"publish · {len(publish.dept_sets(depts, args.per_dept))} jeu(x) · {len(depts)} "
+        f"département(s) -> {cfg.bucket}"
         + (" · prune" if args.prune else "")
-    ) as step:
+        + (" · DRY RUN" if args.dry_run else ""),
+    )
+    with steps.step("comparaison avec le bucket") as step:
+        p = publish.plan(bucket, depts, species, prune=args.prune, per_dept=args.per_dept)
+        step.note(
+            f"{len(p.todo)} à téléverser ({console.size(p.todo_bytes)}), {len(p.already)} déjà là"
+            + (f", {len(p.stale)} à supprimer" if args.prune else "")
+        )
+    for name in p.todo:
+        c.info(f"+ {name}  {console.size(p.sizes[name])}")
+    for name in p.already:
+        c.info(f"= {name}  {console.size(p.sizes[name])}")
+    for key in p.stale:
+        c.warn(f"- {key}  (autre jeu, supprimé par --prune)")
+    if args.dry_run:
+        c.summary("rien n'a été écrit (--dry-run)")
+        return
+    with steps.step("téléversement et manifeste") as step:
         manifest = publish.publish(
-            Bucket(cfg), depts, _species(args), prune=args.prune, per_dept=args.per_dept
+            bucket, depts, species, prune=args.prune, per_dept=args.per_dept, plan_=p
         )
         step.note(f"{len(manifest['tiles'])} fichiers dans le manifeste")
-    for t in manifest["tiles"]:
-        c.info(f"{t['name']}  {console.size(t['bytes'])}")
     c.summary(f"{len(manifest['tiles'])} fichiers dans {cfg.bucket}/tiles/")
+
+
+def cmd_status(args) -> None:
+    """Où en est chaque département (disque, batch, tuiles) et le jeu complet (local, bucket). Lecture seule."""
+    from . import batch, status
+    from .storage import Bucket, S3Config
+
+    c = console.get()
+    depts = _depts(args)
+    species = _species(args)
+    batch_status = batch.load_status()
+    rows = [status.dept_status(d, species, batch_status) for d in depts]
+    print(status.table([r.cells() for r in rows], status.COLUMNS))
+    ready = sum(r.ready for r in rows)
+    print()
+    print(f"{ready}/{len(rows)} département(s) prêts pour `tiles` · {len(species)} espèce(s)")
+    cfg = None if args.no_bucket else S3Config.from_env()
+    bucket = Bucket(cfg) if cfg else None
+    with c.steps(1).step(
+        f"jeu complet · {len(depts)} département(s)" + (f" · bucket {cfg.bucket}" if cfg else "")
+    ) as step:
+        s = status.set_status(depts, species, bucket)
+        note = f"local {len(s.local)}/{len(s.expected)}"
+        if s.bucket is not None:
+            note += f" · bucket {len(s.bucket)}/{len(s.expected)}"
+            if s.manifest_generated:
+                note += f" · manifeste du {s.manifest_generated[:16]}"
+        elif cfg is None:
+            note += " · bucket non configuré"
+        step.note(note)
+    if s.bucket_error:
+        c.warn(f"bucket injoignable : {s.bucket_error}")
+    for n in s.expected:
+        marks = ("local" if n in s.local else "-----") + (
+            "" if s.bucket is None else ("  bucket" if n in s.bucket else "  ------")
+        )
+        c.info(f"{marks}  {n}")
 
 
 # ---------------------------------------------------------------------- entrée
@@ -352,7 +413,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--prune", action="store_true", help="supprimer du bucket les autres jeux de départements"
     )
     p.add_argument("--per-dept", action="store_true", help="publier aussi les jeux par département")
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="montrer ce qui serait téléversé ou supprimé, sans rien écrire",
+    )
     p.set_defaults(fn=cmd_publish)
+    p = sub.add_parser(
+        "status",
+        parents=[common],
+        help="où en est chaque département (disque, batch, tuiles, bucket)",
+    )
+    p.add_argument("--depts", nargs="+", default=["all"], help="codes ou `all` (défaut)")
+    p.add_argument("--no-bucket", action="store_true", help="ne pas interroger le bucket")
+    p.set_defaults(fn=cmd_status)
     p = sub.add_parser(
         "batch", parents=[common], help="download+grid+terrain, plusieurs départements, reprise"
     )

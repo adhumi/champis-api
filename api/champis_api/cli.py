@@ -2,7 +2,8 @@
 département (cron, sur Railway) ; `champis-api notify` — notification récapitulative « mes coins »,
 une fois ; `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage
 de l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
-de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket.
+de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket ;
+`champis-api doctor [--offline]` — l'environnement est-il prêt.
 
 Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/)."""
 
@@ -191,10 +192,23 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("publish-seed", help="dépose la base d'amorçage dans le bucket")
     p.add_argument("--seed", type=Path, default=Settings().weather_seed_db)
     sub.add_parser("notify", help="envoie la notification récapitulative « mes coins » (une fois)")
+    p = sub.add_parser(
+        "doctor", help="l'environnement est-il prêt ? (.env, grille, bucket, base, APNs…)"
+    )
+    p.add_argument("--offline", action="store_true", help="ne pas interroger le bucket")
     return ap
 
 
+def _doctor(offline: bool) -> int:
+    from .doctor import render, run_checks
+
+    render(run_checks(offline=offline))
+    return 0  # un état des lieux, pas un échec : `make doctor` reste silencieux côté make
+
+
 def _dispatch(args) -> int:
+    if args.cmd == "doctor":
+        return _doctor(args.offline)
     if args.cmd == "notify":
         return asyncio.run(_notify())
     if args.cmd == "seed":

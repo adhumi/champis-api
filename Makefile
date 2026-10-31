@@ -72,6 +72,14 @@ serve: ## API locale avec rechargement : http://localhost:8000 (/species, /weath
 log: ## Affiche le dernier journal de data/logs/
 	ls -t data/logs/*.log 2>/dev/null | head -1 | xargs -r cat
 
+.PHONY: doctor
+doctor: ## L'environnement est-il prêt ? .env, disque, grille météo, amorçage, bucket, base, APNs, CDS, vecteurs
+	$(API) doctor
+
+.PHONY: status
+status: ## Où en est chaque département (raw, grid, T, batch, tuiles) et le jeu DEPTS (local, bucket)
+	$(PIPELINE) status --depts $(DEPTS) $(SP)
+
 # ------------------------------------------------------------------ Pipeline terrain (un département : DEPT)
 
 .PHONY: download
@@ -124,13 +132,18 @@ publish: ## PMTiles de data/tiles -> bucket + manifeste, jeux par département c
 	[[ "$$r" == [oOyY] ]] || { echo "annulé"; exit 1; }
 	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune $(SP)
 
+.PHONY: publish-dry
+publish-dry: ## Montre ce que publish téléverserait et ce que --prune supprimerait, sans rien écrire
+	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune --dry-run $(SP)
+
 .PHONY: publish-keep
 publish-keep: ## Comme publish, sans effacer les jeux déjà dans le bucket
 	$(PIPELINE) publish --depts $(DEPTS) --per-dept $(SP)
 
 .PHONY: release
-release: ## Séquence complète : tiles (jeu DEPTS + par département), puis publish
+release: ## Séquence complète : tiles (jeu DEPTS + par département), publish-dry, puis publish
 	$(MAKE) --no-print-directory tiles
+	$(MAKE) --no-print-directory publish-dry
 	$(MAKE) --no-print-directory publish
 
 # ------------------------------------------------------------------ Météo (API ; grille versionnée, amorçage dans le bucket)

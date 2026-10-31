@@ -16,7 +16,7 @@ data/         téléchargements et rasters, jamais commités
 
 ## Outillage
 
-- `make help` liste toutes les commandes du dépôt avec leur doc ; `make check` = la CI en local. Les cibles sont la référence : une commande nouvelle ou changée se reflète dans le `Makefile`.
+- `make help` liste toutes les commandes du dépôt avec leur doc ; `make check` = la CI en local ; `make doctor` et `make status` disent où on en est avant de publier. Les cibles sont la référence : une commande nouvelle ou changée se reflète dans le `Makefile`.
 - `uv sync --group dev` ; `uv run pytest` ; `uv run ruff check . && uv run ruff format .`
 - Affichage des CLI : module `champis_pipeline.console` (étapes `[i/n]`, statut `ok`/`deja fait`/`ECHEC`, couleurs ANSI sur terminal seulement, **pas d'emoji**). Statut sur stderr, données sur stdout, journal dans `data/logs/` (`CHAMPIS_LOG_DIR`). `-v` journaux bruts et traces, `-q` avertissements et résultat. Une nouvelle sous-commande passe par `console.get().steps(n)` et `console.run`, pas par `print`.
 - Deux packages du workspace : `champis-pipeline` et `champis-api` (qui dépend du premier).
@@ -38,7 +38,9 @@ uv run champis-pipeline all      --dept 25
 uv run champis-pipeline batch    --depts all --jobs 3   # download+grid+terrain, parallèle, reprise
 uv run champis-pipeline check    --dept 25              # contrôle GBIF
 uv run champis-pipeline explain  --dept 25 --species boletus_edulis
-uv run champis-pipeline publish  --depts 25 [--prune] [--per-dept]  # PMTiles → bucket Railway + manifeste ; --prune efface les autres jeux ; --per-dept publie aussi les jeux par département (hors ligne de l'app)
+uv run champis-pipeline publish  --depts 25 [--prune] [--per-dept] [--dry-run]  # PMTiles → bucket Railway + manifeste ; --prune efface les autres jeux ; --per-dept publie aussi les jeux par département (hors ligne de l'app) ; --dry-run montre sans écrire
+uv run champis-pipeline status   [--depts all] [--no-bucket]  # où en est chaque département, et le jeu complet en local et dans le bucket
+uv run champis-api doctor [--offline]                 # l'environnement est-il prêt (grille, bucket, base, APNs…)
 uv run champis-pipeline soil-clim [--years 2016-2025]  # climatologie du sol ERA5-Land (CDS) → data/weather_seed.db
 ```
 

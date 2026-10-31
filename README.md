@@ -14,7 +14,7 @@ make test                          # 142 tests, dont une chaîne complète sur u
 make dept DEPT=25                  # = uv run champis-pipeline all --dept 25
 ```
 
-`make help` liste toutes les commandes (développement, pipeline, publication, météo) avec leur documentation ; les commandes `uv run …` ci-dessous restent valables telles quelles.
+`make help` liste toutes les commandes (développement, pipeline, publication, météo) avec leur documentation ; les commandes `uv run …` ci-dessous restent valables telles quelles. Avant de publier : `make doctor` (l'environnement est-il prêt : grille météo, bucket, base, clé APNs…), `make status` (où en est chaque département sur disque et dans le bucket), `make publish-dry` (ce que `publish --prune` téléverserait et effacerait, sans rien écrire).
 
 `all` enchaîne :
 

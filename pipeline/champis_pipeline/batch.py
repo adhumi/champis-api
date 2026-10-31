@@ -24,7 +24,15 @@ from .config import BDFORET_EDITIONS, DATA_DIR
 
 log = logging.getLogger(__name__)
 
-STATUS_FILE = DATA_DIR / "batch_status.json"
+STATUS_FILE = DATA_DIR / "batch_status.json"  # historique ; `status_file()` suit `config.DATA_DIR`
+
+
+def status_file() -> Path:
+    from . import config
+
+    return config.DATA_DIR / "batch_status.json"
+
+
 DEPTS_ALL = sorted(BDFORET_EDITIONS)
 
 
@@ -61,13 +69,15 @@ def run_dept(dept: str, species: list[str] | None, force: bool) -> DeptResult:
     return DeptResult(dept, ok, msg, time.monotonic() - t0, datetime.now(UTC).isoformat())
 
 
-def load_status(path: Path = STATUS_FILE) -> dict[str, dict]:
+def load_status(path: Path | None = None) -> dict[str, dict]:
+    path = path or status_file()
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def save_status(status: dict[str, dict], path: Path = STATUS_FILE) -> None:
+def save_status(status: dict[str, dict], path: Path | None = None) -> None:
+    path = path or status_file()
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.part")
     tmp.write_text(json.dumps(status, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -81,13 +91,14 @@ def batch(
     force: bool = False,
     runner: Callable[[str, list[str] | None, bool], DeptResult] = run_dept,
     executor_factory: Callable[[int], Executor] | None = None,  # défaut : « spawn »
-    status_path: Path = STATUS_FILE,
+    status_path: Path | None = None,
     report: Callable[[DeptResult], None] | None = None,
 ) -> dict[str, dict]:
     """Lance `runner` sur chaque département manquant, `jobs` à la fois ; écrit l'état au fil de l'eau.
 
     `report` reçoit chaque résultat dès qu'il arrive (la CLI en fait une ligne) ; défaut : journal.
     """
+    status_path = status_path or status_file()
     if report is None:
         report = _log_result
     if executor_factory is None:
