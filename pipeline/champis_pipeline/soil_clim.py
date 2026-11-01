@@ -38,9 +38,11 @@ CLIMATOLOGY_YEARS = 10  # comme le client Open-Meteo : 10 années civiles compl�
 QUANTILES = [i / 10 for i in range(11)]
 ERA5_DIR = DATA_DIR / "era5land"
 SEED_DB = DATA_DIR / "weather_seed.db"
-# Une cellule côtière (pixel ERA5-Land en mer = NaN) prend le pixel valide le plus proche à ≤ 0,2° ;
-# au-delà d'un pixel et demi du plus proche, la grille est hors de l'emprise téléchargée.
-NEIGHBOURHOOD = 2
+# Une cellule côtière (pixel ERA5-Land en mer = NaN) prend le pixel valide le plus proche à ≤ 0,5°
+# (Ouessant est à 0,3° de la côte) ; sans aucun pixel valide dans ce rayon, la cellule est sautée
+# avec un avertissement (elle restera « amorçage requis » dans l'API). Au-delà d'un pixel et demi du
+# pixel le plus proche, la grille est hors de l'emprise téléchargée : erreur.
+NEIGHBOURHOOD = 5
 MAX_OFFSET_DEG = 0.15
 
 
@@ -131,26 +133,38 @@ def _dim(da: xr.DataArray, kind: str) -> str:
 
 def sample(
     clim: xr.DataArray, cells: dict[str, tuple[float, float]]
-) -> dict[str, dict[str, list[float]]]:
-    """Par cellule (lat, lon) : {"1": [11 quantiles], …, "12": […]} du pixel valide le plus proche.
+) -> tuple[dict[str, dict[str, list[float]]], list[str]]:
+    """Par cellule (lat, lon) : {"1": [11 quantiles], …, "12": […]} du pixel valide le plus proche,
+    et la liste des cellules sautées (aucun pixel valide à ≤ NEIGHBOURHOOD pixels : îlots).
 
-    Lève si une cellule n'a aucun pixel valide dans son voisinage (grille hors emprise).
+    Lève si une cellule est hors de l'emprise téléchargée.
     """
     lats, lons = clim["lat"].values, clim["lon"].values
     values = clim.values  # (12, 11, nlat, nlon)
     valid = ~np.isnan(values[0, 0])
-    out = {}
+    out, skipped = {}, []
     for cid, (lat, lon) in cells.items():
         i, j = int(np.abs(lats - lat).argmin()), int(np.abs(lons - lon).argmin())
         if abs(lats[i] - lat) > MAX_OFFSET_DEG or abs(lons[j] - lon) > MAX_OFFSET_DEG:
             raise ValueError(f"({lat:.3f}, {lon:.3f}) hors de l'emprise ERA5-Land téléchargée")
         if not valid[i, j]:
-            i, j = _nearest_valid(valid, lats, lons, lat, lon, i, j)
+            near = _nearest_valid(valid, lats, lons, lat, lon, i, j)
+            if near is None:
+                log.warning(
+                    "%s (%.3f, %.3f) : aucun pixel ERA5-Land valide à ≤ %.1f°, sautée",
+                    cid,
+                    lat,
+                    lon,
+                    NEIGHBOURHOOD / 10,
+                )
+                skipped.append(cid)
+                continue
+            i, j = near
         out[cid] = {str(m + 1): [float(v) for v in values[m, :, i, j]] for m in range(12)}
-    return out
+    return out, skipped
 
 
-def _nearest_valid(valid, lats, lons, lat, lon, i, j) -> tuple[int, int]:
+def _nearest_valid(valid, lats, lons, lat, lon, i, j) -> tuple[int, int] | None:
     best, best_d = None, np.inf
     for di in range(-NEIGHBOURHOOD, NEIGHBOURHOOD + 1):
         for dj in range(-NEIGHBOURHOOD, NEIGHBOURHOOD + 1):
@@ -159,8 +173,6 @@ def _nearest_valid(valid, lats, lons, lat, lon, i, j) -> tuple[int, int]:
                 d = (lats[ii] - lat) ** 2 + (lons[jj] - lon) ** 2
                 if d < best_d:
                     best, best_d = (ii, jj), d
-    if best is None:
-        raise ValueError(f"aucun pixel ERA5-Land valide autour de ({lat:.3f}, {lon:.3f})")
     return best
 
 
@@ -204,8 +216,15 @@ def build(
     paths = download(years, era5_dir, client)
     clim = climatology(paths)
     cells = grid_cells(grid_path)
-    n = write_seed(sample(clim, cells), seed_db)
+    clims, skipped = sample(clim, cells)
+    n = write_seed(clims, seed_db)
     log.info(
-        "climatologie du sol : %d cellules, années %d–%d → %s", n, years[0], years[-1], seed_db
+        "climatologie du sol : %d cellules, %d sautées (%s), années %d–%d → %s",
+        n,
+        len(skipped),
+        ", ".join(skipped) or "aucune",
+        years[0],
+        years[-1],
+        seed_db,
     )
     return n

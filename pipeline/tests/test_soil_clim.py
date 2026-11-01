@@ -91,8 +91,8 @@ def test_soil_clim_rejects_a_cell_far_from_any_valid_pixel(tmp_path):
     assert clim.shape == (12, 11, 2, 2)
     with pytest.raises(ValueError, match="hors de l'emprise"):
         soil_clim.sample(clim, {"far": (45.0, 2.0)})
-    with pytest.raises(ValueError, match="aucun pixel"):  # tout le voisinage est en mer
-        sea = clim.where(False)
-        soil_clim.sample(sea, {"c": (47.2, 6.2)})
+    sea = clim.where(False)  # tout le voisinage est en mer : la cellule est sautée, pas d'erreur
+    clims, skipped = soil_clim.sample(sea, {"c": (47.2, 6.2)})
+    assert clims == {} and skipped == ["c"]
     assert soil_clim.default_years(date(2026, 10, 25)) == list(range(2016, 2026))
     assert soil_clim.request(2025)["area"] == [51.5, -5.5, 41.0, 10.0]
