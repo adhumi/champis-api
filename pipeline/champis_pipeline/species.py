@@ -53,14 +53,24 @@ def list_species() -> list[str]:
     return sorted(p.stem for p in SPECIES_DIR.glob("*.json"))
 
 
+def fingerprint_bytes(raw: bytes) -> bytes:
+    """Octets soumis à l'empreinte : le fichier tel quel, sans le bloc `about` (la fiche en mots,
+    lot 4), que relire ne doit jamais régénérer une tuile. Sans `about`, les octets d'origine."""
+    data = json.loads(raw)
+    if "about" not in data:
+        return raw
+    data.pop("about")
+    return (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+
+
 def species_hash(species_id: str) -> str:
-    """Empreinte courte du JSON espèce, pour nommer les tuiles et versionner les vecteurs."""
+    """Empreinte courte du modèle de l'espèce, pour nommer les tuiles et versionner les vecteurs."""
     raw = (SPECIES_DIR / f"{species_id}.json").read_bytes()
-    return hashlib.sha256(raw).hexdigest()[:8]
+    return hashlib.sha256(fingerprint_bytes(raw)).hexdigest()[:8]
 
 
 def all_species_hash() -> str:
     h = hashlib.sha256()
     for sid in list_species():
-        h.update((SPECIES_DIR / f"{sid}.json").read_bytes())
+        h.update(fingerprint_bytes((SPECIES_DIR / f"{sid}.json").read_bytes()))
     return h.hexdigest()[:8]

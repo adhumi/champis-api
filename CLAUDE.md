@@ -7,7 +7,7 @@ Cartes de cueillette de champignons (France, 25 m) : pipeline terrain, API mét�
 ```
 species/      fichiers espèces JSON + SCHEMA.md + validate.py   (skill species-file)
 mapping/      bdforet_to_hosts.json : 32 codes TFV → hôtes
-shared/       palette.json, vectors/ (contrat de parité Python/Swift) (skill scoring-parity)
+shared/       palette.json, vectors/ (contrat de parité Python/Swift) (skill scoring-parity), texts/ (articles de Comprendre, app et site)
 pipeline/     champis_pipeline : download → grid → terrain → tiles   (skill geo-pipeline)
 api/          champis_api : scoring M/Φ, vecteurs, [FastAPI à venir] (skill open-meteo)
 web/          [site à venir]

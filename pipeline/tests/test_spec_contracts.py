@@ -19,6 +19,7 @@ from champis_pipeline.species import (
     COVER_CLASSES,
     ROOT,
     all_species_hash,
+    fingerprint_bytes,
     host_vocabulary,
     list_species,
     load_mapping,
@@ -255,3 +256,50 @@ def test_repo_layout_matches_claude_md():
     assert not (Path(ROOT) / ".env").exists() or ".env" in (ROOT / ".gitignore").read_text(
         encoding="utf-8"
     )
+
+
+def test_shared_texts_index_and_species_about():
+    """Spec › App iOS (lot 4) : `shared/texts/index.json` liste les articles de Comprendre et chaque
+    fichier existe avec un titre de niveau 1 ; chaque espèce porte un bloc `about` sourcé."""
+    texts = ROOT / "shared" / "texts"
+    index = json.loads((texts / "index.json").read_text(encoding="utf-8"))
+    assert index["version"] == 1
+    ids = [a["id"] for a in index["articles"]]
+    assert ids == [
+        "comment-ca-marche",
+        "donnees-et-sources",
+        "especes",
+        "cueillir-sans-nuire",
+        "confidentialite",
+    ]
+    for article in index["articles"]:
+        body = (texts / article["file"]).read_text(encoding="utf-8")
+        assert body.startswith("# " + article["title"] + "\n"), article["id"]
+    assert any(a.get("species") for a in index["articles"])
+    assert "pharmacien" in (texts / "especes.md").read_text(encoding="utf-8")
+
+    for path in sorted((ROOT / "species").glob("*.json")):
+        sp = json.loads(path.read_text(encoding="utf-8"))
+        about = sp["about"]
+        assert about["confusions"], path.stem
+        known = set(sp["references"]) | set(about["references"])
+        for confusion in about["confusions"]:
+            assert confusion["refs"] and all(r in known for r in confusion["refs"]), path.stem
+        assert about["photo"] is None or {"url", "page", "author", "license"} <= set(about["photo"])
+
+
+def test_species_fingerprint_ignores_about():
+    """Spec › Modèle d'espèce : `about` est exclu de l'empreinte, relire une fiche ne renomme rien."""
+    raw = (ROOT / "species" / "boletus_edulis.json").read_bytes()
+    data = json.loads(raw)
+    about = data.pop("about")
+    bare = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    assert fingerprint_bytes(raw) == bare == fingerprint_bytes(bare)
+    data["about"] = {**about, "summary": "relecture d'Adrien"}
+    reread = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    assert fingerprint_bytes(reread) == bare
+    # l'empreinte publiée (vecteurs, tuiles) est bien celle du modèle seul
+    vectors = json.loads(
+        (ROOT / "shared" / "vectors" / "trapezoid.json").read_text(encoding="utf-8")
+    )
+    assert all_species_hash() == vectors["generated_by"]["species_hash"]
