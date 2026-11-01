@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -405,6 +405,32 @@ class _SeedBucket:
 
 
 @pytest.mark.asyncio
+async def test_second_seed_published_the_same_day_is_imported(grid, scenario, tmp_path):
+    """Climatologie publiée le matin, historique complet le soir : même `generated` (un jour),
+    mais deux publications. L'API importe la seconde au démarrage suivant au lieu de l'ignorer."""
+    from champis_api.cache import WeatherCache
+    from champis_api.seed import SEED_META_KEY, publish_seed, seed, sync_seed
+
+    out = tmp_path / "weather_seed.db"
+    morning, evening = datetime(2026, 11, 1, 9, tzinfo=UTC), datetime(2026, 11, 1, 23, tzinfo=UTC)
+    await seed(grid, make_client(scenario, seeded=False), out, today=TODAY, climatology=True)
+    bucket = _SeedBucket()
+    publish_seed(bucket, out, now=morning)
+    cache, work = WeatherCache(tmp_path / "cache.db"), tmp_path / "vol"
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 0  # même publication
+    info = publish_seed(bucket, out, now=evening)
+    assert info["generated"] == bucket.json[SEED_META_KEY]["generated"]  # même jour…
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2  # …et pourtant importé
+    assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 0
+    # fiche d'avant `published` (bucket publié par une version antérieure) : la date fait foi
+    del bucket.json[SEED_META_KEY]["published"]
+    cache2 = WeatherCache(tmp_path / "cache2.db")
+    cache2.meta_set("seed_generated", bucket.json[SEED_META_KEY]["generated"])
+    assert sync_seed(cache2, bucket, tmp_path / "absent.json", work) == 0
+
+
+@pytest.mark.asyncio
 async def test_seed_published_to_bucket_is_imported_once_at_startup(grid, scenario, tmp_path):
     from champis_api.cache import WeatherCache
     from champis_api.seed import SEED_DB_KEY, SEED_META_KEY, publish_seed, seed, sync_seed
@@ -428,7 +454,10 @@ async def test_seed_published_to_bucket_is_imported_once_at_startup(grid, scenar
     # nouvel amorçage publié (date différente) → réimporté, sans écraser la prévision
     day = dict.fromkeys(("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil"), 7.0)
     cache.put_history(CELL, {(TODAY - timedelta(days=1)).isoformat(): day}, "forecast")
-    bucket.json[SEED_META_KEY]["generated"] = "2026-11-01"
+    bucket.json[SEED_META_KEY] |= {
+        "generated": "2026-11-01",
+        "published": "2026-11-01T08:00:00+00:00",
+    }
     assert sync_seed(cache, bucket, tmp_path / "absent.json", work) == 2
     assert (
         cache.history(CELL, TODAY - timedelta(days=1), TODAY)[

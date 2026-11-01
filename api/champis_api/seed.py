@@ -27,7 +27,7 @@ import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +52,10 @@ BACKOFF_MAX_S = 900  # les quotas se comptent à l'heure : attendre, pas abandon
 SEED_DB_KEY = "weather/weather_seed.db"
 SEED_META_KEY = "weather/weather_seed.json"
 META_GENERATED = "seed_generated"  # clé `meta` : date de l'amorçage importé
+# clé `meta` : horodatage de la publication importée. `generated` n'est qu'un jour : deux
+# publications le même jour (climatologie puis historique complet) se confondaient, et l'API
+# ignorait la seconde.
+META_PUBLISHED = "seed_published"
 
 
 # ---------------------------------------------------------------------- amorçage (poste)
@@ -145,8 +149,11 @@ async def _patiently(
 # ---------------------------------------------------------------------- publication (bucket)
 
 
-def publish_seed(bucket: BucketLike, path: Path, progress=None) -> dict[str, Any]:
-    """Dépose la base d'amorçage et sa fiche dans le bucket ; renvoie la fiche."""
+def publish_seed(
+    bucket: BucketLike, path: Path, progress=None, now: datetime | None = None
+) -> dict[str, Any]:
+    """Dépose la base d'amorçage et sa fiche dans le bucket ; renvoie la fiche. La fiche porte
+    `published`, horodatage propre à cette publication, que l'API compare au démarrage."""
     db = WeatherCache(path)
     try:
         info = seed_info(db, path)
@@ -157,6 +164,7 @@ def publish_seed(bucket: BucketLike, path: Path, progress=None) -> dict[str, Any
             f"{path} : aucune climatologie dans la base (champis-pipeline soil-clim, ou "
             "champis-api seed --climatology)"
         )
+    info["published"] = (now or datetime.now(UTC)).astimezone(UTC).isoformat(timespec="seconds")
     bucket.upload(path, SEED_DB_KEY, progress)
     bucket.put_json(SEED_META_KEY, info)
     return info
@@ -191,8 +199,11 @@ def sync_seed(cache: WeatherCache, bucket: BucketLike | None, local: Path, work_
     current = cache.meta_get(META_GENERATED)
     meta = bucket.get_json(SEED_META_KEY) if bucket is not None else None
     if meta is not None:
-        if meta.get("generated") == current:
-            log.info("amorçage du bucket déjà importé (%s)", current)
+        # une fiche récente se reconnaît à `published` ; une ancienne, à sa seule date
+        published = meta.get("published")
+        seen = cache.meta_get(META_PUBLISHED) if published else current
+        if (published or meta.get("generated")) == seen:
+            log.info("amorçage du bucket déjà importé (%s)", seen)
             return 0
         work_dir.mkdir(parents=True, exist_ok=True)
         tmp = work_dir / "weather_seed.db"
@@ -204,6 +215,8 @@ def sync_seed(cache: WeatherCache, bucket: BucketLike | None, local: Path, work_
             n = cache.import_seed_db(tmp)
         finally:
             tmp.unlink(missing_ok=True)
+        if published:
+            cache.meta_set(META_PUBLISHED, published)
         log.info("amorçage importé depuis le bucket : %d cellules (%s)", n, meta.get("generated"))
         return n
     if local.exists() and current is None:
