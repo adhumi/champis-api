@@ -11,6 +11,9 @@
 
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
+# .ONESHELL et .SHELLFLAGS demandent GNU Make ≥ 3.82 ; le make 3.81 de macOS (Xcode) les ignore et
+# lance chaque ligne dans son propre shell : une recette ne doit donc pas faire passer une variable
+# shell d'une ligne à l'autre (voir publish).
 .ONESHELL:
 # Sans ça, une recette .ONESHELL ne rend que le code de sa dernière ligne : un échec au milieu passe inaperçu.
 .SHELLFLAGS := -eu -o pipefail -c
@@ -135,8 +138,10 @@ weather-grid: ## Cellules météo 5 km avec poids Σ T : data/weather_grid.json 
 
 .PHONY: publish
 publish: ## PMTiles de data/tiles -> bucket + manifeste, jeux par département compris ; --prune efface les autres jeux
-	read -r -p "Publier le jeu [$(DEPTS)] et effacer les autres jeux du bucket (--prune) ? [o/N] " r
-	[[ "$$r" == [oOyY] ]] || { echo "annulé"; exit 1; }
+	@# question et test sur une même ligne : le make 3.81 de macOS (Xcode) ignore .ONESHELL et lance
+	@# chaque ligne dans son propre shell, où `r` serait vide
+	@read -r -p "Publier le jeu [$(DEPTS)] et effacer les autres jeux du bucket (--prune) ? [o/N] " r; \
+	  [[ "$$r" == [oOyY] ]] || { echo "annulé"; exit 1; }
 	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune $(SP)
 
 .PHONY: publish-dry
