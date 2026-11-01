@@ -10,7 +10,7 @@ mapping/      bdforet_to_hosts.json : 32 codes TFV → hôtes
 shared/       palette.json, vectors/ (contrat de parité Python/Swift) (skill scoring-parity), texts/ (articles de Comprendre, app et site)
 pipeline/     champis_pipeline : download → grid → terrain → tiles   (skill geo-pipeline)
 api/          champis_api : scoring M/Φ, vecteurs, [FastAPI à venir] (skill open-meteo)
-web/          [site à venir]
+web/          site champis.adhumi.fr : index (Aujourd'hui), carte, comprendre, soutenir ; site.js testé en node
 data/         téléchargements et rasters, jamais commités
 ```
 
