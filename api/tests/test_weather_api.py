@@ -54,7 +54,7 @@ async def test_weather_shape(api):
     assert rows[0]["date"] == (TODAY - timedelta(days=3)).isoformat()
     assert len(rows) == 11
     today = _alt(body, "boletus_edulis", TODAY, 450)
-    assert set(today) == {"M", "M_eff", "phi"} | {"factors"}
+    assert set(today) == {"M", "M_eff", "phi", "summary", "trigger_days"} | {"factors"}
     assert set(today["factors"]) == {
         "temp",
         "rain",

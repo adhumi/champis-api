@@ -117,14 +117,22 @@ def rain_events(
     return out
 
 
-def factor_trigger(species: dict[str, Any], s: DailySeries, day: date) -> float:
+def trigger_event(species: dict[str, Any], s: DailySeries, day: date) -> tuple[float, int | None]:
+    """(facteur, âge en jours de l'événement retenu) : le meilleur événement de la fenêtre (règle 4),
+    le plus récent à égalité ; `None` sans événement. L'âge sert aux phrases en clair (lot 2)."""
     cfg = species["weather"]["trigger"]
     lag = cfg["lag_days"]
     events = rain_events(s, day, cfg["event_mm"], cfg["event_days"], int(lag["max"]))
-    best = 0.0
-    for d in events:
-        best = max(best, trapezoid((day - d).days, lag))
-    return best
+    best, age = 0.0, None
+    for d in events:  # chronologique : à facteur égal, le plus récent remplace
+        f = trapezoid((day - d).days, lag)
+        if f >= best and (f > 0 or age is None):
+            best, age = f, (day - d).days
+    return best, age
+
+
+def factor_trigger(species: dict[str, Any], s: DailySeries, day: date) -> float:
+    return trigger_event(species, s, day)[0]
 
 
 def factor_soil(species: dict[str, Any], s: DailySeries, day: date) -> float:

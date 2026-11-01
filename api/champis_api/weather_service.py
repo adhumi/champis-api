@@ -12,8 +12,15 @@ from typing import Any
 from champis_pipeline import SCORING_VERSION
 from champis_pipeline.species import all_species_hash, load_species
 
+from .explain import summary
 from .grid import Cell
-from .scoring import DailySeries, phenology_window, required_series_days, weather_index
+from .scoring import (
+    DailySeries,
+    phenology_window,
+    required_series_days,
+    trigger_event,
+    weather_index,
+)
 from .weather_client import CellRaw, soil_percentile
 
 DAYS_BEFORE = 3
@@ -118,15 +125,21 @@ def cell_weather(
         day_rows = []
         for d in days:
             by_alt = {}
+            trigger_days = trigger_event(sp, s, d)[1] if detail else None
             for alt in cell.alt_classes:
                 w = weather_index(sp, s, d, alt)
+                phi = phenology_window(sp, d, alt)
                 row = {
                     "M": w["M"],
                     "M_eff": w["M_eff"],
-                    "phi": phenology_window(sp, d, alt),
+                    "phi": phi,
                 }
                 if detail:
-                    row["factors"] = {k: v for k, v in w.items() if k not in ("M", "M_eff")}
+                    factors = {k: v for k, v in w.items() if k not in ("M", "M_eff")}
+                    row["factors"] = factors
+                    # phrases en clair et âge de la pluie déclenchante (refonte UX, lot 2)
+                    row["trigger_days"] = trigger_days
+                    row["summary"] = summary(factors, phi, trigger_days)
                 by_alt[str(int(alt))] = row
             day_rows.append({"date": d.isoformat(), "by_alt": by_alt})
         out_species[sid] = day_rows

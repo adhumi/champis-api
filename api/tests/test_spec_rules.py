@@ -154,7 +154,11 @@ async def test_weather_covers_eleven_days_per_altitude_class_with_eight_factors(
     for row in rows:
         assert set(row["by_alt"]) == {"450", "1350"}
         for alt in row["by_alt"].values():
-            assert set(alt) >= {"M", "M_eff", "phi", "factors"}
+            assert set(alt) >= {"M", "M_eff", "phi", "factors", "summary", "trigger_days"}
+            assert isinstance(alt["summary"], list) and all(
+                isinstance(p, str) for p in alt["summary"]
+            )
+            assert alt["trigger_days"] is None or isinstance(alt["trigger_days"], int)
             assert set(alt["factors"]) == {
                 "temp",
                 "rain",
@@ -184,7 +188,8 @@ async def test_weather_covers_eleven_days_per_altitude_class_with_eight_factors(
         assert set(cell["cell"]) >= {"id", "lat", "lon", "alt_classes", "elevation_m"}
         for row in cell["species"]["boletus_edulis"]:
             for alt in row["by_alt"].values():
-                assert "factors" not in alt and set(alt) >= {"M", "M_eff", "phi"}
+                assert "factors" not in alt and "summary" not in alt and "trigger_days" not in alt
+                assert set(alt) >= {"M", "M_eff", "phi"}
 
 
 @pytest.mark.asyncio
