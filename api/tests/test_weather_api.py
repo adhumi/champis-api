@@ -554,6 +554,30 @@ async def test_api_key_switches_to_customer_hosts(grid, scenario):
         await bad.fetch_cells([_cell(grid)])
 
 
+@pytest.mark.asyncio
+async def test_seed_with_standard_key_falls_back_to_free_archive(grid, scenario, tmp_path):
+    """Clé du plan Standard : customer-archive-api répond 403 (pas d'API historique) ; l'amorçage
+    bascule sur l'archive gratuite, sans clé, au lieu d'échouer (README › amorçage)."""
+    from champis_api.seed import seed
+
+    client = make_client(scenario, seeded=False, api_key="standard-key")
+    info = await seed(grid, client, tmp_path / "s.db", today=TODAY)
+    assert info["history_cells"] == 2
+    assert client.archive_url.startswith("https://archive-api.")  # la suite aussi
+    assert client.forecast_url.startswith("https://customer-api.")  # la prévision garde la clé
+
+
+@pytest.mark.asyncio
+async def test_http_errors_never_carry_the_api_key(grid, scenario, tmp_path):
+    """L'erreur qui remonte jusqu'à la console (et au journal) n'a plus la clé dans son message."""
+    scenario.fail, scenario.fail_status = {"forecast"}, 500
+    client = make_client(scenario, api_key="test-key")
+    with pytest.raises(httpx.HTTPStatusError) as info:
+        await client._fetch("forecast", [_cell(grid)], TODAY)
+    assert "test-key" not in str(info.value) and "apikey=***" in str(info.value)
+    assert info.value.response.status_code == 500
+
+
 def test_error_messages_hide_the_api_key():
     import httpx
     from champis_api.weather_client import _redact

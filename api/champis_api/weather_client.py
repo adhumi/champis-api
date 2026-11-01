@@ -253,8 +253,6 @@ class OpenMeteoClient:
             "longitude": ",".join(f"{c.lon:.4f}" for c in batch),
             "timezone": TIMEZONE,
         }
-        if self.api_key:
-            params["apikey"] = self.api_key
         if kind == "forecast":
             params |= {
                 "daily": ",".join(DAILY_VARS),
@@ -280,6 +278,8 @@ class OpenMeteoClient:
             }
             url, norm = self.archive_url, _normalize_soil_climatology
             days, n_vars = CLIMATOLOGY_YEARS * 365, 1
+        if self.api_key and url in (CUSTOMER_FORECAST_URL, CUSTOMER_ARCHIVE_URL):
+            params["apikey"] = self.api_key  # jamais sur les API gratuites, qui la refusent
         self.weight += call_weight(len(batch), days, n_vars)
         async with self._lock:  # une requête à la fois, espacées : pas de rafale
             wait = self._last_request + self.min_interval_s - time.monotonic()
@@ -287,7 +287,22 @@ class OpenMeteoClient:
                 await asyncio.sleep(wait)
             self._last_request = time.monotonic()
             r = await self.http.get(url, params=params, timeout=60.0)
-        r.raise_for_status()
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            if r.status_code == 403 and url == CUSTOMER_ARCHIVE_URL:
+                # clé du plan Standard : la prévision seulement, pas l'API historique (Professional).
+                # L'amorçage passe alors par l'archive gratuite, sans clé, pour toute la suite.
+                log.warning(
+                    "clé Open-Meteo refusée par l'archive (plan sans API historique) : "
+                    "archive gratuite, sans clé"
+                )
+                self.archive_url = ARCHIVE_URL
+                return await self._fetch(kind, batch, today, past_days)
+            # httpx met l'URL complète, clé comprise, dans le message : jamais dans un terminal
+            raise httpx.HTTPStatusError(
+                _redact(e), request=e.request, response=e.response
+            ) from None
         body = r.json()
         items = body if isinstance(body, list) else [body]
         if len(items) != len(batch):

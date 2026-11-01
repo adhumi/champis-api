@@ -114,8 +114,12 @@ def transport(sc: Scenario, today: date) -> httpx.MockTransport:
         q = parse_qs(urlparse(str(request.url)).query)
         n = len(q["latitude"][0].split(","))
         host = request.url.host
-        if host.startswith("customer-") and q.get("apikey", [""])[0] != "test-key":
+        key = q.get("apikey", [""])[0]
+        if host.startswith("customer-") and key not in ("test-key", "standard-key"):
             return httpx.Response(401, json={"reason": "apikey manquante ou invalide"})
+        if host == "customer-archive-api.open-meteo.com" and key == "standard-key":
+            # plan Standard : prévision seulement, l'API historique est réservée au Professional
+            return httpx.Response(403, json={"reason": "plan sans API historique"})
         if host == "archive-api.open-meteo.com" and "apikey" in q:
             return httpx.Response(400, json={"reason": "clé inattendue sur l'API gratuite"})
         if host in ("api.open-meteo.com", "customer-api.open-meteo.com"):
