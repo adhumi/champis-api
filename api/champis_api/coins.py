@@ -3,7 +3,9 @@
 Spec › App iOS › Mes coins et › Backend (30 oct. 2026) : les coins sont synchronisés vers le
 backend avec le jeton APNs ; après la pré-chauffe du matin, le backend calcule le score de chaque
 coin et envoie **une seule** notification par appareil, récapitulative, **seulement si au moins un
-coin est bon ou excellent**. L'app ne fait aucun calcul en arrière-plan.
+coin est bon ou excellent**. L'app ne fait aucun calcul en arrière-plan. La notification porte
+`coin_id` (le coin le mieux noté) et `GET /coins` renvoie les onze jours de chaque coin (refonte UX,
+lot 1, 1er nov. 2026).
 
 Score d'un coin = max sur ses espèces de `T_e × M_eff_e × Φ_e` (règle 9), avec `T_e` lu par l'app
 dans les tuiles au moment où le coin est créé, et `M_eff`, `Φ` de la cellule météo la plus proche
@@ -31,12 +33,23 @@ DAY_NAMES = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "diman
 
 
 @dataclass(frozen=True)
+class CoinDay:
+    """Un des onze jours J−3 → J+7 d'un coin : `None` quand la météo manque ce jour-là."""
+
+    date: date
+    value: float | None
+    leading: str | None
+
+
+@dataclass(frozen=True)
 class CoinScore:
     coin: Coin
     today: float | None  # None : pas de météo pour la cellule
     best_day: date | None  # meilleur jour de J à J+7 (strictement meilleur que J), sinon None
     best: float | None
     leading: str | None  # espèce qui porte le score du jour
+    # les onze jours (refonte UX, lot 1, 1er nov. 2026) : la fiche d'un coin et sa tendance
+    days: tuple[CoinDay, ...] = ()
 
 
 def nearest_alt_class(cell: Cell, alt_m: float) -> str:
@@ -50,16 +63,16 @@ def score_coins(
 ) -> list[CoinScore]:
     """`weather` : cellule → réponse de `cell_weather` (detail=False). Pur et testable."""
     out = []
-    horizon = [d for d in days_around(today) if d >= today]
+    all_days = days_around(today)
     for coin in coins:
         cell = grid.nearest(coin.lat, coin.lon)
         w = weather.get(cell.id) if cell else None
         if w is None:
-            out.append(CoinScore(coin, None, None, None, None))
+            out.append(CoinScore(coin, None, None, None, None, _empty_days(all_days)))
             continue
         alt = nearest_alt_class(cell, coin.alt_class)
         per_day: dict[date, tuple[float, str]] = {}
-        for d in horizon:
+        for d in all_days:
             best_v, best_sid = None, None
             for sid, t in coin.t.items():
                 rows = w["species"].get(sid)
@@ -73,17 +86,25 @@ def score_coins(
                     best_v, best_sid = v, sid
             if best_v is not None:
                 per_day[d] = (best_v, best_sid)
+        days = tuple(
+            CoinDay(d, per_day[d][0], per_day[d][1]) if d in per_day else CoinDay(d, None, None)
+            for d in all_days
+        )
         if today not in per_day:
-            out.append(CoinScore(coin, None, None, None, None))
+            out.append(CoinScore(coin, None, None, None, None, days))
             continue
         t_val, lead = per_day[today]
         later = [(v, d) for d, (v, _) in per_day.items() if d > today]
         best = max(later, default=None)
         if best and best[0] > t_val:
-            out.append(CoinScore(coin, t_val, best[1], best[0], lead))
+            out.append(CoinScore(coin, t_val, best[1], best[0], lead, days))
         else:
-            out.append(CoinScore(coin, t_val, None, None, lead))
+            out.append(CoinScore(coin, t_val, None, None, lead, days))
     return out
+
+
+def _empty_days(all_days: list[date]) -> tuple[CoinDay, ...]:
+    return tuple(CoinDay(d, None, None) for d in all_days)
 
 
 def good_threshold() -> float:
@@ -96,8 +117,11 @@ def label_fr(value: float) -> str:
     return next(t["fr"] for t in load_palette()["thresholds"] if t["label"] == cls["label"])
 
 
-def compose(scores: list[CoinScore], today: date) -> tuple[str, str] | None:
-    """(titre, corps) de la notification, ou None s'il n'y a rien à annoncer."""
+def compose(scores: list[CoinScore], today: date) -> tuple[str, str, str] | None:
+    """(titre, corps, id du meilleur coin) de la notification, ou None s'il n'y a rien à annoncer.
+
+    L'id du coin le mieux noté part dans la charge utile (`coin_id`) : l'app ouvre sa fiche.
+    """
     threshold = good_threshold()
     ready = sorted(
         (s for s in scores if s.today is not None and s.today >= threshold),
@@ -123,7 +147,7 @@ def compose(scores: list[CoinScore], today: date) -> tuple[str, str] | None:
     if peaks:
         p = max(peaks, key=lambda s: s.best)
         body += f" Pic {DAY_NAMES[p.best_day.weekday()]} : {p.coin.name} {p.best:.2f}."
-    return title, body
+    return title, body, ready[0].coin.id
 
 
 async def weather_for(
@@ -170,8 +194,10 @@ async def notify_all(
         if message is None:
             report.skipped += 1
             continue
-        title, body = message
-        res = await apns.send(device.apns_token, title, body, sandbox=device.sandbox)
+        title, body, coin_id = message
+        res = await apns.send(
+            device.apns_token, title, body, sandbox=device.sandbox, extra={"coin_id": coin_id}
+        )
         if res.ok:
             report.sent += 1
         else:

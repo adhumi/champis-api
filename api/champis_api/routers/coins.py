@@ -91,6 +91,11 @@ async def get_coins(user: UserId, store: StoreDep, request: Request) -> dict[str
                 "leading": s.leading,
                 "best_day": s.best_day.isoformat() if s.best_day else None,
                 "best": s.best,
+                # onze jours J−3 → J+7 pour la fiche du coin et sa tendance (lot 1, 1er nov. 2026)
+                "days": [
+                    {"date": d.date.isoformat(), "value": d.value, "leading": d.leading}
+                    for d in s.days
+                ],
             }
             for s in scores
         ],

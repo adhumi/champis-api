@@ -55,10 +55,11 @@ class FakeApns:
     def __init__(self):
         self.sent = []
 
-    async def send(self, token, title, body, sandbox=False, **_):
+    async def send(self, token, title, body, sandbox=False, extra=None, **_):
         from champis_api.apns import ApnsResult
 
         self.sent.append((token, title, body, sandbox))
+        self.extras = [*getattr(self, "extras", []), extra]
         if token == "dead" * 8:
             return ApnsResult(False, 410, "Unregistered")
         return ApnsResult(True, 200)
@@ -89,6 +90,12 @@ def test_score_coins_uses_pixel_t_and_cell_weather(grid):
     assert scores[1].today == pytest.approx(0.9 * 0.4)  # classe 1350 : M_eff moitié
     assert scores[2].today is None and scores[2].leading is None
     assert scores[0].best_day is None  # météo constante : pas de meilleur jour à venir
+    # les onze jours J−3 → J+7 (lot 1) : toujours onze entrées, valeur None sans météo
+    assert [d.date for d in scores[0].days] == [TODAY + timedelta(days=k) for k in range(-3, 8)]
+    assert all(
+        d.value == pytest.approx(0.72) and d.leading == "boletus_edulis" for d in scores[0].days
+    )
+    assert len(scores[2].days) == 11 and all(d.value is None for d in scores[2].days)
 
 
 def test_score_coins_reports_a_better_coming_day(grid):
@@ -121,7 +128,8 @@ def test_compose_only_when_a_coin_is_good():
         CoinScore(c1, 0.82, TODAY + timedelta(days=2), 0.9, "boletus_edulis"),
         CoinScore(c2, 0.4, None, None, "boletus_edulis"),
     ]
-    title, body = compose(ready, TODAY)
+    title, body, coin_id = compose(ready, TODAY)
+    assert coin_id == "1"  # le coin le mieux noté : l'app ouvre sa fiche
     assert title == "Champis — 1 coin prêt aujourd'hui"
     assert "Combe : excellent (0.82, Cèpe de Bordeaux)" in body
     assert "Tourbière reste sous « bon »" in body
@@ -142,6 +150,14 @@ async def test_put_and_get_coins(api, store: Store):
     assert [c["name"] for c in body["coins"]] == ["Sapinière"]
     assert body["today"] == TODAY.isoformat()
     assert 0 <= body["coins"][0]["score"] <= 1 and body["coins"][0]["leading"] in coin2["t"]
+    days = body["coins"][0]["days"]  # lot 1 : onze jours J−3 → J+7, le jour J égal au score
+    assert [d["date"] for d in days] == [
+        (TODAY + timedelta(days=k)).isoformat() for k in range(-3, 8)
+    ]
+    today_row = next(d for d in days if d["date"] == TODAY.isoformat())
+    assert today_row["value"] == body["coins"][0]["score"]
+    assert today_row["leading"] == body["coins"][0]["leading"]
+    assert set(days[0]) == {"date", "value", "leading"}
     # validation : cible inconnue, espèce inconnue dans t, T hors [0, 1], trop de coins
     bad = _coin(target="morilles")
     assert (await api.put("/coins", json={"coins": [bad]}, headers=H)).status_code == 422
@@ -191,6 +207,7 @@ async def test_notify_all_sends_one_recap_per_device(grid, client, store: Store)
     assert (
         token == "aa" * 16 and sandbox is False and "Combe" in body and title.startswith("Champis")
     )
+    assert apns.extras[0] == {"coin_id": good[0]["id"]}  # charge utile : le coin à ouvrir
     # le jeton désinscrit ne sera plus sollicité
     assert {d.user_id for d, _ in store.devices_with_coins()} == {good_user, quiet_user}
 
