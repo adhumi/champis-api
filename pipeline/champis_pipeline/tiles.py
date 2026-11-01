@@ -22,6 +22,7 @@ import logging
 import math
 import multiprocessing
 import os
+import shutil
 import sqlite3
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -105,7 +106,7 @@ def _build(
 ) -> Path:
     TILES_DIR.mkdir(parents=True, exist_ok=True)
     out = TILES_DIR / f"{kind}-{tag}.pmtiles"
-    if out.exists() and not force:
+    if _done(out, force):
         return out
     missing = [p for p in srcs if not p.exists()]
     if missing:
@@ -117,12 +118,47 @@ def _build(
     mbt = work / f"{kind}.mbtiles"
     (_mosaic if kind == "T" else _mosaic_alt)(srcs, mosaic)
     _mbtiles(mosaic, mbt, name, description, kind, jobs or default_jobs())
-    from pmtiles.convert import mbtiles_to_pmtiles
-
-    out.unlink(missing_ok=True)
-    mbtiles_to_pmtiles(str(mbt), str(out), MAX_ZOOM)
+    _write_pmtiles(mbt, out)
     log.info("écrit %s", out)
     return out
+
+
+def _pmtiles_count(path: Path) -> int | None:
+    """Tuiles adressées par un PMTiles, `None` s'il est illisible (vide, tronqué)."""
+    from pmtiles.reader import MmapSource, Reader
+
+    try:
+        with open(path, "rb") as f:
+            return Reader(MmapSource(f)).header()["addressed_tiles_count"]
+    except (OSError, ValueError, IndexError, KeyError):
+        return None
+
+
+def _done(out: Path, force: bool) -> bool:
+    """`out` est-il un PMTiles fini qu'on peut sauter ? Un fichier vide ou illisible (laissé par un
+    plantage d'une version antérieure, qui écrivait en place) est refait, avec un avertissement."""
+    if force or not out.exists():
+        return False
+    if _pmtiles_count(out):
+        return True
+    log.warning("%s illisible ou vide (écriture interrompue) : refait", out.name)
+    out.unlink()
+    return False
+
+
+def _write_pmtiles(mbt: Path, out: Path) -> None:
+    """MBTiles → PMTiles par un fichier `.part` renommé à la fin : un plantage (disque plein, jeu
+    vide) ne laisse jamais un `out` que le passage suivant prendrait pour « déjà fait »."""
+    from pmtiles.convert import mbtiles_to_pmtiles
+
+    part = out.with_name(out.name + ".part")
+    part.unlink(missing_ok=True)
+    try:
+        mbtiles_to_pmtiles(str(mbt), str(part), MAX_ZOOM)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    os.replace(part, out)
 
 
 _MOSAIC_KWDS = {"compress": "DEFLATE", "tiled": True, "blockxsize": 512, "blockysize": 512}
@@ -421,19 +457,16 @@ def full_set_source(kind: str, tag: str) -> Path | None:
     interrompu puis repris par un autre chemin, `_work` nettoyé) est reconstruit depuis le PMTiles,
     sans rien re-rendre."""
     pm = TILES_DIR / f"{kind}-{tag}.pmtiles"
-    if not pm.exists():
+    expected = _pmtiles_count(pm) if pm.exists() else None
+    if not expected:
         return None
-    from pmtiles.reader import MmapSource, Reader
-
-    with open(pm, "rb") as f:
-        expected = Reader(MmapSource(f)).header()["addressed_tiles_count"]
     mbt = work_mbtiles(kind, tag)
     if mbt.exists() and _tile_count(mbt) == expected:
         return mbt
     log.warning(
-        "MBTiles de travail %s absent ou incomplet (%s tuiles, %d attendues) : reconstruit depuis %s",
+        "MBTiles de travail %s absent ou incomplet (%d tuiles sur %d) : reconstruit depuis %s",
         mbt,
-        _tile_count(mbt) if mbt.exists() else "aucune",
+        (_tile_count(mbt) or 0) if mbt.exists() else 0,
         expected,
         pm.name,
     )
@@ -441,7 +474,21 @@ def full_set_source(kind: str, tag: str) -> Path | None:
 
     mbt.parent.mkdir(parents=True, exist_ok=True)
     mbt.unlink(missing_ok=True)
-    pmtiles_to_mbtiles(str(pm), str(mbt))
+    # le MBTiles ne déduplique pas les tuiles : compter large avant de lancer des minutes d'écriture
+    need, free = 2 * pm.stat().st_size, shutil.disk_usage(mbt.parent).free
+    if free < need:
+        raise OSError(
+            f"espace disque insuffisant pour reconstruire {mbt} : {free / 1e9:.1f} Go libres, "
+            f"~{need / 1e9:.1f} Go nécessaires"
+        )
+    part = mbt.with_name(mbt.name + ".part")
+    part.unlink(missing_ok=True)
+    try:
+        pmtiles_to_mbtiles(str(pm), str(part))
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    os.replace(part, mbt)
     return mbt
 
 
@@ -497,10 +544,7 @@ def extract(src_mbtiles: Path, out: Path, bounds, name: str, description: str) -
             f"aucune tuile de {src_mbtiles} dans l'emprise {w:.3f},{s:.3f},{e:.3f},{n:.3f} "
             f"pour {out.name}"
         )
-    from pmtiles.convert import mbtiles_to_pmtiles
-
-    out.unlink(missing_ok=True)
-    mbtiles_to_pmtiles(str(mbt), str(out), MAX_ZOOM)
+    _write_pmtiles(mbt, out)
     return count
 
 
@@ -513,7 +557,7 @@ def build_dept(
     h = species_hash(species_id)
     tag = f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash([dept])}"
     out = TILES_DIR / f"T-{tag}.pmtiles"
-    if out.exists() and not force:
+    if _done(out, force):
         return out
     src = full_set_source("T", f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash(all_depts)}")
     if src is None:
@@ -535,7 +579,7 @@ def build_alt_dept(
     """Couche A d'un seul département (voir `build_dept`)."""
     tag = f"{ALT_CLASS_M}m-d{_depts_hash([dept])}"
     out = TILES_DIR / f"A-{tag}.pmtiles"
-    if out.exists() and not force:
+    if _done(out, force):
         return out
     src = full_set_source("A", f"{ALT_CLASS_M}m-d{_depts_hash(all_depts)}")
     if src is None:

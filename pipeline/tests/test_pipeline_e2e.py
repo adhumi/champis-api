@@ -264,6 +264,49 @@ def test_dept_extract_rebuilds_stale_work_mbtiles(sandbox):
         tiles.extract(src, full.parent / "T-vide.pmtiles", (-60.0, -60.0, -59.9, -59.9), "T", "t")
 
 
+def test_interrupted_pmtiles_never_counts_as_done(sandbox, monkeypatch):
+    """Un PMTiles vide laissé par un plantage n'est pas « déjà fait » ; une conversion qui échoue ne
+    laisse aucun fichier ; une reconstruction sans assez de disque le dit au lieu d'un disk I/O error."""
+    import shutil
+    from collections import namedtuple
+
+    import pytest
+
+    shp, grid = sandbox["shp"], sandbox["grid"]
+    rasterize.host_cover(DEPT, shp, grid)
+    rasterize.ph(DEPT, sandbox["ph"], grid)
+    rasterize.dem_products(DEPT, [sandbox["dem"]], grid)
+    terrain.compute(DEPT, "boletus_edulis")
+    full = tiles.build("boletus_edulis", [DEPT])
+    tag = full.stem.removeprefix("T-")
+    src = tiles.work_mbtiles("T", tag)
+    bounds = tiles.dept_bounds("T", DEPT, "boletus_edulis")
+
+    # extraction vide : erreur, et ni le fichier ni son .part ne restent
+    empty = full.parent / "T-vide.pmtiles"
+    with pytest.raises(ValueError):
+        tiles.extract(src, empty, (-60.0, -60.0, -59.9, -59.9), "T", "t")
+    assert not empty.exists()
+    assert not empty.with_name(empty.name + ".part").exists()
+
+    # fichier de 0 octet (version antérieure, plantée en pleine écriture) : refait, pas sauté
+    size = full.stat().st_size
+    full.write_bytes(b"")
+    assert tiles.build("boletus_edulis", [DEPT]) == full
+    assert full.stat().st_size == size
+
+    # reconstruction du MBTiles de travail sans assez de disque : message clair, rien d'écrit
+    src.unlink()
+    usage = namedtuple("usage", "total used free")
+    with monkeypatch.context() as m:
+        m.setattr(shutil, "disk_usage", lambda _: usage(0, 0, 1))
+        with pytest.raises(OSError, match="espace disque insuffisant"):
+            tiles.full_set_source("T", tag)
+    assert not src.exists()
+    assert tiles.full_set_source("T", tag) == src
+    assert tiles.extract(src, full.parent / "T-ok.pmtiles", bounds, "T", "t") > 0
+
+
 def test_alt_layer_matches_weather_grid_classes(sandbox):
     """La couche A porte l'indice de classe du pixel ; son centre est une classe de la cellule météo."""
     import io
