@@ -402,6 +402,49 @@ def work_mbtiles(kind: str, tag: str) -> Path:
     return TILES_DIR / "_work" / f"{kind}-{tag}" / f"{kind}.mbtiles"
 
 
+def _tile_count(mbtiles: Path) -> int | None:
+    """Nombre de tuiles d'un MBTiles, `None` s'il est illisible (rendu interrompu, fichier tronqué)."""
+    try:
+        db = sqlite3.connect(f"file:{mbtiles}?mode=ro", uri=True)
+        try:
+            return db.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+        finally:
+            db.close()
+    except sqlite3.DatabaseError:
+        return None
+
+
+def full_set_source(kind: str, tag: str) -> Path | None:
+    """MBTiles de travail du jeu complet `<kind>-<tag>`, prêt pour `extract`, ou `None` si le jeu
+    complet n'a pas de PMTiles. Le PMTiles n'est écrit qu'à la fin d'un rendu réussi : c'est lui qui
+    fait foi. Un MBTiles de travail absent, illisible ou qui n'a pas autant de tuiles que lui (rendu
+    interrompu puis repris par un autre chemin, `_work` nettoyé) est reconstruit depuis le PMTiles,
+    sans rien re-rendre."""
+    pm = TILES_DIR / f"{kind}-{tag}.pmtiles"
+    if not pm.exists():
+        return None
+    from pmtiles.reader import MmapSource, Reader
+
+    with open(pm, "rb") as f:
+        expected = Reader(MmapSource(f)).header()["addressed_tiles_count"]
+    mbt = work_mbtiles(kind, tag)
+    if mbt.exists() and _tile_count(mbt) == expected:
+        return mbt
+    log.warning(
+        "MBTiles de travail %s absent ou incomplet (%s tuiles, %d attendues) : reconstruit depuis %s",
+        mbt,
+        _tile_count(mbt) if mbt.exists() else "aucune",
+        expected,
+        pm.name,
+    )
+    from pmtiles.convert import pmtiles_to_mbtiles
+
+    mbt.parent.mkdir(parents=True, exist_ok=True)
+    mbt.unlink(missing_ok=True)
+    pmtiles_to_mbtiles(str(pm), str(mbt))
+    return mbt
+
+
 def dept_bounds(
     kind: str, dept: str, species_id: str | None = None
 ) -> tuple[float, float, float, float]:
@@ -448,6 +491,12 @@ def extract(src_mbtiles: Path, out: Path, bounds, name: str, description: str) -
     db.commit()
     db.execute("DETACH DATABASE src")
     db.close()
+    if count == 0:
+        # pmtiles ne sait pas écrire un jeu vide (IndexError) : dire plutôt d'où vient le vide
+        raise ValueError(
+            f"aucune tuile de {src_mbtiles} dans l'emprise {w:.3f},{s:.3f},{e:.3f},{n:.3f} "
+            f"pour {out.name}"
+        )
     from pmtiles.convert import mbtiles_to_pmtiles
 
     out.unlink(missing_ok=True)
@@ -459,14 +508,15 @@ def build_dept(
     species_id: str, dept: str, all_depts: list[str], force: bool = False, jobs: int | None = None
 ) -> Path:
     """Jeu d'un seul département pour une espèce, pour le hors ligne de l'app : extrait du MBTiles
-    de travail du jeu `all_depts` quand il existe, sinon rendu complet du département."""
+    de travail du jeu `all_depts` (vérifié contre son PMTiles, voir `full_set_source`) quand ce jeu
+    existe, sinon rendu complet du département."""
     h = species_hash(species_id)
     tag = f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash([dept])}"
     out = TILES_DIR / f"T-{tag}.pmtiles"
     if out.exists() and not force:
         return out
-    src = work_mbtiles("T", f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash(all_depts)}")
-    if not src.exists():
+    src = full_set_source("T", f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash(all_depts)}")
+    if src is None:
         return build(species_id, [dept], force, jobs)
     n = extract(
         src,
@@ -487,8 +537,8 @@ def build_alt_dept(
     out = TILES_DIR / f"A-{tag}.pmtiles"
     if out.exists() and not force:
         return out
-    src = work_mbtiles("A", f"{ALT_CLASS_M}m-d{_depts_hash(all_depts)}")
-    if not src.exists():
+    src = full_set_source("A", f"{ALT_CLASS_M}m-d{_depts_hash(all_depts)}")
+    if src is None:
         return build_alt([dept], force, jobs)
     n = extract(
         src,

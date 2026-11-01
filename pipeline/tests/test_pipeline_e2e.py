@@ -231,6 +231,39 @@ def test_extract_dept_subset_of_france_set(sandbox):
     assert tiles.build_dept("boletus_edulis", DEPT, ["00", DEPT]) == full
 
 
+def test_dept_extract_rebuilds_stale_work_mbtiles(sandbox):
+    """Un MBTiles de travail incomplet (rendu interrompu) ou absent ne donne plus un jeu vide et une
+    IndexError de pmtiles : il est reconstruit depuis le PMTiles du jeu complet, qui fait foi."""
+    import pytest
+
+    shp, grid = sandbox["shp"], sandbox["grid"]
+    rasterize.host_cover(DEPT, shp, grid)
+    rasterize.ph(DEPT, sandbox["ph"], grid)
+    rasterize.dem_products(DEPT, [sandbox["dem"]], grid)
+    terrain.compute(DEPT, "boletus_edulis")
+    full = tiles.build("boletus_edulis", [DEPT])
+    tag = full.stem.removeprefix("T-")
+    src = tiles.work_mbtiles("T", tag)
+    total = sqlite3.connect(src).execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+
+    db = sqlite3.connect(src)
+    db.execute("DELETE FROM tiles")
+    db.commit()
+    db.close()
+    assert tiles.full_set_source("T", tag) == src
+    rows = sqlite3.connect(src).execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
+    assert rows == total
+
+    src.unlink()
+    assert tiles.full_set_source("T", tag) == src
+    bounds = tiles.dept_bounds("T", DEPT, "boletus_edulis")
+    assert tiles.extract(src, full.parent / "T-reconstruit.pmtiles", bounds, "T", "test") == total
+
+    assert tiles.full_set_source("T", "absent-d000") is None
+    with pytest.raises(ValueError, match="aucune tuile"):
+        tiles.extract(src, full.parent / "T-vide.pmtiles", (-60.0, -60.0, -59.9, -59.9), "T", "t")
+
+
 def test_alt_layer_matches_weather_grid_classes(sandbox):
     """La couche A porte l'indice de classe du pixel ; son centre est une classe de la cellule météo."""
     import io
