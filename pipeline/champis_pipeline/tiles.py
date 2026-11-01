@@ -16,6 +16,7 @@ M_eff et Φ (spec : Points ouverts › classe d'altitude du pixel).
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import io
 import logging
@@ -538,13 +539,20 @@ def extract(src_mbtiles: Path, out: Path, bounds, name: str, description: str) -
     db.commit()
     db.execute("DETACH DATABASE src")
     db.close()
-    if count == 0:
-        # pmtiles ne sait pas écrire un jeu vide (IndexError) : dire plutôt d'où vient le vide
-        raise ValueError(
-            f"aucune tuile de {src_mbtiles} dans l'emprise {w:.3f},{s:.3f},{e:.3f},{n:.3f} "
-            f"pour {out.name}"
-        )
-    _write_pmtiles(mbt, out)
+    try:
+        if count == 0:
+            # pmtiles ne sait pas écrire un jeu vide (IndexError) : dire plutôt d'où vient le vide
+            raise ValueError(
+                f"aucune tuile de {src_mbtiles} dans l'emprise {w:.3f},{s:.3f},{e:.3f},{n:.3f} "
+                f"pour {out.name}"
+            )
+        _write_pmtiles(mbt, out)
+    finally:
+        # ce MBTiles ne sert qu'à produire `out` : le garder doublerait le disque des jeux par
+        # département (96 × 8 fichiers pour la France)
+        mbt.unlink(missing_ok=True)
+        with contextlib.suppress(OSError):
+            work.rmdir()
     return count
 
 

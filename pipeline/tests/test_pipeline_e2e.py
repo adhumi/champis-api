@@ -218,12 +218,11 @@ def test_extract_dept_subset_of_france_set(sandbox):
         (lon2,), (lat2,) = rio_transform(CRS_CALC, "EPSG:4326", [x - 20_000], [y])
         t2 = mercantile.tile(lon2, lat2, 15)
         assert reader.get(15, t2.x, t2.y) is None
-    meta = (
-        sqlite3.connect(tiles.work_mbtiles("T", "extrait-hetraie"))
-        .execute("SELECT value FROM metadata WHERE name = 'bounds'")
-        .fetchone()[0]
-    )
-    assert meta.startswith(f"{lon - 0.01}")
+        assert reader.header()["min_lon_e7"] == int((lon - 0.01) * 1e7)
+    # le MBTiles intermédiaire de l'extrait ne reste pas sur le disque ; celui du jeu complet, si
+    assert not tiles.work_mbtiles("T", "extrait-hetraie").exists()
+    assert not tiles.work_mbtiles("T", "extrait-hetraie").parent.exists()
+    assert src.exists()
 
     # build_dept : le jeu d'un seul département est déjà le jeu complet ici (même hash) ; avec un
     # jeu complet absent, repli sur le rendu du département, qui existe déjà
