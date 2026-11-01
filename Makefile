@@ -12,6 +12,8 @@
 .DEFAULT_GOAL := help
 SHELL := /bin/bash
 .ONESHELL:
+# Sans ça, une recette .ONESHELL ne rend que le code de sa dernière ligne : un échec au milieu passe inaperçu.
+.SHELLFLAGS := -eu -o pipefail -c
 
 DEPT    ?= 25
 DEPTS   ?= all
@@ -74,7 +76,8 @@ serve: ## API locale avec rechargement : http://localhost:8000 (/species, /weath
 
 .PHONY: log
 log: ## Affiche le dernier journal de data/logs/
-	ls -t data/logs/*.log 2>/dev/null | head -1 | xargs -r cat
+	f=$$(ls -t data/logs/*.log 2>/dev/null | head -1 || true)
+	if [ -n "$$f" ]; then cat "$$f"; else echo "aucun journal dans data/logs/" >&2; fi
 
 .PHONY: doctor
 doctor: ## L'environnement est-il prêt ? .env, disque, grille météo, amorçage, bucket, base, APNs, CDS, vecteurs
