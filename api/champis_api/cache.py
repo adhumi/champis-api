@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,17 @@ HISTORY_VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil")
 HISTORY_KEEP_DAYS = 400  # au-delà, plus aucune fenêtre du modèle ne lit
 
 
+@dataclass(frozen=True)
+class StoredCellWeather:
+    """Météo précalculée d'une cellule pour une espèce : les onze lignes `{"date", "by_alt"}` de
+    `/weather/bbox`, le `today` du calcul (les dates sont relatives à lui) et son horodatage."""
+
+    today: str
+    computed_at: str
+    stale: bool
+    rows: list[dict[str, Any]]
+
+
 def bucket_now(now: datetime) -> str:
     """Seau de 12 h en UTC : `2026-10-17T00` ou `2026-10-17T12`."""
     h = (now.hour // BUCKET_HOURS) * BUCKET_HOURS
@@ -33,6 +46,8 @@ def bucket_now(now: datetime) -> str:
 
 
 class WeatherCache:
+    SQL_CHUNK = 500  # identifiants par requête `IN (...)`, loin sous la limite de variables SQLite
+
     def __init__(self, path: Path | str = ":memory:"):
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
@@ -202,6 +217,51 @@ class WeatherCache:
             self.meta_get(self.META_DEPT_INDEX_TODAY),
         )
         return (at, today) if at and today else None
+
+    # ------------------------------------------------------------------ météo par cellule
+
+    def put_cell_weather(
+        self,
+        entries: Iterable[tuple[str, str, bool, list[dict[str, Any]]]],
+        today: date,
+        now: datetime,
+    ) -> int:
+        """Range les lignes `M`, `M_eff`, `phi` par jour et classe d'altitude d'une cellule et
+        d'une espèce, telles que `/weather/bbox` les sert : (cellule, espèce, périmé, lignes).
+        Remplace l'entrée existante de la paire ; renvoie le nombre d'entrées écrites."""
+        at = now.astimezone(UTC).isoformat(timespec="seconds")
+        rows = [
+            (cell_id, species, today.isoformat(), at, int(stale), json.dumps(day_rows))
+            for cell_id, species, stale, day_rows in entries
+        ]
+        self.db.executemany("INSERT OR REPLACE INTO cell_weather VALUES (?, ?, ?, ?, ?, ?)", rows)
+        self.db.commit()
+        return len(rows)
+
+    def cell_weather(
+        self, cell_ids: Iterable[str], species: Iterable[str]
+    ) -> dict[tuple[str, str], StoredCellWeather]:
+        """Les entrées précalculées pour ces cellules et ces espèces, par (cellule, espèce) ;
+        absentes : jamais calculées (cellule nouvelle, indisponible à la pré-chauffe)."""
+        ids = list(cell_ids)
+        sp = list(species)
+        if not ids or not sp:
+            return {}
+        out: dict[tuple[str, str], StoredCellWeather] = {}
+        sp_sql = ",".join("?" * len(sp))
+        for i in range(0, len(ids), self.SQL_CHUNK):
+            chunk = ids[i : i + self.SQL_CHUNK]
+            rows = self.db.execute(
+                "SELECT cell_id, species, today, computed_at, stale, rows_json FROM cell_weather "
+                f"WHERE species IN ({sp_sql}) AND cell_id IN ({','.join('?' * len(chunk))})",
+                sp + chunk,
+            ).fetchall()
+            for cell_id, sid, today, at, stale, rows_json in rows:
+                out[cell_id, sid] = StoredCellWeather(today, at, bool(stale), json.loads(rows_json))
+        return out
+
+    def cell_weather_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM cell_weather").fetchone()[0]
 
     # ------------------------------------------------------------------ métadonnées
 

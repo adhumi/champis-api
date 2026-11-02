@@ -42,6 +42,15 @@ CREATE TABLE IF NOT EXISTS dept_index (
     coverage REAL NOT NULL,
     PRIMARY KEY (dept, species, day)
 );
+CREATE TABLE IF NOT EXISTS cell_weather (
+    cell_id TEXT NOT NULL,
+    species TEXT NOT NULL,
+    today TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    stale INTEGER NOT NULL,
+    rows_json TEXT NOT NULL,
+    PRIMARY KEY (cell_id, species)
+);
 """
 
 META_GENERATED = "seed_generated"  # date (ISO) de l'amorçage, comparée par l'API au démarrage

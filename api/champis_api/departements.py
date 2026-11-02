@@ -5,6 +5,10 @@ version 2 (par cellule, département touché et classe d'altitude) ; `M_eff` et 
 chaque cellule, par classe d'altitude. Calculé pour chaque espèce et les 11 jours J−3 → J+7 à la
 fin de chaque pré-chauffe, stocké dans le SQLite du volume, servi par `GET /departements`.
 
+Le même passage range dans la table `cell_weather` les lignes `M`, `M_eff`, `Φ` de chaque
+cellule et de chaque espèce : `GET /weather/bbox` les sert telles quelles, sans recalcul, ce qui
+permet de peindre une emprise de plusieurs centaines de cellules (décision du 2 nov. 2026).
+
 Une cellule sans météo (indisponible, historique trop court) sort du numérateur et du
 dénominateur ; `coverage` dit quelle part de Σ T a été couverte. Jamais de valeur inventée : un
 département sans aucune cellule couverte a une valeur `None`.
@@ -38,6 +42,7 @@ class DeptIndexReport:
     cells: int
     cells_without_weather: int
     rows: int
+    stored: int = 0  # entrées (cellule, espèce) rangées pour `GET /weather/bbox`
 
 
 def aggregate(
@@ -87,8 +92,10 @@ async def compute(
     today = client.today()
     days = days_around(today)
     res = await client.fetch_cells_partial(cells)
+    now = client.now()
     weather: CellWeather = {}
     missing = len(res.unavailable)
+    stored = 0
     for c in cells:
         raw = res.raws.get(c.id)
         if raw is None:
@@ -103,15 +110,20 @@ async def compute(
             sid: {row["date"]: row["by_alt"] for row in rows}
             for sid, rows in out["species"].items()
         }
+        stored += cache.put_cell_weather(
+            ((c.id, sid, raw.stale, rows) for sid, rows in out["species"].items()), today, now
+        )
     rows = aggregate(grid, weather, species_ids, days)
-    cache.put_dept_index(rows, today, client.now())
-    report = DeptIndexReport(len(grid.departements()), len(cells), missing, len(rows))
+    cache.put_dept_index(rows, today, now)
+    report = DeptIndexReport(len(grid.departements()), len(cells), missing, len(rows), stored)
     log.info(
-        "indice par département : %d départements, %d cellules (%d sans météo), %d lignes",
+        "indice par département : %d départements, %d cellules (%d sans météo), %d lignes ; "
+        "météo par cellule rangée pour /weather/bbox : %d entrées",
         report.departements,
         report.cells,
         report.cells_without_weather,
         report.rows,
+        report.stored,
     )
     return report
 

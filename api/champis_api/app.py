@@ -20,6 +20,7 @@ from champis_pipeline.species import list_species
 from champis_pipeline.storage import Bucket, BucketLike
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -138,6 +139,9 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         cache.close()
 
     app = FastAPI(title="Champis API", lifespan=lifespan)
+    # `/weather/bbox` sur une emprise large pèse plusieurs Mo en JSON très répétitif, dix fois
+    # moins une fois compressé (décision du 2 nov. 2026).
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),

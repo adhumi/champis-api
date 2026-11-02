@@ -781,3 +781,132 @@ async def test_tiles_proxy_mode_relays_range(grid, scenario):
         assert r.headers["content-range"] == f"bytes 10-19/{len(blob)}"
         assert r.headers["accept-ranges"] == "bytes" and "immutable" in r.headers["cache-control"]
         assert (await c.get("/tiles/pas-un-nom.pmtiles")).status_code == 404
+
+
+# ------------------------------------------------------------------ météo précalculée (2 nov. 2026)
+
+
+@pytest.mark.asyncio
+async def test_bbox_is_served_from_the_precomputed_weather(api, grid, scenario, client):
+    """Après la pré-chauffe et l'indice, `/weather/bbox` sert la table `cell_weather` : aucun
+    appel Open-Meteo, aucun recalcul, `computed_at` = l'horodatage du passage."""
+    from champis_api.departements import compute
+    from champis_api.warm import warm
+    from champis_pipeline.species import list_species
+
+    assert (await warm(grid, client)).ok
+    report = await compute(grid, client, client.cache, list_species())
+    assert report.stored == 2 * len(list_species())
+    calls_before = list(scenario.calls)
+    client.cache.put("c_0930_6680", "forecast", "poison", {"dates": []}, client.now())  # jamais lu
+
+    r = await api.get(
+        "/weather/bbox",
+        params={"min_lon": 6.0, "min_lat": 47.0, "max_lon": 6.5, "max_lat": 47.3},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert scenario.calls == calls_before
+    assert [c["cell"]["id"] for c in body["cells"]] == ["c_0930_6680", "c_0935_6680"]
+    assert body["unavailable"] == [] and body["today"] == TODAY.isoformat()
+    assert body["computed_at"] is not None and body["scoring_version"] == "1.0.0"
+    rows = body["cells"][0]["species"]["boletus_edulis"]
+    assert len(rows) == 11 and rows[0]["date"] == (TODAY - timedelta(days=3)).isoformat()
+    assert set(rows[0]["by_alt"]["450"]) == {"M", "M_eff", "phi"}
+
+    # Même contenu que le calcul à la demande sur une cellule
+    direct = (await api.get("/weather", params={"cell": CELL, "species": "boletus_edulis"})).json()
+    by_alt = {r["date"]: r["by_alt"] for r in direct["species"]["boletus_edulis"]}
+    for row in rows:
+        for alt, v in row["by_alt"].items():
+            assert v["M_eff"] == pytest.approx(by_alt[row["date"]][alt]["M_eff"])
+            assert v["phi"] == pytest.approx(by_alt[row["date"]][alt]["phi"])
+
+    # `day` filtre toujours
+    r = await api.get(
+        "/weather/bbox",
+        params={"min_lon": 6.0, "min_lat": 47.0, "max_lon": 6.5, "max_lat": 47.3, "day": J},
+    )
+    assert all(len(rows) == 1 for c in r.json()["cells"] for rows in c["species"].values())
+
+
+@pytest.mark.asyncio
+async def test_bbox_computes_missing_cells_on_demand_and_stores_them(api, client, monkeypatch):
+    """Cellule absente du précalcul : calculée à la demande (au plus `MAX_BBOX_COMPUTE` par
+    requête), rangée pour la suivante ; les autres sont `unavailable`, jamais un 422."""
+    from champis_api.routers import weather as router
+
+    assert client.cache.cell_weather_count() == 0
+    monkeypatch.setattr(router, "MAX_BBOX_COMPUTE", 1)
+    r = await api.get(
+        "/weather/bbox",
+        params={
+            "min_lon": 6.0,
+            "min_lat": 47.0,
+            "max_lon": 6.5,
+            "max_lat": 47.3,
+            "species": "boletus_edulis",
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [c["cell"]["id"] for c in body["cells"]] == ["c_0930_6680"]
+    assert body["unavailable"] == ["c_0935_6680"] and body["retry_after"] is None
+    assert body["computed_at"] is not None
+    assert client.cache.cell_weather_count() == 1  # (c_0930_6680, boletus_edulis)
+
+    # Deuxième requête : la première cellule vient du précalcul, la seconde est calculée
+    r = await api.get(
+        "/weather/bbox",
+        params={
+            "min_lon": 6.0,
+            "min_lat": 47.0,
+            "max_lon": 6.5,
+            "max_lat": 47.3,
+            "species": "boletus_edulis",
+        },
+    )
+    assert [c["cell"]["id"] for c in r.json()["cells"]] == ["c_0930_6680", "c_0935_6680"]
+    assert r.json()["unavailable"] == []
+    assert client.cache.cell_weather_count() == 2
+
+    # Une autre espèce n'est pas précalculée pour autant : à la demande à nouveau
+    r = await api.get(
+        "/weather/bbox",
+        params={
+            "min_lon": 6.0,
+            "min_lat": 47.0,
+            "max_lon": 6.5,
+            "max_lat": 47.3,
+            "species": "cantharellus_cibarius",
+        },
+    )
+    assert [c["cell"]["id"] for c in r.json()["cells"]] == ["c_0930_6680"]
+    assert r.json()["unavailable"] == ["c_0935_6680"]
+
+
+@pytest.mark.asyncio
+async def test_bbox_nothing_to_compute_when_everything_is_deferred(api, monkeypatch):
+    from champis_api.routers import weather as router
+
+    monkeypatch.setattr(router, "MAX_BBOX_COMPUTE", 0)
+    r = await api.get(
+        "/weather/bbox", params={"min_lon": 6.0, "min_lat": 47.0, "max_lon": 6.5, "max_lat": 47.3}
+    )
+    body = r.json()
+    assert body["cells"] == [] and body["computed_at"] is None and body["scoring_version"] is None
+    assert body["unavailable"] == ["c_0930_6680", "c_0935_6680"]
+
+
+@pytest.mark.asyncio
+async def test_large_json_responses_are_gzipped(api):
+    r = await api.get(
+        "/weather/bbox",
+        params={"min_lon": 6.0, "min_lat": 47.0, "max_lon": 6.5, "max_lat": 47.3},
+        headers={"Accept-Encoding": "gzip"},
+    )
+    assert r.status_code == 200
+    assert r.headers.get("content-encoding") == "gzip"
+    assert len(r.json()["cells"]) == 2  # httpx décompresse : le contenu est intact
+    small = await api.get("/health", headers={"Accept-Encoding": "gzip"})
+    assert "content-encoding" not in small.headers  # sous le seuil, rien à gagner

@@ -152,3 +152,30 @@ def test_cache_dept_index_roundtrip():
 
 def test_scenario_fixture_is_available():
     assert Scenario(elevation=600.0).elevation == 600.0
+
+
+def test_cache_cell_weather_roundtrip():
+    """La météo par cellule rangée pour `/weather/bbox` : remplacement par (cellule, espèce),
+    lecture par lots d'identifiants, espèces filtrées."""
+    from datetime import datetime
+
+    cache = WeatherCache()
+    rows = [{"date": "2026-10-17", "by_alt": {"450": {"M": 0.5, "M_eff": 0.5, "phi": 1.0}}}]
+    n = cache.put_cell_weather(
+        [("c_1", EDULIS, False, rows), ("c_1", CIBARIUS, True, rows), ("c_2", EDULIS, False, rows)],
+        date(2026, 10, 17),
+        datetime(2026, 10, 17, 3, 20),
+    )
+    assert n == 3 and cache.cell_weather_count() == 3
+    cache.SQL_CHUNK = 1  # plusieurs requêtes IN (...) : même résultat
+    got = cache.cell_weather(["c_1", "c_2", "c_9"], [EDULIS])
+    assert set(got) == {("c_1", EDULIS), ("c_2", EDULIS)}
+    assert got["c_1", EDULIS].rows == rows and got["c_1", EDULIS].today == "2026-10-17"
+    assert got["c_1", EDULIS].stale is False and got["c_1", EDULIS].computed_at.startswith(
+        "2026-10-17"
+    )
+    assert cache.cell_weather(["c_1"], [CIBARIUS])["c_1", CIBARIUS].stale is True
+    assert cache.cell_weather([], [EDULIS]) == {} and cache.cell_weather(["c_1"], []) == {}
+    cache.put_cell_weather([("c_1", EDULIS, True, [])], date(2026, 10, 18), datetime(2026, 10, 18))
+    assert cache.cell_weather_count() == 3  # remplacé, pas ajouté
+    assert cache.cell_weather(["c_1"], [EDULIS])["c_1", EDULIS].rows == []
