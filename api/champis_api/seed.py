@@ -3,8 +3,9 @@
 À lancer **hors Railway** (`champis-api seed`), une fois par grille. Décision du 25 oct. 2026
 (option a) : la climatologie (10 ans par cellule, 26 des 27 appels pondérés) vient du pipeline
 (`champis-pipeline soil-clim`, ERA5-Land via le Climate Data Store, gratuit) ; `seed` ne demande
-plus à l'archive Open-Meteo gratuite que l'historique (≈ 1 appel pondéré par cellule, lots de 50 :
-la France en 2 à 3 jours à 10 000 appels par jour, reprise automatique), et la climatologie
+plus à Open-Meteo que l'historique (10 appels pondérés par cellule : 200 jours × 7 variables ; la
+France ≈ 227 000 appels, soit ≈ 23 jours sur l'archive gratuite à 10 000 par jour, ou quelques heures
+avec une clé du plan Professional sur `customer-archive-api` ; reprise automatique), et la climatologie
 seulement pour les cellules qui n'en ont pas encore (`--climatology`). Le résultat est une base
 `weather_seed.db` au schéma du cache (`history` source `seed`, `soil_clim`, `meta`), écrite par
 lots : à l'échelle France (~22 000 cellules, ~400 Mo) un fichier JSON réécrit à chaque cellule ne
@@ -40,7 +41,6 @@ from .weather_client import (
     BATCH_ARCHIVE,
     BATCH_CLIMATOLOGY,
     OpenMeteoClient,
-    _redact,
     _retry_after,
 )
 
@@ -141,9 +141,18 @@ async def _patiently(
             if ra is None and not isinstance(e, httpx.TransportError):
                 raise  # 4xx/5xx autre qu'un quota : ce n'est pas en attendant que ça passera
             wait = max(ra or 0, backoff)
-            log.warning("%s… : %s — reprise dans %d s", batch[0].id, _redact(e), wait)
+            log.warning("%s… : %s — reprise dans %d s", batch[0].id, _why(e), wait)
             await sleep(wait)
             backoff = min(backoff * 2, BACKOFF_MAX_S)
+
+
+def _why(e: Exception) -> str:
+    """Cause d'une attente en une ligne : l'URL d'un lot de 50 points fait 2 000 caractères."""
+    if isinstance(e, httpx.HTTPStatusError):
+        if e.response.status_code == 429:
+            return "quota Open-Meteo atteint (429)"
+        return f"Open-Meteo {e.response.status_code}"
+    return f"réseau : {type(e).__name__}"
 
 
 # ---------------------------------------------------------------------- publication (bucket)

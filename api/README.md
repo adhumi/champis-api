@@ -92,14 +92,14 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 | Prévision J−n → J+7 (températures, `rain_sum`, neige, ET0, humidité du sol 0–9 cm), n = jours manquants dans l'historique, 1 à 92 | API prévision, **plan payant** (`customer-api`, clé `CHAMPIS_OPEN_METEO_API_KEY`) | En service, un appel par cellule et par seau de 12 h |
 | Historique J−200 → J−n | Les jours passés de chaque prévision, **accumulés** dans SQLite (`history`) | Automatique, à chaque prévision fraîche |
 | Climatologie du sol (10 ans → 11 quantiles/mois) | **Pipeline** `champis-pipeline soil-clim` : ERA5-Land 0–7 cm via le Climate Data Store (gratuit, compte CDS), quantiles par pixel 0,1° | Une fois → `data/weather_seed.db` (`soil_clim`), publié dans le bucket (`publish-seed`), importé au démarrage |
-| Historique initial J−200 → J−1 | **Amorçage** `champis-api seed` sur l'archive ERA5-Land gratuite, hors Railway, ≈ 1 appel pondéré par cellule (France : 2–3 jours en tâche de fond) ; en attendant, `past_days=92` puis accumulation (cellule `unavailable` avec sa date de complétude tant que la fenêtre mémoire n'est pas couverte, ≈ 41 j) | Une fois par grille → même base, mêmes publication et import |
+| Historique initial J−200 → J−1 | **Amorçage** `champis-api seed` sur l'archive ERA5-Land gratuite, hors Railway, 10 appels pondérés par cellule (200 jours × 7 variables) : France ≈ 227 000 appels, soit ≈ 23 jours sur l'archive gratuite (10 000 par jour) ou quelques heures avec une clé Professional ; en attendant, `past_days=92` puis accumulation (cellule `unavailable` avec sa date de complétude tant que la fenêtre mémoire n'est pas couverte, ≈ 41 j) | Une fois par grille → même base, mêmes publication et import |
 
 L'API historique n'est pas dans le plan Standard (Professional seulement, pris le temps de l'amorçage France) et l'IP de sortie Railway est bridée sur l'API gratuite : en service, Railway ne parle donc **qu'à la prévision**, en ne demandant que les jours de passé absents de l'historique (`past_days` 1 à 92 ; poids Open-Meteo = points × jours/14 × variables/10, journalisé à chaque pré-chauffe). Les dates d'amorçage sont remplacées par la prévision dès qu'elle les couvre (même modèle avant et après J). Une valeur absente de la prévision et de l'historique → 502 nommant la variable et les dates, jamais une approximation.
 
 ```bash
 uv run champis-pipeline soil-clim           # climatologie ERA5-Land (CDS) → data/weather_seed.db, une fois
 uv run champis-api publish-seed             # → bucket weather/weather_seed.db + weather/weather_seed.json ; l'API l'importe au prochain démarrage
-uv run champis-api seed                     # historique J−200 depuis l'archive gratuite, lots de 50, 1 s d'intervalle ; France ≈ 2–3 jours (quota 10 000/j), en tâche de fond
+uv run champis-api seed                     # historique J−200 depuis l'archive gratuite, lots de 50, 1 s d'intervalle ; France ≈ 23 jours sur l'archive gratuite (quota 10 000/j), quelques heures en Professional
 uv run champis-api publish-seed             # republier : l'API réimporte (ATTACH, sans rien charger en mémoire ; l'historique amorcé ne remplace jamais la prévision)
 ```
 

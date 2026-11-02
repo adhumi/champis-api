@@ -363,6 +363,28 @@ async def test_seed_waits_out_a_quota_429_and_resumes_the_same_batch(grid, scena
 
 
 @pytest.mark.asyncio
+async def test_seed_quota_wait_is_one_short_line(grid, scenario, tmp_path, caplog):
+    """L'attente sur un 429 se dit en une ligne, sans l'URL de 2 000 caractères du lot."""
+    from champis_api.seed import seed
+
+    scenario.fail, scenario.fail_status, scenario.fail_once = {"archive"}, 429, True
+
+    async def no_sleep(_):
+        return None
+
+    with caplog.at_level("WARNING", logger="champis_api.seed"):
+        await seed(
+            grid,
+            make_client(scenario, seeded=False),
+            tmp_path / "s.db",
+            today=TODAY,
+            sleep=no_sleep,
+        )
+    (msg,) = [r.getMessage() for r in caplog.records if "reprise" in r.getMessage()]
+    assert "quota Open-Meteo atteint (429)" in msg and "http" not in msg
+
+
+@pytest.mark.asyncio
 async def test_seed_does_not_retry_a_non_quota_error(grid, scenario, tmp_path):
     from champis_api.seed import seed
 

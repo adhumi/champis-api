@@ -165,7 +165,7 @@ soil-clim: ## Climatologie du sol ERA5-Land (compte CDS) -> data/weather_seed.db
 	$(PIPELINE) soil-clim
 
 .PHONY: seed
-seed: ## Historique J-200 depuis l'archive gratuite -> data/weather_seed.db ; France : 2-3 jours, reprise possible
+seed: ## Historique J-200 -> data/weather_seed.db ; France ≈ 227 000 appels pondérés : ≈ 23 j gratuit, quelques heures en Professional ; reprise possible
 	$(API) seed
 
 .PHONY: publish-seed
