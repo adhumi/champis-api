@@ -2,17 +2,25 @@
 `/coins`, `/health`, et la carte web statique sous `/web`.
 
 Sans état hors le cache météo SQLite ; aucun calcul géographique (tout est dans les tuiles).
-Pré-chauffe intégrée (`CHAMPIS_WARM_HOURS`) : une tâche de fond lance `warm` aux heures voulues,
-ce qui évite un second service Railway et partage le volume du cache.
+
+Plusieurs workers uvicorn (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du
+processus Python) : chaque processus a son propre état en mémoire (limiteur de débit, cache du
+manifeste `/tiles`, connexion SQLite en WAL) et un seul, le **meneur** (verrou `flock` sur le
+volume), tient les tâches de fond : import du cache publié par le service cron (toutes les
+`CHAMPIS_CACHE_POLL_MINUTES`) et, en repli sans cron, la pré-chauffe intégrée
+(`CHAMPIS_WARM_HOURS`, qui bloque ce worker pendant la passe) et la notification « mes coins »
+(`CHAMPIS_NOTIFY_HOURS`). L'import de l'amorçage au démarrage est sérialisé par un second verrou.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -29,10 +37,12 @@ from .cache import WeatherCache
 from .coins import notify_all
 from .departements import compute as compute_dept_index
 from .grid import WeatherGrid
+from .locks import file_lock, try_lock
 from .ratelimit import RateLimitMiddleware
 from .routers import coins, departements, observations, species, tiles, weather
 from .seed import sync_seed
 from .settings import Settings
+from .snapshot import META_CACHE_PUBLISHED, sync_cache
 from .store import Store
 from .tile_cache import TileCache
 from .warm import WARM_INTERVAL_S, warm
@@ -43,6 +53,8 @@ PARIS = ZoneInfo("Europe/Paris")
 # Chemins hors limitation de débit : relais des PMTiles (`/tiles/<nom>`, pas le manifeste `/tiles`)
 # et fichiers statiques du site. Lectures nombreuses, sans calcul ni appel externe.
 RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
+SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
+LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
 
 
 @dataclass
@@ -79,7 +91,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             yield
             return
         settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
-        cache = WeatherCache(settings.cache_db)
+        cache = WeatherCache(settings.cache_db, shared=True)
         bucket = Bucket(settings.s3) if settings.s3 else None
         if bucket is None:
             log.warning("pas de bucket (CHAMPIS_S3_*) : /tiles vide, glisser-déposer seul")
@@ -94,7 +106,9 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
                     settings.tile_cache_mb,
                 )
         try:
-            sync_seed(cache, bucket, settings.weather_seed, settings.cache_db.parent)
+            # un worker importe, les autres attendent puis constatent que c'est fait
+            with file_lock(settings.cache_db.parent / SEED_LOCK):
+                sync_seed(cache, bucket, settings.weather_seed, settings.cache_db.parent)
         except Exception:  # un bucket injoignable ne doit pas empêcher l'API de démarrer
             log.exception("amorçage : import impossible, on continue avec le cache existant")
         store = Store(settings.database_url) if settings.database_url else None
@@ -134,24 +148,31 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
                 apns=apns,
             )
             warmer = OpenMeteoClient(http, cache, min_interval_s=WARM_INTERVAL_S, api_key=key)
-            tasks = [
-                asyncio.create_task(
-                    warm_scheduler(grid, warmer, settings.warm_hours, settings.warm_on_start)
-                )
-            ]
-            if store is not None and apns is not None and settings.notify_hours:
-                tasks.append(
-                    asyncio.create_task(
-                        notify_scheduler(store, grid, client, apns, settings.notify_hours)
-                    )
-                )
+
+            async def background() -> None:
+                """Ce que seul le meneur fait."""
+                tasks = [
+                    cache_refresher(
+                        settings.cache_db,
+                        bucket,
+                        settings.cache_db.parent,
+                        settings.cache_poll_minutes,
+                    ),
+                    warm_scheduler(grid, warmer, settings.warm_hours, settings.warm_on_start),
+                ]
+                if store is not None and apns is not None and settings.notify_hours:
+                    tasks.append(notify_scheduler(store, grid, client, apns, settings.notify_hours))
+                await asyncio.gather(*tasks)
+
+            leader = asyncio.create_task(
+                lead(settings.cache_db.parent / LEADER_LOCK, background, settings.leader_retry_s)
+            )
             try:
                 yield
             finally:
-                for task in tasks:
-                    task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task
+                leader.cancel()
+                with suppress(asyncio.CancelledError):
+                    await leader
         if store is not None:
             store.close()
         cache.close()
@@ -193,6 +214,8 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             "cells": len(st.grid),
             "seeded": st.cache.seeded_cells(),
             "dept_index_at": meta[0] if meta else None,
+            # `published` du dernier instantané importé du bucket (cron) ; None = jamais
+            "cache_published": st.cache.meta_get(META_CACHE_PUBLISHED),
         }
 
     if settings.serve_web:
@@ -219,6 +242,53 @@ def next_warm(now: datetime, hours: tuple[int, ...]) -> datetime:
             if t > local:
                 candidates.append(t)
     return min(candidates)
+
+
+async def lead(lock_path: Path, background, retry_s: float) -> None:
+    """Un seul worker tient les tâches de fond : celui qui obtient le verrou. Les autres
+    réessaient toutes les `retry_s` secondes, pour prendre le relais si le meneur meurt."""
+    handle = None
+    try:
+        while (handle := try_lock(lock_path)) is None:
+            await asyncio.sleep(retry_s)
+        log.info("worker meneur (pid %d) : tâches de fond lancées", os.getpid())
+        await background()
+        # plus rien à faire (pas de planificateur, import au démarrage seulement) : on garde
+        # le verrou jusqu'à l'arrêt, un seul meneur par volume reste la règle
+        await asyncio.Event().wait()
+    finally:
+        if handle is not None:
+            handle.close()
+
+
+def _refresh_cache(cache_db: Path, bucket: BucketLike, work_dir: Path):
+    """Sur sa propre connexion : la transaction d'import ne se mêle pas aux lectures des
+    requêtes en cours, qui voient l'ancien état puis le nouveau (WAL)."""
+    cache = WeatherCache(cache_db, shared=True)
+    try:
+        return sync_cache(cache, bucket, work_dir)
+    finally:
+        cache.close()
+
+
+async def cache_refresher(
+    cache_db: Path, bucket: BucketLike | None, work_dir: Path, poll_minutes: int
+) -> None:
+    """Importe le cache publié par le service cron : au démarrage, puis toutes les
+    `poll_minutes` minutes (0 = au démarrage seulement). L'import tourne hors de la boucle
+    d'événements ; une erreur (bucket injoignable) est journalisée et réessayée au tour suivant."""
+    if bucket is None:
+        return
+    while True:
+        try:
+            meta = await asyncio.to_thread(_refresh_cache, cache_db, bucket, work_dir)
+            if meta is not None:
+                log.info("cache publié importé (%s)", meta["published"])
+        except Exception:
+            log.exception("import du cache publié en échec")
+        if poll_minutes <= 0:
+            return
+        await asyncio.sleep(poll_minutes * 60)
 
 
 async def warm_scheduler(

@@ -48,8 +48,19 @@ def bucket_now(now: datetime) -> str:
 class WeatherCache:
     SQL_CHUNK = 500  # identifiants par requête `IN (...)`, loin sous la limite de variables SQLite
 
-    def __init__(self, path: Path | str = ":memory:"):
-        self.db = sqlite3.connect(str(path), check_same_thread=False)
+    BUSY_TIMEOUT_S = 30.0  # plusieurs workers uvicorn écrivent dans le même fichier (4 nov. 2026)
+    # Tables copiées en bloc par `import_cache_db` : l'état complet d'une pré-chauffe
+    TABLES = ("raw", "history", "soil_clim", "dept_index", "cell_weather", "meta")
+
+    def __init__(self, path: Path | str = ":memory:", shared: bool = False):
+        """`shared` : le fichier est lu et écrit par plusieurs processus (cache du service,
+        workers uvicorn, import en arrière-plan) → journal WAL, les lecteurs ne sont jamais
+        bloqués par un écrivain ; une base d'amorçage, écrite puis téléversée, reste en mode
+        classique (un seul fichier à tout moment)."""
+        self.db = sqlite3.connect(str(path), timeout=self.BUSY_TIMEOUT_S, check_same_thread=False)
+        if shared and str(path) != ":memory:":
+            self.db.execute("PRAGMA journal_mode=WAL")
+            self.db.execute("PRAGMA synchronous=NORMAL")  # suffisant en WAL, bien plus rapide
         self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
         self.db.commit()
 
@@ -173,6 +184,31 @@ class WeatherCache:
         finally:
             self.db.execute("DETACH DATABASE seed")
         return n
+
+    def import_cache_db(self, path: Path) -> dict[str, int]:
+        """Remplace tout le contenu par celui d'une base au même schéma (cache publié par le
+        service cron, `champis-api warm --publish`), en une transaction : les lecteurs voient
+        l'ancien état, puis le nouveau, jamais un mélange. Renvoie le nombre de lignes par table."""
+        self.db.execute("ATTACH DATABASE ? AS pub", (str(path),))
+        counts: dict[str, int] = {}
+        try:
+            for table in self.TABLES:  # noms contrôlés ci-dessus
+                self.db.execute(f"DELETE FROM {table}")
+                self.db.execute(f"INSERT INTO {table} SELECT * FROM pub.{table}")
+                counts[table] = self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        finally:
+            self.db.execute("DETACH DATABASE pub")
+        return counts
+
+    def snapshot(self, path: Path) -> None:
+        """Copie compacte et cohérente de la base dans `path` (`VACUUM INTO`) : un seul fichier,
+        sans journal WAL à côté, prêt à être téléversé."""
+        path.unlink(missing_ok=True)
+        self.db.execute("VACUUM INTO ?", (str(path),))
 
     # ------------------------------------------------------------------ indice par département
 

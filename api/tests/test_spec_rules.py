@@ -123,7 +123,7 @@ async def test_health_and_species_contract(api):
     """`GET /health` : status, cells, seeded, dept_index_at ; `GET /species` : scoring_version,
     species_hash, palette et chaque fichier espèce tel quel (les clients n'embarquent rien)."""
     h = (await api.get("/health")).json()
-    assert set(h) == {"status", "cells", "seeded", "dept_index_at"}
+    assert set(h) == {"status", "cells", "seeded", "dept_index_at", "cache_published"}
     assert (
         h["status"] == "ok" and h["cells"] == 2 and h["seeded"] == 2 and h["dept_index_at"] is None
     )

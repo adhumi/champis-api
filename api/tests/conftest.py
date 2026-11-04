@@ -166,3 +166,40 @@ def _console_in_tests(tmp_path, monkeypatch):
     """Les CLI écrivent leur journal dans tmp (jamais dans data/logs du dépôt) et sans couleur."""
     monkeypatch.setenv("CHAMPIS_LOG_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv("NO_COLOR", "1")
+
+
+class MemoryBucket:
+    """Bucket factice en mémoire : fiches JSON et fichiers, téléchargement par copie."""
+
+    def __init__(self):
+        self.objects: dict[str, bytes] = {}
+        self.json: dict[str, object] = {}
+        self.downloads: list[str] = []
+        self.uploads: list[str] = []
+
+    def upload(self, path, key, progress=None):
+        self.objects[key] = Path(path).read_bytes()
+        self.uploads.append(key)
+        if progress:
+            progress(len(self.objects[key]))
+
+    def put_json(self, key, obj):
+        self.json[key] = obj
+
+    def get_json(self, key):
+        return self.json.get(key)
+
+    def download(self, key, path):
+        self.downloads.append(key)
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Path(path).write_bytes(self.objects[key])
+
+    def list(self, prefix):
+        return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
+
+    def delete(self, keys):
+        for k in keys:
+            self.objects.pop(k, None)
+
+    def presign(self, key, expires_s):
+        return f"https://bucket.test/{key}"

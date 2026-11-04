@@ -1,4 +1,6 @@
-# Railway : un seul service champis-api, Dockerfile à la racine, volume monté sur /data.
+# Railway : service champis-api (Dockerfile à la racine, volume monté sur /data, plusieurs workers).
+# Les services cron du même dépôt ont leur propre fichier : railway.warm.toml, railway.notify.toml
+# (réglage « Config as code › Config file path » de chaque service).
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"

@@ -9,7 +9,7 @@ uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/d
 
 Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, journal dans `data/logs/`, `-v`/`-q`) ; `make warm`, `make seed`, `make publish-seed`, `make notify` les lancent.
 
-**Pré-chauffe** (pas de temps réel : décision du 17 oct. 2026) — `uv run champis-api warm` parcourt toute la grille à une requête toutes les 2 s et remplit le cache ; sort en code 1 si des cellules restent indisponibles. À lancer par cron une fois par seau de 12 h, par exemple :
+**Pré-chauffe** (pas de temps réel : décision du 17 oct. 2026) — `uv run champis-api warm` parcourt toute la grille à une requête toutes les 2 s, remplit le cache, puis calcule l'indice par département et la météo précalculée de chaque cellule (`cell_weather`, ce que sert `/weather/bbox`) ; sort en code 1 si des cellules restent indisponibles. Une fois par seau de 12 h. Sur Railway, c'est un **service cron séparé** (ci-dessous) ; en local, `make warm`. Sur un serveur à soi :
 
 ```
 0 3,15 * * *  cd /chemin/champis && uv run champis-api warm >> data/warm.log 2>&1
@@ -17,13 +17,29 @@ Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, 
 
 ## Déploiement Railway
 
-Un seul service, `Dockerfile` et `railway.toml` à la racine du dépôt (spec › Backend sur Railway).
+Trois services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python : la pré-chauffe bloquait la boucle d'événements du seul processus uvicorn ≈ 36 min deux fois par jour ; site, relais de tuiles et `/weather/bbox` ne répondaient plus). Chaque service a son fichier de configuration (`railway.toml`, `railway.warm.toml`, `railway.notify.toml` : expression cron **en UTC**, `startCommand`), choisi dans les réglages du service, « Config as code › Config file path ».
 
-1. Versionner la grille météo : `uv run champis-pipeline weather-grid --depts all`, puis `git add data/weather_grid.json` (exception à `data/` ignoré). L'amorçage, lui, va dans le bucket : `uv run champis-api seed` (base SQLite `data/weather_seed.db`, reprise possible) puis `uv run champis-api publish-seed` ; l'API le télécharge et l'importe au démarrage quand sa date change. L'ancien `data/weather_seed.json` du Doubs reste un repli local tant qu'aucun amorçage n'est publié.
+**L'API** (`railway.toml`) :
+
+1. Versionner la grille météo : `uv run champis-pipeline weather-grid --depts all`, puis `git add data/weather_grid.json` (exception à `data/` ignoré). L'amorçage, lui, va dans le bucket : `uv run champis-api seed` (base SQLite `data/weather_seed.db`, reprise possible) puis `uv run champis-api publish-seed` ; l'API et le cron le téléchargent et l'importent quand sa date change. L'ancien `data/weather_seed.json` du Doubs reste un repli local tant qu'aucun amorçage n'est publié.
 2. Railway → New Project → Deploy from GitHub repo `adhumi/champis`, branche `main`. Le build utilise le `Dockerfile`.
 3. Ajouter un **volume** monté sur `/data` (le cache SQLite `weather_cache.db` y vit ; sans volume, chaque déploiement repart à froid). Ajouter un service **Postgres** et le connecter au service API : Railway injecte `DATABASE_URL`, les tables se créent au démarrage.
-4. Variables déjà fixées dans l'image : `CHAMPIS_WEATHER_GRID`, `CHAMPIS_CACHE_DB=/data/weather_cache.db`, `CHAMPIS_WARM_HOURS=3,15` (pré-chauffe intégrée à 3 h et 15 h Paris, pas de second service). **À ajouter : `CHAMPIS_OPEN_METEO_API_KEY`** (plan payant Open-Meteo, en variable secrète Railway : l'IP de sortie Railway est partagée et bridée sur l'API gratuite). Optionnel : `CHAMPIS_WARM_ON_START=1` pour chauffer au premier déploiement (puis à retirer : chaque redéploiement relancerait un passage complet), `CHAMPIS_CORS_ORIGINS` pour restreindre.
-5. Health check : `/health`. La carte est servie par le même service sur `/web/` (l'URL de l'API y est pré-remplie avec l'origine de la page).
+4. Variables déjà fixées dans l'image : `CHAMPIS_WEATHER_GRID`, `CHAMPIS_CACHE_DB=/data/weather_cache.db`, `CHAMPIS_WARM_HOURS=` et `CHAMPIS_NOTIFY_HOURS=` vides (aucune tâche de fond : le cron s'en charge). **À ajouter : `CHAMPIS_OPEN_METEO_API_KEY`** (plan payant Open-Meteo, en variable secrète Railway : l'IP de sortie Railway est partagée et bridée sur l'API gratuite ; en **variable partagée du projet**, les crons en ont besoin aussi). Optionnel : `CHAMPIS_WORKERS` (2), `CHAMPIS_CACHE_POLL_MINUTES` (10), `CHAMPIS_CORS_ORIGINS`.
+5. Health check : `/health` (`cache_published` = date du dernier instantané du cron importé). La carte est servie par le même service sur `/web/` (l'URL de l'API y est pré-remplie avec l'origine de la page).
+
+**Les deux services cron** (même dépôt, même image) :
+
+1. Dans le projet Railway : « + New › GitHub Repo » → `adhumi/champis`, branche `main`, deux fois ; nommer `champis-warm` et `champis-notify`. Dans Settings › Config as code, poser `railway.warm.toml` (resp. `railway.notify.toml`) comme chemin du fichier : Railway y lit `cronSchedule` et `startCommand`. Sans ce réglage, le service lirait `railway.toml` et démarrerait une seconde API : vérifier dans Settings › Deploy que la planification apparaît bien.
+2. Variables : « Connect Service to Bucket » (préréglage AWS SDK (Generic)) sur chacun, comme pour l'API ; `CHAMPIS_OPEN_METEO_API_KEY` (référence à la variable partagée : `${{shared.CHAMPIS_OPEN_METEO_API_KEY}}`). Pour `champis-notify` en plus : « Connect » le service Postgres (`DATABASE_URL`) et les quatre `CHAMPIS_APNS_*`. Ni port, ni health check, ni volume : les crons n'ont pas de volume (voir ci-dessous).
+3. Vérifier : `make doctor` sur ton poste, avec les variables du bucket dans `.env`, affiche la ligne « pré-chauffe » avec la date du dernier cache publié ; `GET /health` de l'API renvoie la même date dans `cache_published` au plus tard `CHAMPIS_CACHE_POLL_MINUTES` après.
+
+Comment ça circule, et pourquoi par le bucket : d'après la documentation Railway telle que nous la connaissons, **un volume ne se monte que sur un seul service** ; le cron ne peut donc pas écrire dans le cache de l'API. Il travaille sur sa propre copie : `warm --pull` repart de l'instantané publié (cache, historique accumulé, climatologie, puis un amorçage plus récent s'il y en a un), pré-chauffe, calcule l'indice et la météo précalculée, et `--publish` dépose un instantané compact (`VACUUM INTO`, ≈ 1 Go pour la France) dans le bucket : `weather/weather_cache.db` et sa fiche `weather/weather_cache.json` (`published`, `today`, `dept_index_at`, `cells`, `cell_weather`, `bytes`). Côté API, le **worker meneur** compare la fiche à sa clé `meta` `cache_published` au démarrage puis toutes les `CHAMPIS_CACHE_POLL_MINUTES`, télécharge l'instantané et le réimporte **en une transaction** (remplacement table par table ; en WAL, les autres workers lisent l'ancien état puis le nouveau, jamais un mélange), dans un fil, sans bloquer les requêtes. Le cron n'a donc besoin d'aucun volume : un conteneur neuf à chaque exécution reprend tout du bucket (≈ 1 Go à télécharger, puis à téléverser ; sortie et entrée entre services d'un même projet Railway). À vérifier dans Railway si ce point a changé : si un volume peut être monté sur deux services, le cron peut simplement écrire dans `/data/weather_cache.db` (SQLite en WAL, `champis-api warm` sans `--pull` ni `--publish`) et `CHAMPIS_CACHE_POLL_MINUTES=0` ; l'instantané par le bucket reste la voie documentée parce qu'elle marche dans les deux cas. `champis-api notify --pull` reprend de la même façon le cache publié à 2 h UTC avant d'annoncer les coins.
+
+Migration d'une API qui pré-chauffait elle-même : avant la première exécution du cron, publier le cache courant de l'API pour que le cron reparte de l'historique accumulé plutôt que de l'amorçage seul (`champis-api publish-cache` depuis un shell dans le conteneur de l'API, par exemple `railway ssh` si ta version du CLI l'offre). Sans cela, le cron repart de l'amorçage publié et redemande à Open-Meteo jusqu'à 92 jours de passé par cellule : complet si l'amorçage a moins de 92 jours, sinon re-amorcer (`make seed`, `make publish-seed`). Puis redéployer l'API avec `CHAMPIS_WARM_HOURS` vide.
+
+**Repli sans cron** : `CHAMPIS_WARM_HOURS=3,15` (et `CHAMPIS_NOTIFY_HOURS=7`) sur le service API remettent les tâches de fond dans l'API ; elles tournent dans le seul worker meneur, qui ne répond plus pendant la passe (les autres workers continuent). `make doctor` dit lequel des deux modes est actif.
+
+**Plusieurs workers** (`CHAMPIS_WORKERS`, 2 par défaut ; `uvicorn --workers`) : chaque processus a son propre état en mémoire, à savoir le **limiteur de débit** (seau par IP et par processus : un client peut obtenir jusqu'à N fois la limite affichée, acceptable, le limiteur protège le CPU et Open-Meteo, pas l'équité), le **cache du manifeste** `/tiles` (une lecture S3 par worker toutes les 10 min) et le moteur SQLAlchemy de Postgres. Le cache météo SQLite est partagé sur le volume : journal **WAL** et `timeout` de 30 s sur chaque connexion. Au démarrage, l'import de l'amorçage passe sous un verrou de fichier (`/data/.champis-seed.lock`) : un worker importe, les autres attendent puis constatent qu'il n'y a rien à faire. Un second verrou (`/data/.champis-leader.lock`, `flock`, rendu à la mort du processus) élit le **meneur** qui seul importe le cache publié et, en repli, pré-chauffe et notifie ; les autres workers réessaient toutes les `CHAMPIS_LEADER_RETRY_S` (60 s) et prennent le relais si le meneur disparaît.
 
 Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket viennent plus tard) : sur la carte déployée, on les glisse depuis son disque comme en local.
 
@@ -40,13 +56,16 @@ Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket vien
 | `CHAMPIS_TILE_CACHE_DIR` | `<dossier de CHAMPIS_CACHE_DB>/tiles` (`/data/tiles` sur Railway) | Cache disque du relais (mode `proxy`) : une entrée par plage `Range` exacte relayée, servie ensuite sans repasser par le bucket |
 | `CHAMPIS_TILE_CACHE_MB` | `2048` | Taille totale du cache disque en Mo, éviction des plages les moins lues au-delà ; `0` = désactivé |
 | `CHAMPIS_CORS_ORIGINS` | `*` | Origines autorisées, séparées par des virgules |
-| `CHAMPIS_WARM_HOURS` | *(vide)* | Heures Paris de la pré-chauffe intégrée, ex. `3,15` ; vide = cron externe (`champis-api warm`) |
-| `CHAMPIS_WARM_ON_START` | `0` | `1` : pré-chauffe au démarrage |
+| `CHAMPIS_WARM_HOURS` | *(vide)* | Heures Paris de la pré-chauffe intégrée (repli), ex. `3,15` ; vide = service cron `railway.warm.toml` |
+| `CHAMPIS_WARM_ON_START` | `0` | `1` : pré-chauffe au démarrage (repli ; chaque redéploiement relancerait une passe) |
+| `CHAMPIS_CACHE_POLL_MINUTES` | `10` | Minutes entre deux lectures de la fiche du cache publié par le cron ; `0` = import au démarrage seulement |
+| `CHAMPIS_WORKERS` | `2` | Workers uvicorn (Dockerfile seulement) |
+| `CHAMPIS_LEADER_RETRY_S` | `60` | Secondes entre deux tentatives d'un worker pour devenir meneur |
 | `CHAMPIS_SERVE_WEB` | `1` | Servir `web/`, `shared/`, `species/` en statique |
 | `DATABASE_URL` (ou `CHAMPIS_DATABASE_URL`) | `sqlite:///data/champis.db` | Observations et coins : Postgres Railway (variable injectée par le service Postgres, « Connect ») ; en local sans Postgres, SQLite. Vide = `/observations` et `/coins` en 503 |
 | `CHAMPIS_APNS_KEY`, `CHAMPIS_APNS_KEY_ID`, `CHAMPIS_APNS_TEAM_ID` | *(vides)* | Clé APNs `.p8` (contenu PEM en variable secrète, ou chemin), son identifiant, l'identifiant d'équipe Apple. Sans eux, aucune notification n'est envoyée |
 | `CHAMPIS_APNS_TOPIC` | `fr.adhumi.champis` | Sujet APNs = identifiant de bundle de l'app |
-| `CHAMPIS_NOTIFY_HOURS` | `7` | Heure(s) Paris de la notification « mes coins », après la pré-chauffe de 3 h ; vide = jamais |
+| `CHAMPIS_NOTIFY_HOURS` | `7` (vide dans l'image) | Heure(s) Paris de la notification « mes coins » envoyée par l'API (repli) ; vide = service cron `railway.notify.toml` |
 | `CHAMPIS_RATE_READ`, `CHAMPIS_RATE_WRITE` | `120`, `20` | Requêtes par minute et par IP, lectures et écritures (`POST`/`PUT`/`DELETE`) ; au-delà 429 + `Retry-After` |
 | `CHAMPIS_MAX_BODY` | `262144` | Taille maximale d'un corps d'écriture (octets) ; au-delà 413 |
 
@@ -61,7 +80,7 @@ Les tuiles ne tiennent ni dans l'image ni dans le dépôt (France ≈ 2–4 Go p
 
 ## Endpoints
 
-- `GET /health` — `{"status": "ok", "cells": n, "seeded": n, "dept_index_at": "…"}` : `seeded` = cellules amorcées (climatologie du sol présente) ; doit valoir `cells` après l'import de l'amorçage ; `dept_index_at` = date du dernier calcul de l'indice par département (`null` avant la première pré-chauffe).
+- `GET /health` — `{"status": "ok", "cells": n, "seeded": n, "dept_index_at": "…", "cache_published": "…"}` : `seeded` = cellules amorcées (climatologie du sol présente) ; doit valoir `cells` après l'import de l'amorçage ; `dept_index_at` = date du dernier calcul de l'indice par département (`null` avant la première pré-chauffe) ; `cache_published` = `published` du dernier instantané du cron importé (`null` si jamais : pré-chauffe intégrée ou cron pas encore passé).
 - `GET /departements[?species=<id>…][&day=<date>]` — indice par département pour la vue France (spec › Scoring) : `I = Σ T × M_eff × Φ / Σ T` sur les pixels forestiers du département, par cellule météo et classe d'altitude, pour chaque espèce et chaque jour J−3 → J+7 (`day` pour un seul jour) ; `coverage` = part de Σ T dont la météo était disponible ; par groupe, le maximum des espèces et l'espèce `leading` (règle 9). Calculé à la fin de chaque pré-chauffe sur le cache (aucun appel Open-Meteo), 503 tant qu'il ne l'a jamais été. Les poids Σ T viennent de `weather_grid.json` version 2 (`champis-pipeline weather-grid`) ; avec une grille version 1 l'indice n'est pas calculé.
 - `GET /tiles` — `{configured, mode, generated, depts_by_hash, tiles:[{…, url}]}` ; `GET /tiles/{name}` — relais Range (mode `proxy` seulement).
 - `GET /species` — `scoring_version`, `species_hash`, `palette` (`shared/palette.json`) et chaque `species/<id>.json` tel quel : les clients n'embarquent aucune valeur.
@@ -82,9 +101,9 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 - `PUT /coins` — `{"apns_token"?, "sandbox"?, "coins": [{id, name, lat, lon, target, alt_class, t}]}` (≤ 50) : remplace la liste complète (le serveur ne fusionne pas) et le jeton de notification. `target` = espèce ou groupe affiché ; `alt_class` = centre de la classe d'altitude du pixel (couche A) ; `t` = `{espèce: T}` lu par l'app dans les tuiles au moment où le coin est créé — le backend n'a pas les tuiles.
 - `GET /coins` — mes coins avec `score` du jour (max sur les espèces de `T_e × M_eff_e × Φ_e`, cellule la plus proche, classe d'altitude du coin), `leading`, et `best_day`/`best` si un jour de J+1 à J+7 fait mieux.
 
-**Notification** (`champis_api.coins.notify_all`, tâche intégrée à `CHAMPIS_NOTIFY_HOURS`, ou `champis-api notify` à la main) : après la pré-chauffe du matin, une seule notification par appareil, récapitulative, envoyée seulement si au moins un coin est « bon » ou « excellent » (seuil lu dans `shared/palette.json`). Un jeton refusé par APNs (`Unregistered`, `BadDeviceToken`) est retiré, on n'insiste pas. L'app ne fait aucun rafraîchissement en arrière-plan.
+**Notification** (`champis_api.coins.notify_all` ; service cron `champis-api notify --pull`, ou tâche intégrée à `CHAMPIS_NOTIFY_HOURS` en repli, ou `champis-api notify` à la main) : après la pré-chauffe du matin, une seule notification par appareil, récapitulative, envoyée seulement si au moins un coin est « bon » ou « excellent » (seuil lu dans `shared/palette.json`). Un jeton refusé par APNs (`Unregistered`, `BadDeviceToken`) est retiré, on n'insiste pas. L'app ne fait aucun rafraîchissement en arrière-plan.
 
-**Protection** (service public) : seau à jetons par IP (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
+**Protection** (service public) : seau à jetons par IP et par worker (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
 
 ## Open-Meteo (skill `open-meteo`)
 

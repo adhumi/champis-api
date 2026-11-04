@@ -152,3 +152,67 @@ def test_render_counts_missing_and_shows_hints():
     buf.seek(0)
     assert doctor.render(checks[:1], c) == 0
     assert buf.getvalue().splitlines()[-1].startswith("tout est en place en ")
+
+
+def test_warm_check_says_integrated_or_delegated_to_the_cron(tmp_path: Path, monkeypatch):
+    """Décision du 4 nov. 2026 : la pré-chauffe est au cron ; `doctor` le dit, et vérifie qu'un
+    cache a bien été publié dans le bucket ; `CHAMPIS_WARM_HOURS` posé = repli intégré."""
+    s3 = S3Config(endpoint="https://bucket.test", bucket="champis")
+    c = doctor._warm(_settings(tmp_path, monkeypatch, warm_hours=(3, 15)), offline=True)
+    assert c.status == doctor.INFO and "intégrée à l'API à 3,15 h Paris" in c.detail
+    assert "vider CHAMPIS_WARM_HOURS" in c.hint
+
+    c = doctor._warm(_settings(tmp_path, monkeypatch, warm_hours=()), offline=True)
+    assert c.status == doctor.MISSING and "sans bucket" in c.detail
+
+    settings = _settings(tmp_path, monkeypatch, warm_hours=(), s3=s3, cache_poll_minutes=10)
+    c = doctor._warm(settings, offline=True)
+    assert c.status == doctor.INFO and "déléguée au service cron" in c.detail
+    assert "import toutes les 10 min" in c.detail and "--offline" in c.detail
+
+    published: dict = {}
+
+    class Bucket:
+        def __init__(self, cfg):
+            pass
+
+        def get_json(self, key):
+            assert key == "weather/weather_cache.json"
+            return published or None
+
+    monkeypatch.setattr("champis_pipeline.storage.Bucket", Bucket)
+    c = doctor._warm(settings, offline=False)
+    assert c.status == doctor.MISSING and "aucun cache publié" in c.detail
+    assert "créer le service cron" in c.hint
+    published.update(
+        {"published": "2026-11-04T02:41:12+00:00", "cells": 25000, "cell_weather": 50000}
+    )
+    c = doctor._warm(settings, offline=False)
+    assert c.status == doctor.OK
+    assert "dernier cache publié le 2026-11-04T02:41 (25000 cellules, 50000 entrées)" in c.detail
+
+    class Broken(Bucket):
+        def get_json(self, key):
+            raise TimeoutError
+
+    monkeypatch.setattr("champis_pipeline.storage.Bucket", Broken)
+    c = doctor._warm(settings, offline=False)
+    assert c.status == doctor.MISSING and "injoignable" in c.detail
+
+    c = doctor._warm(
+        _settings(tmp_path, monkeypatch, warm_hours=(), s3=s3, cache_poll_minutes=0), True
+    )
+    assert "import au démarrage seulement" in c.detail
+
+
+def test_notify_check(tmp_path: Path, monkeypatch):
+    c = doctor._notify(_settings(tmp_path, monkeypatch, notify_hours=(7,)))
+    assert c.status == doctor.INFO and "par l'API à 7 h" in c.detail and "vider" in c.hint
+    c = doctor._notify(_settings(tmp_path, monkeypatch, notify_hours=()))
+    assert c.status == doctor.INFO and "déléguée au service cron" in c.detail and not c.hint
+    names = [k.name for k in doctor.run_checks(_settings(tmp_path, monkeypatch), offline=True)]
+    assert (
+        names.index("pré-chauffe")
+        < names.index("notification coins")
+        < names.index("observations et coins")
+    )

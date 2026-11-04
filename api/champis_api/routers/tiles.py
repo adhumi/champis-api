@@ -39,7 +39,8 @@ def _state(request: Request):
 
 
 async def _manifest(st) -> dict[str, Any]:
-    """Manifeste du bucket, mis en cache MANIFEST_TTL_S (une lecture S3 par refresh)."""
+    """Manifeste du bucket, mis en cache MANIFEST_TTL_S par processus (une lecture S3 par
+    worker et par refresh : sans conséquence, il n'y a pas d'état à partager)."""
     cached = getattr(st, "manifest_cache", None)
     if cached and cached[0] > time.monotonic():
         return cached[1]

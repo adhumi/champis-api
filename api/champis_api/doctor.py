@@ -1,9 +1,11 @@
 """`champis-api doctor` : l'environnement est-il prêt ? Une ligne par point, lecture seule.
 
 Vérifie ce qui, dans la pratique, bloque une publication ou un déploiement : `.env`, espace disque,
-grille météo (version 2, hash des espèces), amorçage, clé Open-Meteo, bucket (joignable), cache disque
-du relais de tuiles, base des observations, clé APNs, identifiants CDS, vecteurs de parité. Rien n'est modifié ; le réseau n'est
-touché que pour le bucket (`--offline` l'évite).
+grille météo (version 2, hash des espèces), amorçage, clé Open-Meteo, bucket (joignable), pré-chauffe
+(intégrée à l'API ou déléguée au service cron, et la date du dernier cache publié), notification
+« mes coins », cache disque du relais de tuiles, base des observations, clé APNs, identifiants CDS,
+vecteurs de parité. Rien n'est modifié ; le réseau n'est touché que pour le bucket (`--offline`
+l'évite).
 """
 
 from __future__ import annotations
@@ -44,6 +46,8 @@ def run_checks(settings: Settings | None = None, offline: bool = False) -> list[
         _seed(settings),
         _open_meteo(settings),
         _bucket(settings, offline),
+        _warm(settings, offline),
+        _notify(settings),
         _tile_cache(settings),
         _database(settings),
         _apns(settings),
@@ -168,6 +172,72 @@ def _bucket(settings: Settings, offline: bool) -> Check:
     else:
         return Check("bucket PMTiles", MISSING, detail + ", pas de manifeste", "`make publish`")
     return Check("bucket PMTiles", OK, detail)
+
+
+def _warm(settings: Settings, offline: bool) -> Check:
+    """Qui pré-chauffe : l'API elle-même (repli, bloque le worker meneur) ou le service cron, dont
+    on vérifie qu'il a bien publié un cache dans le bucket."""
+    if settings.warm_hours:
+        hours = ",".join(str(h) for h in settings.warm_hours)
+        return Check(
+            "pré-chauffe",
+            INFO,
+            f"intégrée à l'API à {hours} h Paris (repli sans service cron : bloque le worker "
+            "meneur pendant la passe)",
+            "avec le service cron `railway.warm.toml`, vider CHAMPIS_WARM_HOURS",
+        )
+    detail = "déléguée au service cron (railway.warm.toml : `warm --pull --publish`)"
+    poll = (
+        f"import toutes les {settings.cache_poll_minutes} min"
+        if settings.cache_poll_minutes
+        else "import au démarrage seulement"
+    )
+    if settings.s3 is None:
+        return Check(
+            "pré-chauffe",
+            MISSING,
+            detail + ", mais sans bucket l'API ne peut rien importer",
+            "bucket (ci-dessus), ou CHAMPIS_WARM_HOURS=3,15 pour la pré-chauffe intégrée",
+        )
+    if offline:
+        return Check("pré-chauffe", INFO, f"{detail}, {poll} ; bucket non interrogé (--offline)")
+    from champis_pipeline.storage import Bucket
+
+    from .snapshot import published_cache
+
+    try:
+        meta = published_cache(Bucket(settings.s3))
+    except Exception as e:
+        return Check("pré-chauffe", MISSING, f"{detail} ; bucket injoignable : {type(e).__name__}")
+    if not meta:
+        return Check(
+            "pré-chauffe",
+            MISSING,
+            detail + ", mais aucun cache publié dans le bucket",
+            "créer le service cron (README › Déploiement) ou CHAMPIS_WARM_HOURS=3,15 en repli",
+        )
+    return Check(
+        "pré-chauffe",
+        OK,
+        f"{detail} ; dernier cache publié le {meta['published'][:16]} "
+        f"({meta.get('cells', 0)} cellules, {meta.get('cell_weather', 0)} entrées), {poll}",
+    )
+
+
+def _notify(settings: Settings) -> Check:
+    if settings.notify_hours:
+        hours = ",".join(str(h) for h in settings.notify_hours)
+        return Check(
+            "notification coins",
+            INFO,
+            f"envoyée par l'API à {hours} h Paris (repli sans service cron)",
+            "avec le service cron `railway.notify.toml`, vider CHAMPIS_NOTIFY_HOURS",
+        )
+    return Check(
+        "notification coins",
+        INFO,
+        "déléguée au service cron (railway.notify.toml : `notify --pull`)",
+    )
 
 
 def _tile_cache(settings: Settings) -> Check:

@@ -33,7 +33,13 @@ def _alt(resp: dict, sid: str, day: date, alt: int) -> dict:
 @pytest.mark.asyncio
 async def test_health_and_species(api):
     r = await api.get("/health")
-    assert r.json() == {"status": "ok", "cells": 2, "seeded": 2, "dept_index_at": None}
+    assert r.json() == {
+        "status": "ok",
+        "cells": 2,
+        "seeded": 2,
+        "dept_index_at": None,
+        "cache_published": None,
+    }
     r = await api.get("/species")
     body = r.json()
     assert body["scoring_version"] == "1.0.0"

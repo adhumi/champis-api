@@ -1,7 +1,9 @@
 """Limitation de débit et taille des corps, pour un service exposé à tous (spec › Décisions prises
 › API publique, 30 oct. 2026).
 
-Seau à jetons par adresse IP, en mémoire (un seul nœud Railway) : une réserve pour les lectures,
+Seau à jetons par adresse IP, en mémoire, **par processus** : avec N workers uvicorn (4 nov.
+2026) un client peut obtenir jusqu'à N fois la limite ; acceptable, le limiteur protège le CPU et
+Open-Meteo, pas l'équité au jeton près. Une réserve pour les lectures,
 une bien plus petite pour les écritures (`POST`, `PUT`, `DELETE`), qui ne servent qu'à l'app.
 Au-delà : 429 avec `Retry-After`. Un corps annoncé plus gros que `max_body` : 413. L'IP est le
 premier élément de `X-Forwarded-For` quand il existe (proxy Railway), sinon l'adresse du client.

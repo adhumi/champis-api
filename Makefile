@@ -173,9 +173,17 @@ publish-seed: ## Dépose data/weather_seed.db dans le bucket ; l'API l'importe �
 	$(API) publish-seed
 
 .PHONY: warm
-warm: ## Pré-chauffe du cache météo local puis indice par département (ce que Railway fait à 3 h et 15 h)
+warm: ## Pré-chauffe du cache météo local puis indice par département (le cron Railway fait `warm --pull --publish`)
 	$(API) warm
 
+.PHONY: warm-cron
+warm-cron: ## Exactement la passe du service cron Railway : reprend le cache du bucket, pré-chauffe, republie
+	$(API) warm --pull --publish
+
+.PHONY: publish-cache
+publish-cache: ## Dépose un instantané du cache météo local dans le bucket (migration : l'API l'importe)
+	$(API) publish-cache
+
 .PHONY: notify
-notify: ## Envoie une fois la notification « mes coins » (APNs configuré dans .env)
+notify: ## Envoie une fois la notification « mes coins » (APNs configuré dans .env) ; le cron fait `notify --pull`
 	$(API) notify

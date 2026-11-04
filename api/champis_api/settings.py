@@ -34,8 +34,15 @@ class Settings:
     cors_origins: tuple[str, ...] = tuple(
         o for o in os.environ.get("CHAMPIS_CORS_ORIGINS", "*").split(",") if o
     )
-    # Heures locales (Europe/Paris) de la pré-chauffe intégrée ; vide = aucune (cron externe)
+    # Heures locales (Europe/Paris) de la pré-chauffe intégrée ; vide = aucune : c'est le service
+    # cron (`railway.warm.toml`) qui pré-chauffe et publie le cache dans le bucket (4 nov. 2026).
+    # Repli sans cron : `3,15`, la passe bloque alors le worker meneur pendant ≈ 36 min.
     warm_hours: tuple[int, ...] = _hours(os.environ.get("CHAMPIS_WARM_HOURS", ""))
+    # Minutes entre deux lectures de la fiche du cache publié (`weather/weather_cache.json`) par
+    # le worker meneur ; 0 = jamais (import au démarrage seulement)
+    cache_poll_minutes: int = int(os.environ.get("CHAMPIS_CACHE_POLL_MINUTES", "10"))
+    # Secondes entre deux tentatives d'un worker pour devenir meneur (tâches de fond)
+    leader_retry_s: float = float(os.environ.get("CHAMPIS_LEADER_RETRY_S", "60"))
     # Pré-chauffer au démarrage (déploiement avec cache vide) ; attention au quota
     warm_on_start: bool = os.environ.get("CHAMPIS_WARM_ON_START", "") == "1"
     # Servir la carte web statique (web/, shared/, species/) sous /web, /shared, /species
@@ -66,7 +73,8 @@ class Settings:
     apns_key_id: str = os.environ.get("CHAMPIS_APNS_KEY_ID", "")
     apns_team_id: str = os.environ.get("CHAMPIS_APNS_TEAM_ID", "")
     apns_topic: str = os.environ.get("CHAMPIS_APNS_TOPIC", "fr.adhumi.champis")
-    # Heures locales (Europe/Paris) d'envoi de la notification récapitulative ; vide = jamais
+    # Heures locales (Europe/Paris) d'envoi de la notification récapitulative par l'API ; vide =
+    # jamais par l'API (sur Railway : service cron `railway.notify.toml`, `champis-api notify`)
     notify_hours: tuple[int, ...] = _hours(os.environ.get("CHAMPIS_NOTIFY_HOURS", "7"))
     # Limitation de débit par IP (requêtes par minute) et taille maximale d'un corps (octets)
     rate_read_per_minute: float = float(os.environ.get("CHAMPIS_RATE_READ", "120"))

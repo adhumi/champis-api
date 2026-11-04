@@ -1,7 +1,11 @@
-"""CLI : `champis-api [-v|-q] warm [--interval 2]` — pré-chauffe du cache météo puis indice par
-département (cron, sur Railway) ; `champis-api notify` — notification récapitulative « mes coins »,
-une fois ; `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage
-de l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
+"""CLI : `champis-api [-v|-q] warm [--interval 2] [--pull] [--publish]` — pré-chauffe du cache
+météo puis indice par département ; sur Railway, dans le service cron `railway.warm.toml` avec
+`--pull` (repart de l'instantané publié dans le bucket, puis d'un amorçage plus récent) et
+`--publish` (dépose l'instantané que l'API importe) ; `champis-api notify [--pull]` — notification
+récapitulative « mes coins », une fois (cron `railway.notify.toml`) ; `champis-api publish-cache` —
+dépose le cache local dans le bucket (migration d'une API qui pré-chauffait elle-même) ;
+`champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
+l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
 de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket ;
 `champis-api doctor [--offline]` — l'environnement est-il prêt.
 
@@ -24,21 +28,58 @@ from .cache import WeatherCache
 from .coins import notify_all
 from .departements import compute as compute_dept_index
 from .grid import WeatherGrid
-from .seed import publish_seed, seed
+from .seed import publish_seed, seed, sync_seed
 from .settings import Settings
+from .snapshot import publish_cache, sync_cache
 from .store import Store
 from .warm import WARM_INTERVAL_S, warm
 from .weather_client import OpenMeteoClient
 
 
-async def _warm(interval: float) -> int:
+def _bucket(settings: Settings, why: str):
+    """Le bucket Railway, ou une erreur nommant ce qui manque."""
+    from champis_pipeline.storage import Bucket
+
+    if settings.s3 is None:
+        raise SystemExit(
+            f"bucket non configuré ({why}) : AWS_ENDPOINT_URL et AWS_S3_BUCKET_NAME "
+            "(ou CHAMPIS_S3_*) requis"
+        )
+    return Bucket(settings.s3)
+
+
+def _pull(steps, settings: Settings, cache: WeatherCache, bucket) -> None:
+    """Repart de l'état publié : l'instantané du cache du cron, puis un amorçage plus récent.
+    Idempotent : rien n'est téléchargé si la base locale est déjà à jour."""
+    work = settings.cache_db.parent
+    with steps.step("cache publié dans le bucket") as step:
+        meta = sync_cache(cache, bucket, work)
+        if meta is None:
+            step.skip("rien de nouveau" if cache.meta_get("cache_published") else "aucun")
+        else:
+            step.note(f"{meta['published']}, {meta.get('cells', 0)} cellules")
+    with steps.step("amorçage") as step:
+        n = sync_seed(cache, bucket, settings.weather_seed, work)
+        if n:
+            step.note(f"{n} cellules importées")
+        else:
+            step.skip(f"{cache.seeded_cells()} cellules amorcées")
+
+
+async def _warm(interval: float, pull: bool, publish: bool) -> int:
     c = console.get()
     settings = Settings()
+    bucket = _bucket(settings, "--pull/--publish") if pull or publish else None
     grid = WeatherGrid.load(settings.weather_grid)
     settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
-    cache = WeatherCache(settings.cache_db)
-    steps = c.steps(2, f"warm · {len(grid.cells)} cellules · une requête toutes les {interval:g} s")
+    cache = WeatherCache(settings.cache_db, shared=True)
+    steps = c.steps(
+        2 + 2 * pull + publish,
+        f"warm · {len(grid.cells)} cellules · une requête toutes les {interval:g} s",
+    )
     try:
+        if pull:
+            _pull(steps, settings, cache, bucket)
         async with httpx.AsyncClient(headers={"User-Agent": "champis-api warm"}) as http:
             client = OpenMeteoClient(
                 http, cache, min_interval_s=interval, api_key=settings.open_meteo_api_key
@@ -62,12 +103,42 @@ async def _warm(interval: float) -> int:
                     f"{index.departements} départements, {index.cells} cellules "
                     f"({index.cells_without_weather} sans météo)"
                 )
+        if publish:  # même incomplète, la passe vaut mieux que l'instantané de la veille
+            _publish_cache_step(steps, settings, cache, bucket)
     finally:
         cache.close()
     for cid, reason in sorted(report.unavailable.items()):
         c.warn(f"{cid}: {reason}")
     c.summary("pré-chauffe terminée" if report.ok else "pré-chauffe incomplète")
     return 0 if report.ok else 1
+
+
+def _publish_cache_step(steps, settings: Settings, cache: WeatherCache, bucket) -> None:
+    with steps.step("publication du cache dans le bucket") as step:
+        bar = tqdm(desc="téléversement", unit="B", unit_scale=True, unit_divisor=1024)
+        try:
+            info = publish_cache(bucket, cache, settings.cache_db.parent, progress=bar.update)
+        finally:
+            bar.close()
+        step.note(
+            f"{info['published']}, {info['cells']} cellules, {info['cell_weather']} entrées, "
+            f"{console.size(info['bytes'])}"
+        )
+
+
+def _publish_cache() -> int:
+    c = console.get()
+    settings = Settings()
+    bucket = _bucket(settings, "publish-cache")
+    if not settings.cache_db.exists():
+        raise SystemExit(f"{settings.cache_db} absent : rien à publier")
+    cache = WeatherCache(settings.cache_db, shared=True)
+    try:
+        _publish_cache_step(c.steps(1), settings, cache, bucket)
+    finally:
+        cache.close()
+    c.summary("cache publié ; l'API l'importe au prochain passage du meneur")
+    return 0
 
 
 async def _seed(out: Path, interval: float, climatology: bool) -> int:
@@ -105,17 +176,24 @@ async def _seed(out: Path, interval: float, climatology: bool) -> int:
     return 0 if complete else 1
 
 
-async def _notify() -> int:
+async def _notify(pull: bool) -> int:
     c = console.get()
     settings = Settings()
     if not settings.apns_configured:
         raise SystemExit(
             "APNs non configuré : CHAMPIS_APNS_KEY, _KEY_ID, _TEAM_ID (et _TOPIC) requis"
         )
+    if not settings.database_url:
+        raise SystemExit("pas de base (DATABASE_URL) : aucun coin à annoncer")
+    bucket = _bucket(settings, "--pull") if pull else None
     grid = WeatherGrid.load(settings.weather_grid)
-    cache = WeatherCache(settings.cache_db)
+    settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
+    cache = WeatherCache(settings.cache_db, shared=True)
     store = Store(settings.database_url)
+    steps = c.steps(1 + 2 * pull)
     try:
+        if pull:  # la météo des coins vient de la pré-chauffe de 3 h, publiée par le cron
+            _pull(steps, settings, cache, bucket)
         async with (
             httpx.AsyncClient(headers={"User-Agent": "champis-api notify"}) as http,
             httpx.AsyncClient(http2=True, timeout=10.0) as http2,
@@ -128,7 +206,7 @@ async def _notify() -> int:
                 settings.apns_team_id,
                 settings.apns_topic,
             )
-            with c.steps(1).step("notification « mes coins »") as step:
+            with steps.step("notification « mes coins »") as step:
                 r = await notify_all(store, grid, client, apns)
                 step.note(
                     f"{r.devices} appareils, {r.sent} envoyées, {r.skipped} sans rien à annoncer, "
@@ -179,6 +257,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--interval", type=float, default=WARM_INTERVAL_S, help="secondes entre requêtes"
     )
+    p.add_argument(
+        "--pull",
+        action="store_true",
+        help="d'abord reprendre le cache publié dans le bucket, puis un amorçage plus récent",
+    )
+    p.add_argument(
+        "--publish",
+        action="store_true",
+        help="ensuite déposer l'instantané du cache dans le bucket (l'API l'importe)",
+    )
     p = sub.add_parser(
         "seed", help="amorce historique + climatologie depuis l'archive (clé = plan Professional)"
     )
@@ -191,7 +279,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p = sub.add_parser("publish-seed", help="dépose la base d'amorçage dans le bucket")
     p.add_argument("--seed", type=Path, default=Settings().weather_seed_db)
-    sub.add_parser("notify", help="envoie la notification récapitulative « mes coins » (une fois)")
+    p = sub.add_parser(
+        "notify", help="envoie la notification récapitulative « mes coins » (une fois)"
+    )
+    p.add_argument(
+        "--pull", action="store_true", help="d'abord reprendre le cache publié dans le bucket"
+    )
+    sub.add_parser(
+        "publish-cache",
+        help="dépose un instantané du cache météo local dans le bucket (migration vers le cron)",
+    )
     p = sub.add_parser(
         "doctor", help="l'environnement est-il prêt ? (.env, grille, bucket, base, APNs…)"
     )
@@ -210,12 +307,14 @@ def _dispatch(args) -> int:
     if args.cmd == "doctor":
         return _doctor(args.offline)
     if args.cmd == "notify":
-        return asyncio.run(_notify())
+        return asyncio.run(_notify(args.pull))
+    if args.cmd == "publish-cache":
+        return _publish_cache()
     if args.cmd == "seed":
         return asyncio.run(_seed(args.out, args.interval, args.climatology))
     if args.cmd == "publish-seed":
         return _publish_seed(args.seed)
-    return asyncio.run(_warm(args.interval))
+    return asyncio.run(_warm(args.interval, args.pull, args.publish))
 
 
 def main(argv: list[str] | None = None) -> int:
