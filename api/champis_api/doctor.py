@@ -1,8 +1,8 @@
 """`champis-api doctor` : l'environnement est-il prêt ? Une ligne par point, lecture seule.
 
 Vérifie ce qui, dans la pratique, bloque une publication ou un déploiement : `.env`, espace disque,
-grille météo (version 2, hash des espèces), amorçage, clé Open-Meteo, bucket (joignable), base des
-observations, clé APNs, identifiants CDS, vecteurs de parité. Rien n'est modifié ; le réseau n'est
+grille météo (version 2, hash des espèces), amorçage, clé Open-Meteo, bucket (joignable), cache disque
+du relais de tuiles, base des observations, clé APNs, identifiants CDS, vecteurs de parité. Rien n'est modifié ; le réseau n'est
 touché que pour le bucket (`--offline` l'évite).
 """
 
@@ -44,6 +44,7 @@ def run_checks(settings: Settings | None = None, offline: bool = False) -> list[
         _seed(settings),
         _open_meteo(settings),
         _bucket(settings, offline),
+        _tile_cache(settings),
         _database(settings),
         _apns(settings),
         _cds(),
@@ -167,6 +168,31 @@ def _bucket(settings: Settings, offline: bool) -> Check:
     else:
         return Check("bucket PMTiles", MISSING, detail + ", pas de manifeste", "`make publish`")
     return Check("bucket PMTiles", OK, detail)
+
+
+def _tile_cache(settings: Settings) -> Check:
+    from .tile_cache import TileCache
+
+    cache = TileCache.from_settings(settings)
+    if cache is None:
+        return Check(
+            "cache relais tuiles",
+            INFO,
+            "désactivé (CHAMPIS_TILE_CACHE_MB=0) : chaque Range repasse par le bucket",
+        )
+    bound = f"{settings.tile_cache_mb} Mo"
+    if settings.tiles_mode != "proxy":
+        return Check(
+            "cache relais tuiles", INFO, f"{cache.root}, {bound} ; inutilisé en mode presign"
+        )
+    if not cache.root.exists():
+        return Check("cache relais tuiles", INFO, f"{cache.root} absent, créé au premier relais")
+    st = cache.stats()
+    return Check(
+        "cache relais tuiles",
+        OK,
+        f"{cache.root} : {st.entries} plages, {console.size(st.bytes)} sur {bound}",
+    )
 
 
 def _database(settings: Settings) -> Check:

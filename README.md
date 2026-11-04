@@ -78,7 +78,7 @@ uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/b
 
 ## Déploiement
 
-Railway, un seul service (`Dockerfile`, `railway.toml`), volume sur `/data` pour le cache météo, bucket Railway pour les PMTiles (`champis-pipeline publish`, `GET /tiles`), Postgres Railway pour les observations et les coins de l'app, pré-chauffe intégrée, clé Open-Meteo (plan Standard), clé APNs pour les notifications « mes coins » ; l'historique météo est amorcé une fois depuis ton poste (`champis-api seed`) puis accumulé par le service : voir `api/README.md`.
+Railway, un seul service (`Dockerfile`, `railway.toml`), volume sur `/data` pour le cache météo, bucket Railway pour les PMTiles (`champis-pipeline publish`, `GET /tiles` ; en mode relais, cache disque des plages lues sur le volume, `CHAMPIS_TILE_CACHE_MB`), Postgres Railway pour les observations et les coins de l'app, pré-chauffe intégrée, clé Open-Meteo (plan Standard), clé APNs pour les notifications « mes coins » ; l'historique météo est amorcé une fois depuis ton poste (`champis-api seed`) puis accumulé par le service : voir `api/README.md`.
 
 ## Ce qui n'est pas encore là
 

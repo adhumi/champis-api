@@ -48,6 +48,14 @@ class Settings:
     # « presign » : URL présignées lues directement par le navigateur ; « proxy » : relais /tiles/{name}
     tiles_mode: str = os.environ.get("CHAMPIS_TILES_MODE", "presign")
     tiles_url_hours: int = int(os.environ.get("CHAMPIS_TILES_URL_HOURS", "24"))
+    # Cache disque des plages relayées par /tiles/{name} (mode proxy) : dossier (défaut : à côté du
+    # cache météo, sur le volume) et taille totale en Mo ; 0 = désactivé
+    tile_cache_dir: Path | None = (
+        Path(os.environ["CHAMPIS_TILE_CACHE_DIR"])
+        if os.environ.get("CHAMPIS_TILE_CACHE_DIR")
+        else None
+    )
+    tile_cache_mb: int = int(os.environ.get("CHAMPIS_TILE_CACHE_MB", "2048"))
     # Observations et coins : Postgres Railway (DATABASE_URL injectée par le service Postgres) ;
     # sans Postgres, une base SQLite locale pour le développement. Vide = endpoints en 503.
     database_url: str = os.environ.get("CHAMPIS_DATABASE_URL") or os.environ.get(
@@ -64,6 +72,10 @@ class Settings:
     rate_read_per_minute: float = float(os.environ.get("CHAMPIS_RATE_READ", "120"))
     rate_write_per_minute: float = float(os.environ.get("CHAMPIS_RATE_WRITE", "20"))
     max_body_bytes: int = int(os.environ.get("CHAMPIS_MAX_BODY", str(256 * 1024)))
+
+    @property
+    def tile_cache_path(self) -> Path:
+        return self.tile_cache_dir or self.cache_db.parent / "tiles"
 
     @property
     def apns_key_pem(self) -> str:

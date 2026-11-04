@@ -34,6 +34,7 @@ from .routers import coins, departements, observations, species, tiles, weather
 from .seed import sync_seed
 from .settings import Settings
 from .store import Store
+from .tile_cache import TileCache
 from .warm import WARM_INTERVAL_S, warm
 from .weather_client import OpenMeteoClient
 
@@ -52,6 +53,9 @@ class State:
     bucket: BucketLike | None = None  # PMTiles (spec › hébergement) ; None = glisser-déposer seul
     tiles_mode: str = "presign"
     tiles_url_hours: int = 24
+    tile_cache: TileCache | None = (
+        None  # plages relayées gardées sur le volume ; None = relais seul
+    )
     store: Store | None = None  # observations et coins (Postgres) ; None = endpoints en 503
     apns: ApnsClient | None = None  # notifications « mes coins » ; None = jamais envoyées
 
@@ -79,6 +83,16 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         bucket = Bucket(settings.s3) if settings.s3 else None
         if bucket is None:
             log.warning("pas de bucket (CHAMPIS_S3_*) : /tiles vide, glisser-déposer seul")
+        tile_cache = TileCache.from_settings(settings) if bucket is not None else None
+        if settings.tiles_mode == "proxy":
+            if tile_cache is None:
+                log.info("relais des tuiles sans cache disque (CHAMPIS_TILE_CACHE_MB=0)")
+            else:
+                log.info(
+                    "relais des tuiles : cache disque %s, %d Mo",
+                    tile_cache.root,
+                    settings.tile_cache_mb,
+                )
         try:
             sync_seed(cache, bucket, settings.weather_seed, settings.cache_db.parent)
         except Exception:  # un bucket injoignable ne doit pas empêcher l'API de démarrer
@@ -115,6 +129,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
                 bucket=bucket,
                 tiles_mode=settings.tiles_mode,
                 tiles_url_hours=settings.tiles_url_hours,
+                tile_cache=tile_cache,
                 store=store,
                 apns=apns,
             )
