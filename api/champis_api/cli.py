@@ -1,8 +1,8 @@
 """CLI : `champis-api [-v|-q] warm [--interval 2] [--pull] [--publish]` — pré-chauffe du cache
-météo puis indice par département ; sur Railway, dans le service cron `railway.warm.toml` avec
+météo puis indice par département ; sur Railway, dans le service cron `champis-warm` (`.railway/railway.ts`) avec
 `--pull` (repart de l'instantané publié dans le bucket, puis d'un amorçage plus récent) et
 `--publish` (dépose l'instantané que l'API importe) ; `champis-api notify [--pull]` — notification
-récapitulative « mes coins », une fois (cron `railway.notify.toml`) ; `champis-api publish-cache` —
+récapitulative « mes coins », une fois (cron `champis-notify`) ; `champis-api publish-cache` —
 dépose le cache local dans le bucket (migration d'une API qui pré-chauffait elle-même) ;
 `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
 l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient

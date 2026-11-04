@@ -17,9 +17,19 @@ Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, 
 
 ## Déploiement Railway
 
-Trois services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python : la pré-chauffe bloquait la boucle d'événements du seul processus uvicorn ≈ 36 min deux fois par jour ; site, relais de tuiles et `/weather/bbox` ne répondaient plus). Chaque service a son fichier de configuration (`railway.toml`, `railway.warm.toml`, `railway.notify.toml` : expression cron **en UTC**, `startCommand`), choisi dans les réglages du service, « Config as code › Config file path ».
+Trois services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python : la pré-chauffe bloquait la boucle d'événements du seul processus uvicorn ≈ 36 min deux fois par jour ; site, relais de tuiles et `/weather/bbox` ne répondaient plus). Ils sont décrits dans **`.railway/railway.ts`** (Infrastructure as Code Railway : services, commandes, crons **en UTC**, volume, bucket, Postgres, variables) et appliqués depuis un poste avec la CLI ; Railway ne lit pas ce fichier au déploiement. `railway.toml` (Config as Code, déprécié, plus lu après le 1er décembre 2026) ne décrit plus que l'API en attendant la première application de `railway.ts`.
 
-**L'API** (`railway.toml`) :
+```bash
+npm install railway          # à la racine, une fois : la CLI évalue .railway/railway.ts avec ce paquet
+railway login && railway link  # projet champis, environnement production
+railway config migrate         # première fois : traduit railway.toml, vide « Config file path » du service champis (--apply)
+railway config plan            # montre les changements, sans rien appliquer
+railway config apply           # applique après confirmation ; destructions marquées
+```
+
+La première application crée les deux services cron, pose leurs variables par référence à celles de l'API (`${{champis.AWS_ACCESS_KEY_ID}}`…) et prend la main sur le service `champis` ; les valeurs secrètes (`preserve()`) restent dans Railway, jamais dans le dépôt. Si `plan` refuse parce que le service est encore géré par `railway.toml`, c'est l'étape `migrate` qui manque. Noms de champs à confirmer au premier `railway config pull` (la doc de référence ne documente pas `deploy.cronSchedule` ni `restartPolicyType` pour un `service`, seulement pour `fn`) : corriger `railway.ts` d'après ce que `pull` génère, puis `plan` doit annoncer « already up to date ».
+
+**L'API** (`service("champis")`) :
 
 1. Versionner la grille météo : `uv run champis-pipeline weather-grid --depts all`, puis `git add data/weather_grid.json` (exception à `data/` ignoré). L'amorçage, lui, va dans le bucket : `uv run champis-api seed` (base SQLite `data/weather_seed.db`, reprise possible) puis `uv run champis-api publish-seed` ; l'API et le cron le téléchargent et l'importent quand sa date change. L'ancien `data/weather_seed.json` du Doubs reste un repli local tant qu'aucun amorçage n'est publié.
 2. Railway → New Project → Deploy from GitHub repo `adhumi/champis`, branche `main`. Le build utilise le `Dockerfile`.
@@ -29,8 +39,8 @@ Trois services construits par le même `Dockerfile` (décision du 4 nov. 2026, s
 
 **Les deux services cron** (même dépôt, même image) :
 
-1. Dans le projet Railway : « + New › GitHub Repo » → `adhumi/champis`, branche `main`, deux fois ; nommer `champis-warm` et `champis-notify`. Dans Settings › Config as code, poser `railway.warm.toml` (resp. `railway.notify.toml`) comme chemin du fichier : Railway y lit `cronSchedule` et `startCommand`. Sans ce réglage, le service lirait `railway.toml` et démarrerait une seconde API : vérifier dans Settings › Deploy que la planification apparaît bien.
-2. Variables : « Connect Service to Bucket » (préréglage AWS SDK (Generic)) sur chacun, comme pour l'API ; `CHAMPIS_OPEN_METEO_API_KEY` (référence à la variable partagée : `${{shared.CHAMPIS_OPEN_METEO_API_KEY}}`). Pour `champis-notify` en plus : « Connect » le service Postgres (`DATABASE_URL`) et les quatre `CHAMPIS_APNS_*`. Ni port, ni health check, ni volume : les crons n'ont pas de volume (voir ci-dessous).
+1. `railway config apply` crée `champis-warm` (`uv run champis-api -q warm --pull --publish`, cron `0 2,14 * * *`) et `champis-notify` (`uv run champis-api -q notify --pull`, cron `0 6 * * *`), restart policy `never`, sans port, ni health check, ni volume (voir ci-dessous). Vérifier dans Settings › Deploy de chaque service que la planification apparaît. À la main sans IaC : « + New › GitHub Repo » → `adhumi/champis`, branche `main`, puis Settings › Deploy › Cron Schedule et Custom Start Command avec ces valeurs (les fichiers Config as Code ne sont plus lus par un service nouveau).
+2. Variables : `railway.ts` les pose par référence à celles de l'API (bucket `AWS_*`, `CHAMPIS_OPEN_METEO_API_KEY`) ; pour `champis-notify` en plus `DATABASE_URL` (Postgres) et les quatre `CHAMPIS_APNS_*` (`preserve()` : à saisir une fois dans Railway, la clé `.p8` en clair dans la variable).
 3. Vérifier : `make doctor` sur ton poste, avec les variables du bucket dans `.env`, affiche la ligne « pré-chauffe » avec la date du dernier cache publié ; `GET /health` de l'API renvoie la même date dans `cache_published` au plus tard `CHAMPIS_CACHE_POLL_MINUTES` après.
 
 Comment ça circule, et pourquoi par le bucket : d'après la documentation Railway telle que nous la connaissons, **un volume ne se monte que sur un seul service** ; le cron ne peut donc pas écrire dans le cache de l'API. Il travaille sur sa propre copie : `warm --pull` repart de l'instantané publié (cache, historique accumulé, climatologie, puis un amorçage plus récent s'il y en a un), pré-chauffe, calcule l'indice et la météo précalculée, et `--publish` dépose un instantané compact (`VACUUM INTO`, ≈ 1 Go pour la France) dans le bucket : `weather/weather_cache.db` et sa fiche `weather/weather_cache.json` (`published`, `today`, `dept_index_at`, `cells`, `cell_weather`, `bytes`). Côté API, le **worker meneur** compare la fiche à sa clé `meta` `cache_published` au démarrage puis toutes les `CHAMPIS_CACHE_POLL_MINUTES`, télécharge l'instantané et le réimporte **en une transaction** (remplacement table par table ; en WAL, les autres workers lisent l'ancien état puis le nouveau, jamais un mélange), dans un fil, sans bloquer les requêtes. Le cron n'a donc besoin d'aucun volume : un conteneur neuf à chaque exécution reprend tout du bucket (≈ 1 Go à télécharger, puis à téléverser ; sortie et entrée entre services d'un même projet Railway). À vérifier dans Railway si ce point a changé : si un volume peut être monté sur deux services, le cron peut simplement écrire dans `/data/weather_cache.db` (SQLite en WAL, `champis-api warm` sans `--pull` ni `--publish`) et `CHAMPIS_CACHE_POLL_MINUTES=0` ; l'instantané par le bucket reste la voie documentée parce qu'elle marche dans les deux cas. `champis-api notify --pull` reprend de la même façon le cache publié à 2 h UTC avant d'annoncer les coins.
@@ -41,7 +51,6 @@ Migration d'une API qui pré-chauffait elle-même : avant la première exécutio
 
 **Plusieurs workers** (`CHAMPIS_WORKERS`, 2 par défaut ; `uvicorn --workers`) : chaque processus a son propre état en mémoire, à savoir le **limiteur de débit** (seau par IP et par processus : un client peut obtenir jusqu'à N fois la limite affichée, acceptable, le limiteur protège le CPU et Open-Meteo, pas l'équité), le **cache du manifeste** `/tiles` (une lecture S3 par worker toutes les 10 min) et le moteur SQLAlchemy de Postgres. Le cache météo SQLite est partagé sur le volume : journal **WAL** et `timeout` de 30 s sur chaque connexion. Au démarrage, l'import de l'amorçage passe sous un verrou de fichier (`/data/.champis-seed.lock`) : un worker importe, les autres attendent puis constatent qu'il n'y a rien à faire. Un second verrou (`/data/.champis-leader.lock`, `flock`, rendu à la mort du processus) élit le **meneur** qui seul importe le cache publié et, en repli, pré-chauffe et notifie ; les autres workers réessaient toutes les `CHAMPIS_LEADER_RETRY_S` (60 s) et prennent le relais si le meneur disparaît.
 
-Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket viennent plus tard) : sur la carte déployée, on les glisse depuis son disque comme en local.
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
@@ -56,7 +65,7 @@ Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket vien
 | `CHAMPIS_TILE_CACHE_DIR` | `<dossier de CHAMPIS_CACHE_DB>/tiles` (`/data/tiles` sur Railway) | Cache disque du relais (mode `proxy`) : une entrée par plage `Range` exacte relayée, servie ensuite sans repasser par le bucket |
 | `CHAMPIS_TILE_CACHE_MB` | `2048` | Taille totale du cache disque en Mo, éviction des plages les moins lues au-delà ; `0` = désactivé |
 | `CHAMPIS_CORS_ORIGINS` | `*` | Origines autorisées, séparées par des virgules |
-| `CHAMPIS_WARM_HOURS` | *(vide)* | Heures Paris de la pré-chauffe intégrée (repli), ex. `3,15` ; vide = service cron `railway.warm.toml` |
+| `CHAMPIS_WARM_HOURS` | *(vide)* | Heures Paris de la pré-chauffe intégrée (repli), ex. `3,15` ; vide = service cron `champis-warm` (`.railway/railway.ts`) |
 | `CHAMPIS_WARM_ON_START` | `0` | `1` : pré-chauffe au démarrage (repli ; chaque redéploiement relancerait une passe) |
 | `CHAMPIS_CACHE_POLL_MINUTES` | `10` | Minutes entre deux lectures de la fiche du cache publié par le cron ; `0` = import au démarrage seulement |
 | `CHAMPIS_WORKERS` | `2` | Workers uvicorn (Dockerfile seulement) |
@@ -65,7 +74,7 @@ Les PMTiles ne sont pas encore servis par le service (`/tiles` et le bucket vien
 | `DATABASE_URL` (ou `CHAMPIS_DATABASE_URL`) | `sqlite:///data/champis.db` | Observations et coins : Postgres Railway (variable injectée par le service Postgres, « Connect ») ; en local sans Postgres, SQLite. Vide = `/observations` et `/coins` en 503 |
 | `CHAMPIS_APNS_KEY`, `CHAMPIS_APNS_KEY_ID`, `CHAMPIS_APNS_TEAM_ID` | *(vides)* | Clé APNs `.p8` (contenu PEM en variable secrète, ou chemin), son identifiant, l'identifiant d'équipe Apple. Sans eux, aucune notification n'est envoyée |
 | `CHAMPIS_APNS_TOPIC` | `fr.adhumi.champis` | Sujet APNs = identifiant de bundle de l'app |
-| `CHAMPIS_NOTIFY_HOURS` | `7` (vide dans l'image) | Heure(s) Paris de la notification « mes coins » envoyée par l'API (repli) ; vide = service cron `railway.notify.toml` |
+| `CHAMPIS_NOTIFY_HOURS` | `7` (vide dans l'image) | Heure(s) Paris de la notification « mes coins » envoyée par l'API (repli) ; vide = service cron `champis-notify` (`.railway/railway.ts`) |
 | `CHAMPIS_RATE_READ`, `CHAMPIS_RATE_WRITE` | `120`, `20` | Requêtes par minute et par IP, lectures et écritures (`POST`/`PUT`/`DELETE`) ; au-delà 429 + `Retry-After` |
 | `CHAMPIS_MAX_BODY` | `262144` | Taille maximale d'un corps d'écriture (octets) ; au-delà 413 |
 

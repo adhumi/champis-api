@@ -12,3 +12,8 @@ __pycache__/
 .DS_Store
 .coverage
 htmlcov/
+
+# Railway IaC : `npm install railway` à la racine (la CLI évalue .railway/railway.ts)
+node_modules/
+package.json
+package-lock.json

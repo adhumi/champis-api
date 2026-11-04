@@ -1,6 +1,8 @@
 # Railway : service champis-api (Dockerfile à la racine, volume monté sur /data, plusieurs workers).
-# Les services cron du même dépôt ont leur propre fichier : railway.warm.toml, railway.notify.toml
-# (réglage « Config as code › Config file path » de chaque service).
+# Config as Code est déprécié (plus lu après le 1er décembre 2026) : la définition des trois services
+# est dans .railway/railway.ts (Infrastructure as Code). Ce fichier reste lu par le service champis
+# jusqu'à la première `railway config apply` (`railway config migrate` le traduit et vide le réglage
+# « Config file path ») ; il est ensuite à supprimer.
 [build]
 builder = "dockerfile"
 dockerfilePath = "Dockerfile"

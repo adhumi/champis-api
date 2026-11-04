@@ -184,9 +184,9 @@ def _warm(settings: Settings, offline: bool) -> Check:
             INFO,
             f"intégrée à l'API à {hours} h Paris (repli sans service cron : bloque le worker "
             "meneur pendant la passe)",
-            "avec le service cron `railway.warm.toml`, vider CHAMPIS_WARM_HOURS",
+            "avec le service cron champis-warm, vider CHAMPIS_WARM_HOURS",
         )
-    detail = "déléguée au service cron (railway.warm.toml : `warm --pull --publish`)"
+    detail = "déléguée au service cron champis-warm (`warm --pull --publish`)"
     poll = (
         f"import toutes les {settings.cache_poll_minutes} min"
         if settings.cache_poll_minutes
@@ -231,12 +231,12 @@ def _notify(settings: Settings) -> Check:
             "notification coins",
             INFO,
             f"envoyée par l'API à {hours} h Paris (repli sans service cron)",
-            "avec le service cron `railway.notify.toml`, vider CHAMPIS_NOTIFY_HOURS",
+            "avec le service cron champis-notify, vider CHAMPIS_NOTIFY_HOURS",
         )
     return Check(
         "notification coins",
         INFO,
-        "déléguée au service cron (railway.notify.toml : `notify --pull`)",
+        "déléguée au service cron champis-notify (`notify --pull`)",
     )
 
 

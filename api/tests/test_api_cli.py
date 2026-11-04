@@ -176,7 +176,7 @@ def test_warm_pull_requires_a_bucket(settings, scenario, capsys):
 def test_cron_pass_pulls_warms_and_publishes_what_the_api_imports(
     settings, scenario, bucket: MemoryBucket, capsys, tmp_path: Path
 ):
-    """`railway.warm.toml` : `warm --pull --publish` dans un conteneur sans volume. Première passe :
+    """Service cron `champis-warm` : `warm --pull --publish` dans un conteneur sans volume. Première passe :
     rien de publié, l'amorçage du bucket suffit ; l'instantané déposé contient l'indice et la
     météo précalculée ; l'API l'importe une fois (`sync_cache`), puis plus rien tant qu'il ne
     change pas. Seconde passe, cache vide : elle repart de l'instantané, sans refaire l'amorçage."""
@@ -241,7 +241,7 @@ def test_publish_cache_command(settings, scenario, bucket: MemoryBucket, capsys)
 def test_notify_pull_takes_the_published_cache_first(
     settings, scenario, bucket: MemoryBucket, capsys, monkeypatch, tmp_path: Path
 ):
-    """`railway.notify.toml` : `notify --pull` à 7 h reprend la passe de 3 h avant d'annoncer."""
+    """Service cron `champis-notify` : `notify --pull` à 7 h reprend la passe de 3 h avant d'annoncer."""
     from champis_api.coins import NotifyReport
     from champis_api.snapshot import CACHE_DB_KEY
 

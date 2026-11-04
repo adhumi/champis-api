@@ -35,7 +35,7 @@ class Settings:
         o for o in os.environ.get("CHAMPIS_CORS_ORIGINS", "*").split(",") if o
     )
     # Heures locales (Europe/Paris) de la pré-chauffe intégrée ; vide = aucune : c'est le service
-    # cron (`railway.warm.toml`) qui pré-chauffe et publie le cache dans le bucket (4 nov. 2026).
+    # cron `champis-warm` (`.railway/railway.ts`) qui pré-chauffe et publie le cache dans le bucket (4 nov. 2026).
     # Repli sans cron : `3,15`, la passe bloque alors le worker meneur pendant ≈ 36 min.
     warm_hours: tuple[int, ...] = _hours(os.environ.get("CHAMPIS_WARM_HOURS", ""))
     # Minutes entre deux lectures de la fiche du cache publié (`weather/weather_cache.json`) par
@@ -74,7 +74,7 @@ class Settings:
     apns_team_id: str = os.environ.get("CHAMPIS_APNS_TEAM_ID", "")
     apns_topic: str = os.environ.get("CHAMPIS_APNS_TOPIC", "fr.adhumi.champis")
     # Heures locales (Europe/Paris) d'envoi de la notification récapitulative par l'API ; vide =
-    # jamais par l'API (sur Railway : service cron `railway.notify.toml`, `champis-api notify`)
+    # jamais par l'API (sur Railway : service cron `champis-notify`, `champis-api notify`)
     notify_hours: tuple[int, ...] = _hours(os.environ.get("CHAMPIS_NOTIFY_HOURS", "7"))
     # Limitation de débit par IP (requêtes par minute) et taille maximale d'un corps (octets)
     rate_read_per_minute: float = float(os.environ.get("CHAMPIS_RATE_READ", "120"))
