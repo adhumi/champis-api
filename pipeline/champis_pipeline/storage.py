@@ -18,6 +18,7 @@ Bucket) ; les CHAMPIS_S3_* priment s'ils sont posés.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from collections.abc import Callable
@@ -33,6 +34,12 @@ _T_NAME = re.compile(
     r"^T-(?P<species>[a-z_]+)-(?P<hash>[0-9a-f]{8})-p(?P<version>[\d.]+)-d(?P<dh>[0-9a-f]{6})\.pmtiles$"
 )
 _A_NAME = re.compile(r"^A-(?P<class_m>\d+)m-d(?P<dh>[0-9a-f]{6})\.pmtiles$")
+_G_NAME = re.compile(
+    r"^G-(?P<group>[a-z_]+)-(?P<hash>[0-9a-f]{8})-p(?P<version>[\d.]+)-d(?P<dh>[0-9a-f]{6})"
+    r"(?:-(?P<part>[2-9]|[1-9]\d+))?\.pmtiles$"
+)
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -128,7 +135,9 @@ class Bucket:
 
 
 def parse_tile_name(name: str) -> dict[str, Any] | None:
-    """`T-<espèce>-<hash>-p<version>-d<dh>.pmtiles` ou `A-<classe>m-d<dh>.pmtiles` → champs."""
+    """`T-<espèce>-<hash>-p<version>-d<dh>.pmtiles`, `A-<classe>m-d<dh>.pmtiles` ou
+    `G-<groupe>-<hash>-p<version>-d<dh>[-<partie>].pmtiles` → champs (`part` seulement s'il y en a
+    une ; les espèces d'un G, dans l'ordre des canaux, viennent de `build_manifest`)."""
     m = _T_NAME.match(name)
     if m:
         return {
@@ -141,19 +150,50 @@ def parse_tile_name(name: str) -> dict[str, Any] | None:
     m = _A_NAME.match(name)
     if m:
         return {"kind": "A", "class_m": int(m["class_m"]), "depts_hash": m["dh"]}
+    m = _G_NAME.match(name)
+    if m:
+        info = {
+            "kind": "G",
+            "group": m["group"],
+            "hash": m["hash"],
+            "scoring_version": m["version"],
+            "depts_hash": m["dh"],
+        }
+        if m["part"]:
+            info["part"] = int(m["part"])
+        return info
     return None
 
 
+def group_key(group: str, hash_: str) -> str:
+    """Clé de `group_species` : un G est identifié par son groupe et l'empreinte de ses canaux."""
+    return f"{group}-{hash_}"
+
+
 def build_manifest(
-    objects: dict[str, int], depts_by_hash: dict[str, list[str]], generated: str
+    objects: dict[str, int],
+    depts_by_hash: dict[str, list[str]],
+    generated: str,
+    group_species: dict[str, list[str]] | None = None,
 ) -> dict[str, Any]:
-    """Manifeste à partir du contenu du bucket (tous les PMTiles sous `tiles/`), trié par nom."""
+    """Manifeste à partir du contenu du bucket (tous les PMTiles sous `tiles/`), trié par nom.
+
+    `group_species` : `group_key(groupe, hash)` → identifiants d'espèces dans l'ordre des canaux,
+    recopiés dans chaque entrée G (`species`) ; un G dont on ne sait plus les espèces (fichier d'un
+    modèle qui n'est plus dans `species/` ni dans l'ancien manifeste) est écarté, avec un
+    avertissement : un client ne doit jamais deviner l'ordre des canaux."""
     tiles = []
     for key, size in sorted(objects.items()):
         name = key.removeprefix(TILES_PREFIX)
         info = parse_tile_name(name)
         if info is None:
             continue
+        if info["kind"] == "G":
+            species = (group_species or {}).get(group_key(info["group"], info["hash"]))
+            if species is None:
+                log.warning("%s : espèces des canaux inconnues, hors du manifeste", name)
+                continue
+            info["species"] = list(species)
         entry = {**info, "name": name, "key": key, "bytes": size}
         members = depts_by_hash.get(info["depts_hash"])
         if members and len(members) == 1:

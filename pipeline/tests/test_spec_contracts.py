@@ -56,15 +56,20 @@ def test_palette_matches_the_spec_thresholds():
 
 
 def test_palette_tile_encodings_match_the_pipeline():
-    """Skill geo-pipeline : gris = T × 254, 255 = nodata ; couche A par classes de 300 m."""
+    """Skill geo-pipeline : gris = T × 254, 255 = nodata ; couche A par classes de 300 m ; G en
+    RGBA, un canal par espèce à la même échelle (spec › Points ouverts › PMTiles par groupe)."""
     from champis_pipeline.scoring import NODATA_U8
+    from champis_pipeline.species import GROUP_CHANNELS
     from champis_pipeline.tiles import ALT_CLASS_M, NODATA
     from champis_pipeline.weather_grid import ALT_CLASS_M as GRID_ALT_CLASS_M
 
     palette = load_palette()
     assert palette["tile_encoding"] == {"channel": "luminance", "scale": 254, "nodata": 255}
     assert palette["alt_encoding"] == {"channel": "luminance", "class_m": 300, "nodata": 255}
+    assert palette["group_tile_encoding"] == {"channels": "rgba", "scale": 254, "nodata": 255}
     assert NODATA == NODATA_U8 == palette["tile_encoding"]["nodata"]
+    assert palette["group_tile_encoding"]["nodata"] == NODATA
+    assert len(palette["group_tile_encoding"]["channels"]) == GROUP_CHANNELS
     assert ALT_CLASS_M == GRID_ALT_CLASS_M == palette["alt_encoding"]["class_m"]
 
 
@@ -191,10 +196,20 @@ def test_tile_names_parse_and_manifest_marks_single_department_sets():
         "class_m": 300,
         "depts_hash": "a1b2c3",
     }
+    assert parse_tile_name("G-cepes-0123abcd-p1.0.0-da1b2c3.pmtiles") == {
+        "kind": "G",
+        "group": "cepes",
+        "hash": "0123abcd",
+        "scoring_version": "1.0.0",
+        "depts_hash": "a1b2c3",
+    }
+    assert parse_tile_name("G-cepes-0123abcd-p1.0.0-da1b2c3-2.pmtiles")["part"] == 2
     for bad in (
         "T-boletus_edulis-af34c16e-da1b2c3.pmtiles",
         "manifest.json",
         "T-x-1234-p1-d1.pmtiles",
+        "G-cepes-0123abcd-p1.0.0-da1b2c3-1.pmtiles",  # la première partie n'a pas de suffixe
+        "G-cepes-p1.0.0-da1b2c3.pmtiles",
     ):
         assert parse_tile_name(bad) is None, bad
 

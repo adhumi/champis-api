@@ -96,6 +96,17 @@ def cmd_all(args) -> None:
 # ---------------------------------------------------------------------- tuiles et grille météo
 
 
+def _group_sets(species: list[str], groups: bool) -> list[tuple[str, int, list[str]]]:
+    """Fichiers G à produire pour la sélection (groupes entiers seulement, voir `publish`)."""
+    from .publish import complete_group_sets, partial_groups
+
+    if not groups:
+        return []
+    for g in partial_groups(species):
+        console.get().warn(f"groupe {g} incomplet avec --species : pas de G pour lui")
+    return complete_group_sets(species)
+
+
 def _tiles(
     steps: console.Steps,
     depts: list[str],
@@ -103,18 +114,28 @@ def _tiles(
     force: bool,
     jobs: int | None,
     per_dept: bool,
+    groups: list[tuple[str, int, list[str]]] | None = None,
 ) -> None:
+    groups = groups or []
     for sid in species:
         with steps.step(f"tiles T {sid}") as step:
             step.written(tiles.build(sid, depts, force, jobs))
     with steps.step("tiles A (classes d'altitude)") as step:
         step.written(tiles.build_alt(depts, force, jobs))  # couche A, commune à toutes les espèces
+    for gid, part, ids in groups:
+        # un PMTiles par groupe, empilé depuis les MBTiles de travail des T : rien n'est re-rendu
+        with steps.step(f"tiles G {gid}" + (f" ({part})" if part > 1 else "")) as step:
+            step.written(tiles.build_group(gid, ids, depts, part, force, jobs))
     if per_dept and len(depts) > 1:
         # jeux par département pour le hors ligne de l'app : extraits du jeu complet, pas re-rendus
         for d in depts:
             with steps.step(f"tiles département {d}") as step:
                 out = [tiles.build_dept(sid, d, depts, force, jobs) for sid in species]
                 out.append(tiles.build_alt_dept(d, depts, force, jobs))
+                out += [
+                    tiles.build_group_dept(gid, ids, d, depts, part, force, jobs)
+                    for gid, part, ids in groups
+                ]
                 step.note(
                     f"{len(out)} fichiers · {console.size(sum(p.stat().st_size for p in out))}"
                 )
@@ -124,11 +145,14 @@ def cmd_tiles(args) -> None:
     depts = _depts(args)
     species = _species(args)
     per_dept = bool(getattr(args, "per_dept", False)) and len(depts) > 1
-    n = len(species) + 1 + (len(depts) if per_dept else 0)
+    groups = _group_sets(species, bool(getattr(args, "groups", False)))
+    n = len(species) + 1 + len(groups) + (len(depts) if per_dept else 0)
     steps = console.get().steps(
-        n, f"tiles · {len(depts)} département(s) · {len(species)} espèce(s)"
+        n,
+        f"tiles · {len(depts)} département(s) · {len(species)} espèce(s)"
+        + (f" · {len(groups)} groupe(s)" if groups else ""),
     )
-    _tiles(steps, depts, species, args.force, getattr(args, "jobs", None), per_dept)
+    _tiles(steps, depts, species, args.force, getattr(args, "jobs", None), per_dept, groups)
     console.get().summary("tuiles prêtes")
 
 
@@ -288,7 +312,14 @@ def cmd_publish(args) -> None:
         + (" · DRY RUN" if args.dry_run else ""),
     )
     with steps.step("comparaison avec le bucket") as step:
-        p = publish.plan(bucket, depts, species, prune=args.prune, per_dept=args.per_dept)
+        p = publish.plan(
+            bucket,
+            depts,
+            species,
+            prune=args.prune,
+            per_dept=args.per_dept,
+            groups=args.groups,
+        )
         step.note(
             f"{len(p.todo)} à téléverser ({console.size(p.todo_bytes)}), {len(p.already)} déjà là"
             + (f", {len(p.stale)} à supprimer" if args.prune else "")
@@ -304,7 +335,13 @@ def cmd_publish(args) -> None:
         return
     with steps.step("téléversement et manifeste") as step:
         manifest = publish.publish(
-            bucket, depts, species, prune=args.prune, per_dept=args.per_dept, plan_=p
+            bucket,
+            depts,
+            species,
+            prune=args.prune,
+            per_dept=args.per_dept,
+            plan_=p,
+            groups=args.groups,
         )
         step.note(f"{len(manifest['tiles'])} fichiers dans le manifeste")
     c.summary(f"{len(manifest['tiles'])} fichiers dans {cfg.bucket}/tiles/")
@@ -319,7 +356,7 @@ def cmd_status(args) -> None:
     depts = _depts(args)
     species = _species(args)
     batch_status = batch.load_status()
-    rows = [status.dept_status(d, species, batch_status) for d in depts]
+    rows = [status.dept_status(d, species, batch_status, args.groups) for d in depts]
     print(status.table([r.cells() for r in rows], status.COLUMNS))
     ready = sum(r.ready for r in rows)
     print()
@@ -329,7 +366,7 @@ def cmd_status(args) -> None:
     with c.steps(1).step(
         f"jeu complet · {len(depts)} département(s)" + (f" · bucket {cfg.bucket}" if cfg else "")
     ) as step:
-        s = status.set_status(depts, species, bucket)
+        s = status.set_status(depts, species, bucket, args.groups)
         note = f"local {len(s.local)}/{len(s.expected)}"
         if s.bucket is not None:
             note += f" · bucket {len(s.bucket)}/{len(s.expected)}"
@@ -387,7 +424,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--dept", required=True)
         p.set_defaults(fn=fn)
     for name, fn, help_ in (
-        ("tiles", cmd_tiles, "PMTiles T par espèce et A (altitude) dans data/tiles/"),
+        ("tiles", cmd_tiles, "PMTiles T par espèce, A (altitude) et G par groupe dans data/tiles/"),
         ("weather-grid", cmd_weather_grid, "cellules météo 5 km : data/weather_grid.json"),
     ):
         p = sub.add_parser(name, parents=[common], help=help_)
@@ -398,6 +435,11 @@ def build_parser() -> argparse.ArgumentParser:
                 "--per-dept",
                 action="store_true",
                 help="aussi un jeu par département, extrait du jeu complet (hors ligne de l'app)",
+            )
+            p.add_argument(
+                "--groups",
+                action="store_true",
+                help="aussi un PMTiles G par groupe (RGBA, un canal par espèce), empilé depuis les T",
             )
         p.set_defaults(fn=fn)
     p = sub.add_parser(
@@ -413,6 +455,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--prune", action="store_true", help="supprimer du bucket les autres jeux de départements"
     )
     p.add_argument("--per-dept", action="store_true", help="publier aussi les jeux par département")
+    p.add_argument("--groups", action="store_true", help="publier aussi les G (un par groupe)")
     p.add_argument(
         "--dry-run",
         action="store_true",
@@ -426,6 +469,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--depts", nargs="+", default=["all"], help="codes ou `all` (défaut)")
     p.add_argument("--no-bucket", action="store_true", help="ne pas interroger le bucket")
+    p.add_argument("--groups", action="store_true", help="compter aussi les G (un par groupe)")
     p.set_defaults(fn=cmd_status)
     p = sub.add_parser(
         "batch", parents=[common], help="download+grid+terrain, plusieurs départements, reprise"

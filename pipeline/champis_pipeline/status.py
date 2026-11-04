@@ -61,8 +61,12 @@ class SetStatus:
 
 
 def dept_status(
-    dept: str, species: list[str] | None = None, batch_status: dict[str, dict] | None = None
+    dept: str,
+    species: list[str] | None = None,
+    batch_status: dict[str, dict] | None = None,
+    groups: bool = False,
 ) -> DeptStatus:
+    """`groups` : compter aussi les PMTiles G (un par groupe) parmi les tuiles attendues."""
     from .publish import expected_names
 
     species = species or list_species()
@@ -79,20 +83,24 @@ def dept_status(
     )
     entry = batch_status.get(dept)
     batch = "-" if entry is None else ("ok" if entry.get("ok") else "ECHEC")
-    names = expected_names([dept], species)
+    names = expected_names([dept], species, groups)
     tiles = sum((config.TILES_DIR / n).exists() for n in names)
     return DeptStatus(dept, raw, grid, terrain, len(species), batch, tiles, len(names))
 
 
 def set_status(
-    depts: list[str], species: list[str] | None = None, bucket: Any | None = None
+    depts: list[str],
+    species: list[str] | None = None,
+    bucket: Any | None = None,
+    groups: bool = False,
 ) -> SetStatus:
-    """`bucket` : objet au contrat `BucketLike`, ou None pour ne pas interroger."""
+    """`bucket` : objet au contrat `BucketLike`, ou None pour ne pas interroger ; `groups` : les G
+    font partie du jeu attendu."""
     from .publish import expected_names
     from .storage import MANIFEST_KEY, TILES_PREFIX
 
     species = species or list_species()
-    expected = expected_names(sorted(depts), species)
+    expected = expected_names(sorted(depts), species, groups)
     status = SetStatus(
         sorted(depts), expected, [n for n in expected if (config.TILES_DIR / n).exists()]
     )

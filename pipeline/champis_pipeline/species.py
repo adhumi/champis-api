@@ -74,3 +74,32 @@ def all_species_hash() -> str:
     for sid in list_species():
         h.update(fingerprint_bytes((SPECIES_DIR / f"{sid}.json").read_bytes()))
     return h.hexdigest()[:8]
+
+
+# ---------------------------------------------------------------- groupes d'affichage (PMTiles G)
+
+GROUP_CHANNELS = 4  # espèces par fichier G : un canal RGBA chacune
+
+
+def species_groups(species_ids: list[str] | None = None) -> dict[str, list[str]]:
+    """`group.id` → identifiants d'espèces du groupe, triés : c'est l'ordre des canaux des PMTiles
+    G (spec › Points ouverts › PMTiles par groupe, 4 nov. 2026). Par défaut toutes les espèces."""
+    groups: dict[str, list[str]] = {}
+    for sid in sorted(species_ids if species_ids is not None else list_species()):
+        groups.setdefault(load_species(sid)["group"]["id"], []).append(sid)
+    return dict(sorted(groups.items()))
+
+
+def group_sets(species_ids: list[str] | None = None) -> list[tuple[str, int, list[str]]]:
+    """Fichiers G à produire : `(groupe, partie, espèces)`, au plus `GROUP_CHANNELS` espèces par
+    fichier ; au-delà, une seconde partie (suffixe `-2` du nom), jamais nécessaire aujourd'hui."""
+    out = []
+    for gid, ids in species_groups(species_ids).items():
+        for i in range(0, len(ids), GROUP_CHANNELS):
+            out.append((gid, i // GROUP_CHANNELS + 1, ids[i : i + GROUP_CHANNELS]))
+    return out
+
+
+def group_hash(species_ids: list[str]) -> str:
+    """Empreinte courte des hashes d'espèces concaténés dans l'ordre des canaux."""
+    return hashlib.sha256("".join(species_hash(s) for s in species_ids).encode()).hexdigest()[:8]

@@ -4,7 +4,9 @@
 #   DEPT     un département (download, grid, terrain, dept, summary, explain, gbif-check)
 #   DEPTS    une liste ou `all` (batch, tiles, weather-grid, publish, release)
 #   SPECIES  ids d'espèces séparés par des espaces ; vide = toutes
-#   JOBS     processus en parallèle (batch : départements, ~2 Go chacun ; tiles : niveau 15)
+#   JOBS     processus en parallèle (batch : départements, ~2 Go chacun ; tiles : niveau 15 et G)
+#   GROUPS   `1` (défaut) : tiles, status et publish prennent aussi les PMTiles G (un par groupe) ;
+#            vide (`GROUPS=`) pour les T et A seuls
 #   FLAGS    options passées aux CLI, ex. `FLAGS=-v` (journaux bruts, traces) ou `FLAGS=-q`
 #
 # Chaque commande écrit son journal dans data/logs/<commande>-<date>.log (`make log` : le dernier).
@@ -22,12 +24,14 @@ DEPT    ?= 25
 DEPTS   ?= all
 SPECIES ?=
 JOBS    ?= 3
+GROUPS  ?= 1
 FLAGS   ?=
 
 UV       := uv run
 PIPELINE := $(UV) champis-pipeline $(FLAGS)
 API      := $(UV) champis-api $(FLAGS)
 SP       := $(foreach s,$(SPECIES),--species $(s))
+GR       := $(if $(GROUPS),--groups)
 
 # ------------------------------------------------------------------ Développement
 
@@ -37,7 +41,7 @@ help: ## Cette aide
 	  /^# ---+ / { sub(/^# -+ /, ""); printf "\n\033[1m%s\033[0m\n", $$0 } \
 	  /^[a-zA-Z_-]+:.*## / { printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2 }' $(MAKEFILE_LIST)
 	@echo
-	@echo "Variables : DEPT=$(DEPT) DEPTS=$(DEPTS) SPECIES='$(SPECIES)' JOBS=$(JOBS) FLAGS='$(FLAGS)'"
+	@echo "Variables : DEPT=$(DEPT) DEPTS=$(DEPTS) SPECIES='$(SPECIES)' JOBS=$(JOBS) GROUPS='$(GROUPS)' FLAGS='$(FLAGS)'"
 
 .PHONY: setup
 setup: ## Installe l'environnement (uv sync --group dev) et crée .env depuis .env.example s'il manque
@@ -87,8 +91,8 @@ doctor: ## L'environnement est-il prêt ? .env, disque, grille météo, amorçag
 	$(API) doctor
 
 .PHONY: status
-status: ## Où en est chaque département (raw, grid, T, batch, tuiles) et le jeu DEPTS (local, bucket)
-	$(PIPELINE) status --depts $(DEPTS) $(SP)
+status: ## Où en est chaque département (raw, grid, T, batch, tuiles, G compris) et le jeu DEPTS (local, bucket)
+	$(PIPELINE) status --depts $(DEPTS) $(GR) $(SP)
 
 # ------------------------------------------------------------------ Pipeline terrain (un département : DEPT)
 
@@ -127,8 +131,8 @@ batch: ## download + grid + terrain en parallèle (JOBS départements à la fois
 	$(PIPELINE) batch --depts $(DEPTS) --jobs $(JOBS) $(SP)
 
 .PHONY: tiles
-tiles: ## PMTiles T par espèce et A (altitude) du jeu DEPTS, plus un jeu par département (hors ligne)
-	$(PIPELINE) tiles --depts $(DEPTS) --jobs $(JOBS) --per-dept $(SP)
+tiles: ## PMTiles T par espèce, A (altitude) et G par groupe (GROUPS=1) du jeu DEPTS, plus un jeu par département
+	$(PIPELINE) tiles --depts $(DEPTS) --jobs $(JOBS) --per-dept $(GR) $(SP)
 
 .PHONY: weather-grid
 weather-grid: ## Cellules météo 5 km avec poids Σ T : data/weather_grid.json (versionné, à commiter)
@@ -137,23 +141,23 @@ weather-grid: ## Cellules météo 5 km avec poids Σ T : data/weather_grid.json 
 # ------------------------------------------------------------------ Publication (bucket Railway, variables de .env)
 
 .PHONY: publish
-publish: ## PMTiles de data/tiles -> bucket + manifeste, jeux par département compris ; --prune efface les autres jeux
+publish: ## PMTiles de data/tiles -> bucket + manifeste, jeux par département et G compris ; --prune efface les autres jeux
 	@# question et test sur une même ligne : le make 3.81 de macOS (Xcode) ignore .ONESHELL et lance
 	@# chaque ligne dans son propre shell, où `r` serait vide
 	@read -r -p "Publier le jeu [$(DEPTS)] et effacer les autres jeux du bucket (--prune) ? [o/N] " r; \
 	  [[ "$$r" == [oOyY] ]] || { echo "annulé"; exit 1; }
-	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune $(SP)
+	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune $(GR) $(SP)
 
 .PHONY: publish-dry
 publish-dry: ## Montre ce que publish téléverserait et ce que --prune supprimerait, sans rien écrire
-	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune --dry-run $(SP)
+	$(PIPELINE) publish --depts $(DEPTS) --per-dept --prune --dry-run $(GR) $(SP)
 
 .PHONY: publish-keep
 publish-keep: ## Comme publish, sans effacer les jeux déjà dans le bucket
-	$(PIPELINE) publish --depts $(DEPTS) --per-dept $(SP)
+	$(PIPELINE) publish --depts $(DEPTS) --per-dept $(GR) $(SP)
 
 .PHONY: release
-release: ## Séquence complète : tiles (jeu DEPTS + par département), publish-dry, puis publish
+release: ## Séquence complète : tiles (jeu DEPTS + par département + G), publish-dry, puis publish
 	$(MAKE) --no-print-directory tiles
 	$(MAKE) --no-print-directory publish-dry
 	$(MAKE) --no-print-directory publish

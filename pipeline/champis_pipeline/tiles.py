@@ -12,6 +12,12 @@ Deuxième couche, commune à toutes les espèces : `A` = classe d'altitude du pi
 k de la classe [300k, 300k+300[ m, centre 300k+150 = la classe que l'API renvoie), produite
 depuis `alt.tif` sur toute l'emprise. Les clients y lisent la classe du pixel pour choisir
 M_eff et Φ (spec : Points ouverts › classe d'altitude du pixel).
+
+Troisième couche, un fichier par groupe d'affichage : `G` = PNG RGBA dont le canal i porte
+T × 254 de la i-ème espèce du groupe (ordre alphabétique des identifiants), 255 = sans donnée
+pour ce canal ; l'alpha est un canal de données, jamais une transparence. Construit en empilant
+les tuiles des MBTiles de travail des jeux T, sans rien re-rendre ni réduire (spec : Points
+ouverts › PMTiles par groupe, 4 nov. 2026) : deux requêtes par tuile côté clients au lieu de cinq.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ import multiprocessing
 import os
 import shutil
 import sqlite3
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from pathlib import Path
 
 import mercantile
@@ -43,7 +49,7 @@ from . import SCORING_VERSION
 from .config import CRS_TILES, T_DIR, TILES_DIR, dept_dirs
 from .progress import tqdm
 from .scoring import NODATA_U16
-from .species import species_hash
+from .species import GROUP_CHANNELS, group_hash, species_hash
 from .weather_grid import ALT_CLASS_M
 
 log = logging.getLogger(__name__)
@@ -54,6 +60,8 @@ TILE = 256
 NODATA = 255
 CHUNK_TILES = 64  # carré de tuiles z15 (64 × 64) par tâche parallèle
 MERGE_MEM_MB = 1024
+GROUP_BATCH = 500  # tuiles G par tâche parallèle (quelques dizaines de Mo de PNG RGBA par lot)
+T_DESCRIPTION = "Champis — potentiel terrain, gris 8 bits = T × 254, alpha 0 = hors forêt"
 
 
 def default_jobs() -> int:
@@ -64,19 +72,24 @@ def _depts_hash(depts: list[str]) -> str:
     return hashlib.sha256(",".join(sorted(depts)).encode()).hexdigest()[:6]
 
 
+def t_tag(species_id: str, depts: list[str]) -> str:
+    """`<espèce>-<hash espèce>-p<version>-d<hash départements>` : le nom du jeu T sans `T-` ni suffixe."""
+    return f"{species_id}-{species_hash(species_id)}-p{SCORING_VERSION}-d{_depts_hash(depts)}"
+
+
+def group_tag(group_id: str, species_ids: list[str], depts: list[str], part: int = 1) -> str:
+    """`<groupe>-<hash>-p<version>-d<hash départements>[-<partie>]`, `<hash>` = empreinte des hashes
+    d'espèces dans l'ordre des canaux (`species.group_hash`) ; `-2` pour une seconde partie."""
+    tag = f"{group_id}-{group_hash(species_ids)}-p{SCORING_VERSION}-d{_depts_hash(depts)}"
+    return tag if part == 1 else f"{tag}-{part}"
+
+
 def build(species_id: str, depts: list[str], force: bool = False, jobs: int | None = None) -> Path:
     """`T-<espèce>-<hash espèce>-p<version>-d<hash départements>.pmtiles` : T × 254 en gris."""
     h = species_hash(species_id)
-    tag = f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash(depts)}"
     srcs = [T_DIR / species_id / f"{d}-{h}.tif" for d in depts]
     return _build(
-        "T",
-        tag,
-        srcs,
-        f"T {species_id}",
-        "Champis — potentiel terrain, gris 8 bits = T × 254, alpha 0 = hors forêt",
-        force,
-        jobs,
+        "T", t_tag(species_id, depts), srcs, f"T {species_id}", T_DESCRIPTION, force, jobs
     )
 
 
@@ -230,6 +243,19 @@ def _unpng(data: bytes) -> np.ndarray:
     """PNG LA → tableau uint8 avec NODATA là où alpha = 0 (inverse exact de `_png`)."""
     la = np.asarray(Image.open(io.BytesIO(data)).convert("LA"))
     return np.where(la[..., 1] == 0, NODATA, la[..., 0]).astype(np.uint8)
+
+
+def _png_rgba(arr: np.ndarray) -> bytes:
+    """(256, 256, 4) uint8 → PNG RGBA 8 bits non entrelacé ; chaque canal est une donnée (255 =
+    nodata du canal), l'alpha compris : rien n'est prémultiplié ni rendu transparent ici."""
+    buf = io.BytesIO()
+    Image.fromarray(arr, mode="RGBA").save(buf, format="PNG", optimize=False, compress_level=6)
+    return buf.getvalue()
+
+
+def _unpng_rgba(data: bytes) -> np.ndarray:
+    """PNG RGBA → (256, 256, 4) uint8, octets tels quels (inverse exact de `_png_rgba`)."""
+    return np.asarray(Image.open(io.BytesIO(data)).convert("RGBA")).astype(np.uint8)
 
 
 def reduce_t(children: np.ndarray) -> np.ndarray:
@@ -562,20 +588,14 @@ def build_dept(
     """Jeu d'un seul département pour une espèce, pour le hors ligne de l'app : extrait du MBTiles
     de travail du jeu `all_depts` (vérifié contre son PMTiles, voir `full_set_source`) quand ce jeu
     existe, sinon rendu complet du département."""
-    h = species_hash(species_id)
-    tag = f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash([dept])}"
-    out = TILES_DIR / f"T-{tag}.pmtiles"
+    out = TILES_DIR / f"T-{t_tag(species_id, [dept])}.pmtiles"
     if _done(out, force):
         return out
-    src = full_set_source("T", f"{species_id}-{h}-p{SCORING_VERSION}-d{_depts_hash(all_depts)}")
+    src = full_set_source("T", t_tag(species_id, all_depts))
     if src is None:
         return build(species_id, [dept], force, jobs)
     n = extract(
-        src,
-        out,
-        dept_bounds("T", dept, species_id),
-        f"T {species_id} {dept}",
-        "Champis — potentiel terrain, gris 8 bits = T × 254, alpha 0 = hors forêt",
+        src, out, dept_bounds("T", dept, species_id), f"T {species_id} {dept}", T_DESCRIPTION
     )
     log.info("écrit %s (%d tuiles extraites)", out, n)
     return out
@@ -599,6 +619,227 @@ def build_alt_dept(
         f"A classes d'altitude {dept}",
         f"Champis — classe d'altitude, gris 8 bits = indice k de [{ALT_CLASS_M}k, "
         f"{ALT_CLASS_M}(k+1)[ m, alpha 0 = altitude inconnue",
+    )
+    log.info("écrit %s (%d tuiles extraites)", out, n)
+    return out
+
+
+# ---------------------------------------------------------------- jeux par groupe (G)
+
+
+def _group_description(species_ids: list[str]) -> str:
+    channels = ", ".join(f"{c} = {sid}" for c, sid in zip("RGBA", species_ids, strict=False))
+    return (
+        f"Champis — potentiel terrain par groupe, PNG RGBA, canal = T × 254 ({channels}), "
+        f"255 = sans donnée pour le canal"
+    )
+
+
+def build_group(
+    group_id: str,
+    species_ids: list[str],
+    depts: list[str],
+    part: int = 1,
+    force: bool = False,
+    jobs: int | None = None,
+) -> Path:
+    """`G-<groupe>-<hash>-p<version>-d<hash départements>.pmtiles` : PNG RGBA, canal i = T × 254 de
+    la i-ème espèce de `species_ids` (ordre des canaux = ordre alphabétique, `species.group_sets`),
+    255 là où l'espèce n'a pas de donnée ou pas de tuile ; les canaux au-delà des espèces sont
+    tout à 255. Empile les tuiles des MBTiles de travail des jeux T (`full_set_source`) : rien n'est
+    re-rendu depuis les mosaïques ni réduit, les tuiles T le sont déjà à tous les niveaux."""
+    if not 1 <= len(species_ids) <= GROUP_CHANNELS:
+        raise ValueError(f"un fichier G porte 1 à {GROUP_CHANNELS} espèces, pas {species_ids}")
+    TILES_DIR.mkdir(parents=True, exist_ok=True)
+    tag = group_tag(group_id, species_ids, depts, part)
+    out = TILES_DIR / f"G-{tag}.pmtiles"
+    if _done(out, force):
+        return out
+    srcs = []
+    for sid in species_ids:
+        src = full_set_source("T", t_tag(sid, depts))
+        if src is None:
+            raise FileNotFoundError(
+                f"jeu T de {sid} absent pour ces départements (T-{t_tag(sid, depts)}.pmtiles) : "
+                "`tiles` le produit avant les groupes"
+            )
+        srcs.append(src)
+    work = TILES_DIR / "_work" / f"G-{tag}"
+    work.mkdir(parents=True, exist_ok=True)
+    mbt = work / "G.mbtiles"
+    _group_mbtiles(
+        srcs, mbt, f"G {group_id}", _group_description(species_ids), jobs or default_jobs()
+    )
+    _write_pmtiles(mbt, out)
+    log.info("écrit %s", out)
+    return out
+
+
+def _union_bounds(
+    boxes: list[tuple[float, float, float, float]],
+) -> tuple[float, float, float, float]:
+    """Emprise (ouest, sud, est, nord) réunissant plusieurs emprises."""
+    return (
+        min(b[0] for b in boxes),
+        min(b[1] for b in boxes),
+        max(b[2] for b in boxes),
+        max(b[3] for b in boxes),
+    )
+
+
+def _group_mbtiles(
+    srcs: list[Path], out: Path, name: str, description: str, jobs: int
+) -> dict[int, int]:
+    """MBTiles G depuis les MBTiles T `srcs` (un par canal) : pour chaque (z, x, y) présent dans
+    au moins un jeu, un PNG RGBA empilant les canaux. Renvoie le nombre de tuiles par niveau."""
+    out.unlink(missing_ok=True)
+    paths = [str(p) for p in srcs]
+    # l'union des clés se lit sur une connexion à part de celle qui insère, en lecture seule
+    keys = sqlite3.connect("file::memory:", uri=True)
+    boxes = []
+    for i, p in enumerate(paths):
+        keys.execute(f"ATTACH DATABASE ? AS s{i}", (f"file:{p}?mode=ro",))
+        value = keys.execute(f"SELECT value FROM s{i}.metadata WHERE name = 'bounds'").fetchone()
+        boxes.append(tuple(float(v) for v in value[0].split(",")))
+    w, south, e, n = _union_bounds(boxes)
+    db = sqlite3.connect(out)
+    db.executescript(MBTILES_SCHEMA)
+    db.executemany(
+        "INSERT INTO metadata VALUES (?, ?)",
+        [
+            ("name", name),
+            ("format", "png"),
+            ("type", "overlay"),
+            ("version", "1"),
+            ("minzoom", str(MIN_ZOOM)),
+            ("maxzoom", str(MAX_ZOOM)),
+            ("bounds", f"{w},{south},{e},{n}"),
+            ("description", description),
+        ],
+    )
+    db.commit()
+    union = " UNION ".join(
+        f"SELECT tile_column, tile_row FROM s{i}.tiles WHERE zoom_level = ?"
+        for i in range(len(paths))
+    )
+    counts: dict[int, int] = {}
+    for z in range(MAX_ZOOM, MIN_ZOOM - 1, -1):
+        cur = keys.execute(union, (z,) * len(paths))
+        counts[z] = _stack_zoom(db, z, cur, paths, jobs)
+        log.info("z%d : %d tuiles", z, counts[z])
+    keys.close()
+    db.close()
+    return counts
+
+
+def _insert_tms(db: sqlite3.Connection, z: int, rows: list[tuple[int, int, bytes]]) -> None:
+    """Comme `_insert`, mais les lignes sont déjà en TMS (lues telles quelles dans les jeux T)."""
+    db.executemany("INSERT INTO tiles VALUES (?, ?, ?, ?)", [(z, c, r, png) for c, r, png in rows])
+    db.commit()
+
+
+def _stack_zoom(db: sqlite3.Connection, z: int, cur, paths: list[str], jobs: int) -> int:
+    """Niveau z : lots de `GROUP_BATCH` clés (TMS) empilés en PNG RGBA par `jobs` processus, au plus
+    2 × jobs lots en vol pour borner la mémoire (France ≈ 1 M de tuiles par groupe)."""
+    count = 0
+    bar = tqdm(desc=f"z{z}", unit="tuile", leave=False)
+    if jobs <= 1:
+        _group_worker_init(paths)
+        try:
+            while batch := cur.fetchmany(GROUP_BATCH):
+                rows = _stack_batch(z, batch)
+                _insert_tms(db, z, rows)
+                count += len(rows)
+                bar.update(len(rows))
+        finally:
+            _group_worker_close()
+            bar.close()
+        return count
+    ctx = multiprocessing.get_context("spawn")  # pas de fork sous GDAL multi-threadé
+    with (
+        ProcessPoolExecutor(
+            max_workers=jobs, mp_context=ctx, initializer=_group_worker_init, initargs=(paths,)
+        ) as ex,
+        bar,
+    ):
+        pending = set()
+        while True:
+            batch = cur.fetchmany(GROUP_BATCH)
+            if batch:
+                pending.add(ex.submit(_stack_batch, z, batch))
+                if len(pending) < 2 * jobs:
+                    continue
+            if not pending:
+                break
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for f in done:
+                rows = f.result()
+                _insert_tms(db, z, rows)
+                count += len(rows)
+                bar.update(len(rows))
+    return count
+
+
+_GROUP_SRC: list[sqlite3.Connection] = []  # jeux T ouverts par le processus (un par canal)
+
+
+def _group_worker_init(paths: list[str]) -> None:
+    global _GROUP_SRC
+    _GROUP_SRC = [sqlite3.connect(f"file:{p}?mode=ro", uri=True) for p in paths]
+
+
+def _group_worker_close() -> None:
+    global _GROUP_SRC
+    for db in _GROUP_SRC:
+        db.close()
+    _GROUP_SRC = []
+
+
+def _stack_batch(z: int, keys: list[tuple[int, int]]) -> list[tuple[int, int, bytes]]:
+    """(colonne, ligne TMS) → PNG RGBA : canal i = tuile T du i-ème jeu, 255 s'il ne l'a pas."""
+    out = []
+    for col, row in keys:
+        arr = np.full((TILE, TILE, GROUP_CHANNELS), NODATA, dtype=np.uint8)
+        for i, db in enumerate(_GROUP_SRC):
+            found = db.execute(
+                "SELECT tile_data FROM tiles WHERE zoom_level = ? AND tile_column = ? "
+                "AND tile_row = ?",
+                (z, col, row),
+            ).fetchone()
+            if found is not None:
+                arr[..., i] = _unpng(found[0])
+        out.append((col, row, _png_rgba(arr)))
+    return out
+
+
+def group_dept_bounds(dept: str, species_ids: list[str]) -> tuple[float, float, float, float]:
+    """Emprise WGS84 du département pour un G : réunion des emprises T de ses espèces."""
+    return _union_bounds([dept_bounds("T", dept, sid) for sid in species_ids])
+
+
+def build_group_dept(
+    group_id: str,
+    species_ids: list[str],
+    dept: str,
+    all_depts: list[str],
+    part: int = 1,
+    force: bool = False,
+    jobs: int | None = None,
+) -> Path:
+    """G d'un seul département (voir `build_dept`) : extrait du MBTiles de travail du G complet
+    quand il existe, sinon construit depuis les jeux T du département."""
+    out = TILES_DIR / f"G-{group_tag(group_id, species_ids, [dept], part)}.pmtiles"
+    if _done(out, force):
+        return out
+    src = full_set_source("G", group_tag(group_id, species_ids, all_depts, part))
+    if src is None:
+        return build_group(group_id, species_ids, [dept], part, force, jobs)
+    n = extract(
+        src,
+        out,
+        group_dept_bounds(dept, species_ids),
+        f"G {group_id} {dept}",
+        _group_description(species_ids),
     )
     log.info("écrit %s (%d tuiles extraites)", out, n)
     return out
