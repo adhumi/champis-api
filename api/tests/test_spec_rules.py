@@ -84,11 +84,12 @@ def test_m_eff_persistence_then_frost_and_water_balance_reapplied():
     assert calm["M_eff"] == pytest.approx(expected) and calm["frost"] == 1.0
     assert calm["M_eff"] >= calm["M"]
 
-    # gel les `nights` dernières nuits : M_eff est multiplié par le facteur gel, même si M(J−k) était bon
+    # gel les `nights` dernières nuits (nuits pleines, sous tmin_c) : M_eff est multiplié par le
+    # facteur gel, même si M(J−k) était bon
     for k in range(frost["nights"]):
         s.t_min[s.i(day - timedelta(days=k))] = frost["tmin_c"] - 1.0
     frozen = weather_index(EDULIS, s, day, 300.0)
-    assert frozen["frost"] == frost["factor"]
+    assert frozen["frost"] == pytest.approx(frost["factor"])
     assert frozen["M_eff"] == pytest.approx(min(1.0, expected_after_frost(s, day, days)))
 
 

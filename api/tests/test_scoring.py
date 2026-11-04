@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from champis_api.scoring import (
@@ -9,10 +9,12 @@ from champis_api.scoring import (
     factor_frost,
     factor_trigger,
     factor_water_balance,
+    frost_severity,
     group_score,
     palette_class,
     phenology_window,
     weather_index,
+    weather_index_raw,
 )
 from champis_pipeline.scoring import trapezoid
 from champis_pipeline.species import list_species, load_palette, load_species
@@ -74,8 +76,117 @@ def test_frost_only_with_altitude_correction():
     s = make_series(date(2026, 10, 1), 30, t_min=2.0, elevation=700.0)
     day = date(2026, 10, 20)
     assert factor_frost(EDULIS, s, day, 700.0) == 1.0
-    # à 1 450 m : 2 − 0,006 × 750 = −2,5 °C → gel
-    assert factor_frost(EDULIS, s, day, 1450.0) == EDULIS["weather"]["frost"]["factor"]
+    # à 1 450 m : 2 − 0,006 × 750 = −2,5 °C, sous tmin_c toutes les nuits → × factor
+    assert factor_frost(EDULIS, s, day, 1450.0) == pytest.approx(
+        EDULIS["weather"]["frost"]["factor"]
+    )
+
+
+# gel en rampe (spec › Scoring › gel en rampe, 4 nov. 2026)
+
+
+def frost_series(nights: dict[int, float]) -> tuple[DailySeries, date]:
+    """Nuits douces (8 °C) sauf `nights` : {jours avant J: tmin}, cellule et pixel à 700 m."""
+    day = date(2026, 10, 20)
+    s = make_series(date(2026, 10, 1), 30, t_min=8.0, elevation=700.0)
+    for k, v in nights.items():
+        s.t_min[s.i(day - timedelta(days=k))] = v
+    return s, day
+
+
+@pytest.mark.parametrize(
+    ("offset_c", "expected"),
+    [
+        (-5.0, 1.0),
+        (-1e-9, 1.0),
+        (0.0, 1.0),
+        (0.5, 0.75),
+        (1.0, 0.5),
+        (1.5, 0.25),
+        (2.0, 0.0),
+        (2.0 + 1e-9, 0.0),
+        (7.0, 0.0),
+    ],
+)
+def test_frost_severity_is_one_minus_trapezoid(offset_c, expected):
+    """s = 1 − trapèze(tmin, min = tmin_c, opt_low = tmin_c + ramp_c, +∞, +∞)."""
+    cfg = EDULIS["weather"]["frost"]
+    assert frost_severity(cfg["tmin_c"] + offset_c, cfg) == pytest.approx(expected)
+
+
+def test_frost_ramp_exact_values():
+    """Cèpe : tmin_c −2, ramp_c 2, nights 2, factor 0,2."""
+    cfg = EDULIS["weather"]["frost"]
+    assert (cfg["tmin_c"], cfg["ramp_c"], cfg["nights"], cfg["factor"]) == (-2, 2, 2, 0.2)
+    # aucune nuit froide
+    s, day = frost_series({})
+    assert factor_frost(EDULIS, s, day, 700.0) == 1.0
+    # une nuit à mi-rampe (−1 °C, s = 0,5) : 1 − 0,8 × 0,25 = 0,8
+    s, day = frost_series({0: -1.0})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(0.8)
+    # une nuit pleine : 1 − 0,8 × 0,5 = 0,6
+    s, day = frost_series({3: -2.0})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(0.6)
+    # deux nuits pleines : × factor, comme l'ancienne marche
+    s, day = frost_series({0: -2.0, 1: -2.0})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(0.2)
+    # quatre nuits partielles qui se cumulent : S = 0,5 + 0,25 + 0,75 + 0 = 1,5 → 1 − 0,8 × 0,75
+    s, day = frost_series({0: -1.0, 1: -0.5, 2: -1.5, 3: 0.0})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(0.4)
+    # S plafonné à nights : sept nuits polaires ne font pas moins que factor
+    s, day = frost_series({k: -15.0 for k in range(7)})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(0.2)
+
+
+def test_frost_ramp_is_continuous():
+    """Une nuit juste sous tmin_c + ramp_c donne un facteur proche de 1 ; une nuit juste sous
+    tmin_c, le même facteur qu'à tmin_c : plus de marche, en température comme en nombre de nuits."""
+    cfg = EDULIS["weather"]["frost"]
+    top = cfg["tmin_c"] + cfg["ramp_c"]
+    s, day = frost_series({0: top - 1e-6})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(1.0, abs=1e-6)
+    s, day = frost_series({0: top})
+    assert factor_frost(EDULIS, s, day, 700.0) == 1.0
+    s, day = frost_series({0: cfg["tmin_c"] - 1e-6})
+    s_at, _ = frost_series({0: cfg["tmin_c"]})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(
+        factor_frost(EDULIS, s_at, day, 700.0)
+    )
+    # monotone décroissant en température
+    values = [
+        factor_frost(EDULIS, frost_series({0: v})[0], day, 700.0)
+        for v in (1.0, 0.0, -0.5, -1.0, -1.5, -2.0, -3.0)
+    ]
+    assert values == sorted(values, reverse=True)
+
+
+def test_frost_window_edge():
+    """J−window_days est hors fenêtre, J−window_days+1 dedans."""
+    cfg = EDULIS["weather"]["frost"]
+    w = cfg["window_days"]
+    s, day = frost_series({w: -10.0, w - 1: -10.0})
+    assert factor_frost(EDULIS, s, day, 700.0) == pytest.approx(
+        1.0 - (1.0 - cfg["factor"]) / cfg["nights"]
+    )
+
+
+def test_frost_ramp_reapplied_on_m_eff(calm_autumn):
+    """Le facteur du jour, en rampe, multiplie aussi M_eff (règle 3)."""
+    s = calm_autumn
+    s.rain[s.i(date(2026, 10, 1))] = 30.0
+    day = date(2026, 10, 13)
+    mild = weather_index(EDULIS, s, day, 700.0)
+    s.t_min[s.i(day)] = -1.0  # mi-rampe → 0,8, seulement la nuit de J
+    r = weather_index(EDULIS, s, day, 700.0)
+    assert r["frost"] == pytest.approx(0.8)
+    assert r["M"] == pytest.approx(mild["M"] * 0.8)
+    days = EDULIS["weather"]["persistence"]["days"]
+    best_past = max(
+        weather_index_raw(EDULIS, s, day - timedelta(days=k), 700.0)["M"] * (1 - k / days)
+        for k in range(1, days + 1)
+    )
+    assert r["M_eff"] == pytest.approx(min(1.0, max(r["M"], best_past) * 0.8))
+    assert r["M_eff"] < mild["M_eff"]
 
 
 # ------------------------------------------------------------------ bilan hydrique

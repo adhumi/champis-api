@@ -118,6 +118,23 @@ def _scenario_series(kind: str) -> DailySeries:
     elif kind == "frost_altitude":
         for k in range(len(s.t_min)):
             s.t_min[k] = 2.0
+    # gel en rampe (4 nov. 2026) : les températures sont absolues, chaque espèce les lit avec son
+    # propre seuil (tmin_c −1, −2 ou −3 °C, ramp_c 2 °C, nights 1 ou 2), d'où des sévérités variées
+    elif kind == "frost_one_night":
+        # une seule nuit à −1 °C : mi-rampe pour un seuil à −2 °C, nuit pleine à −1 °C, rien à −3 °C
+        s.t_min[i(date(2026, 10, 20))] = -1.0
+    elif kind == "frost_partial_nights":
+        # quatre nuits partielles qui se cumulent : S = Σ s, plafonné à `nights`
+        for d, v in ((20, -1.0), (19, -0.5), (18, -1.5), (17, 0.0)):
+            s.t_min[i(date(2026, 10, d))] = v
+    elif kind == "frost_ramp_edges":
+        # une nuit exactement à tmin_c + ramp_c (s = 0) et une juste en dessous (s ≈ 0) pour −2 °C
+        s.t_min[i(date(2026, 10, 20))] = 0.0
+        s.t_min[i(date(2026, 10, 19))] = 0.0 - EPS
+    elif kind == "frost_window_edge":
+        # deux nuits pleines : J−7 est hors des 7 derniers jours, J−6 dedans → une seule compte
+        s.t_min[i(date(2026, 10, 13))] = -10.0
+        s.t_min[i(date(2026, 10, 14))] = -10.0
     elif kind == "drought":
         for k in range(len(s.rain)):
             s.rain[k] = 0.0
@@ -141,6 +158,11 @@ def m_vectors() -> list[dict[str, Any]]:
         ("snow", date(2026, 10, 15), 700.0),
         ("frost_altitude", date(2026, 10, 20), 700.0),
         ("frost_altitude", date(2026, 10, 20), 1450.0),
+        ("frost_one_night", date(2026, 10, 20), 700.0),
+        ("frost_one_night", date(2026, 10, 20), 850.0),
+        ("frost_partial_nights", date(2026, 10, 20), 700.0),
+        ("frost_ramp_edges", date(2026, 10, 20), 700.0),
+        ("frost_window_edge", date(2026, 10, 20), 700.0),
         ("drought", date(2026, 10, 11), 700.0),
         ("heat", date(2026, 9, 10), 700.0),
         ("crash", date(2026, 10, 20), 700.0),

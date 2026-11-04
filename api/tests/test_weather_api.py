@@ -166,7 +166,7 @@ async def test_frost_only_at_altitude(grid):
     resp = cell_weather(_cell(grid), raw, ["boletus_edulis"], TODAY)
     low, high = _alt(resp, "boletus_edulis", TODAY, 450), _alt(resp, "boletus_edulis", TODAY, 1350)
     assert low["factors"]["frost"] == 1.0
-    assert high["factors"]["frost"] == EDULIS["weather"]["frost"]["factor"]
+    assert high["factors"]["frost"] == pytest.approx(EDULIS["weather"]["frost"]["factor"])
     assert high["M_eff"] < low["M_eff"]
 
 

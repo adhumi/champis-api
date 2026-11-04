@@ -140,11 +140,33 @@ def factor_soil(species: dict[str, Any], s: DailySeries, day: date) -> float:
     return trapezoid(sum(vals) / len(vals), species["weather"]["soil_moisture_pct"])
 
 
+def frost_severity(tmin_c: float, cfg: dict[str, Any]) -> float:
+    """Sévérité d'une nuit, 0–1 : `1 − trapèze(tmin, min = tmin_c, opt_low = tmin_c + ramp_c,
+    opt_high = +∞, max = +∞)`, soit 1 à `tmin_c` et en dessous, 0 dès `tmin_c + ramp_c`, linéaire
+    entre. Le trapèze unique du modèle (règle 1), avec des bornes hautes infinies : `trapezoid`
+    accepte `inf` (x ≤ +∞ est toujours vrai, et une rampe descendante de +∞ à +∞ n'existe pas)."""
+    ramp = {
+        "min": cfg["tmin_c"],
+        "opt_low": cfg["tmin_c"] + cfg["ramp_c"],
+        "opt_high": math.inf,
+        "max": math.inf,
+    }
+    return 1.0 - trapezoid(tmin_c, ramp)
+
+
 def factor_frost(species: dict[str, Any], s: DailySeries, day: date, alt_m: float) -> float:
+    """Gel en rampe (spec › Scoring › gel en rampe, 4 nov. 2026) :
+
+        S = Σ sévérité(tmin corrigée) sur les `window_days` dernières nuits
+        facteur = 1 − (1 − factor) × min(1, S / nights)
+
+    `nights` nuits à `tmin_c` ou en dessous donnent × `factor`, comme l'ancienne marche ; une seule
+    nuit à mi-rampe donne `1 − (1 − factor) × 0,5 / nights`. Continu en température et en nombre
+    de nuits : deux cellules météo voisines ne basculent plus pour un dixième de degré."""
     cfg = species["weather"]["frost"]
     vals = corrected(s.window(s.t_min, day, cfg["window_days"]), s, alt_m)
-    nights = sum(1 for v in vals if v <= cfg["tmin_c"])
-    return cfg["factor"] if nights >= cfg["nights"] else 1.0
+    severity = sum(frost_severity(v, cfg) for v in vals)
+    return 1.0 - (1.0 - cfg["factor"]) * min(1.0, severity / cfg["nights"])
 
 
 def factor_water_balance(species: dict[str, Any], s: DailySeries, day: date) -> float:
