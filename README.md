@@ -73,7 +73,7 @@ La CI exige une couverture d'au moins 90 % du pipeline et de l'API (`make check`
 ## Phase 2 — l'API météo
 
 ```bash
-uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/bbox, /departements — voir api/README.md
+uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/bbox, /weather/field, /departements — voir api/README.md
 ```
 
 ## Déploiement

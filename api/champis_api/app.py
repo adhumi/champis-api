@@ -1,5 +1,5 @@
-"""Service champis-api : `/species`, `/weather`, `/weather/bbox`, `/departements`, `/observations`,
-`/coins`, `/health`, et la carte web statique sous `/web`.
+"""Service champis-api : `/species`, `/weather`, `/weather/bbox`, `/weather/field`, `/departements`,
+`/observations`, `/coins`, `/health`, et la carte web statique sous `/web`.
 
 Sans état hors le cache météo SQLite ; aucun calcul géographique (tout est dans les tuiles).
 

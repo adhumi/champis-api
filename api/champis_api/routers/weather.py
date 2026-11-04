@@ -1,18 +1,26 @@
-"""`GET /weather` (une cellule, détail des facteurs) et `GET /weather/bbox` (peindre une emprise)."""
+"""`GET /weather` (une cellule, détail des facteurs), `GET /weather/bbox` (peindre une emprise
+d'écran) et `GET /weather/field` (champ compact `M_eff × Φ` d'une grande emprise, un seul jour)."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from typing import Annotated, Any
 
 from champis_pipeline import SCORING_VERSION
 from champis_pipeline.species import list_species
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 
 from ..cache import WeatherCache
 from ..grid import Cell, WeatherGrid
 from ..weather_client import OpenMeteoClient
-from ..weather_service import HistoryTooShortError, SeriesGapError, cell_weather
+from ..weather_service import (
+    DAYS_AFTER,
+    DAYS_BEFORE,
+    HistoryTooShortError,
+    SeriesGapError,
+    cell_weather,
+)
 
 router = APIRouter(prefix="/weather", tags=["weather"])
 
@@ -27,6 +35,9 @@ MAX_BBOX_CELLS = 5000
 # qui protégeait le quota avant la pré-chauffe ; les autres sont listées `unavailable`.
 MAX_BBOX_COMPUTE = 40
 UNAVAILABLE_NOT_PRECOMPUTED = "météo pas encore précalculée : prochaine pré-chauffe"
+# Décimales de `f` dans `/weather/field` : les seuils d'affichage sont au centième, la troisième
+# décimale garde le classement entre cellules proches sans alourdir la réponse.
+FIELD_DECIMALS = 3
 
 
 def _grid(request: Request) -> WeatherGrid:
@@ -201,3 +212,73 @@ async def get_weather_bbox(
         "unavailable": sorted(unavailable),
         "retry_after": retry_after,
     }
+
+
+@router.get("/field")
+async def get_weather_field(
+    grid: Grid,
+    client: Client,
+    cache: Cache,
+    species: Species,
+    day: date,
+    min_lon: float,
+    min_lat: float,
+    max_lon: float,
+    max_lat: float,
+) -> JSONResponse:
+    """Champ météo compact d'une grande emprise, pour la carte sous le zoom 9 (spec › Points
+    ouverts › Carte visible dès l'ouverture, 4 nov. 2026) : par cellule (`id`, `lat`, `lon`,
+    `elevation_m`, `alt_classes`), `f[espèce][classe] = M_eff × phi` arrondi à trois décimales,
+    pour le seul jour `day`, obligatoire, dans la fenêtre J−3 → J+7 de `today` (sinon 422).
+    Les classes sont celles de `by_alt` de `/weather/bbox`.
+
+    Servi **uniquement** depuis la météo précalculée à la dernière pré-chauffe (`cell_weather`),
+    en une seule requête SQL : aucun calcul à la demande, aucun appel Open-Meteo, aucun plafond
+    de cellules (la grille entière tient dans une réponse, compressée par le middleware). Une
+    cellule de l'emprise que le précalcul n'a pas pour toutes les espèces demandées, ou sans
+    ligne pour `day` (J+7 entre minuit et la pré-chauffe), est omise et comptée dans
+    `unavailable`. `stale` (`true`) n'apparaît que sur une cellule dont le précalcul est périmé.
+    `computed_at` est le plus récent des précalculs servis, `null` sans cellule.
+    """
+    today = client.today()
+    first, last = today - timedelta(days=DAYS_BEFORE), today + timedelta(days=DAYS_AFTER)
+    if not first <= day <= last:
+        raise HTTPException(
+            422,
+            f"day={day.isoformat()} hors de la fenêtre J−{DAYS_BEFORE} → J+{DAYS_AFTER} "
+            f"({first.isoformat()} → {last.isoformat()})",
+        )
+    cells = grid.in_bbox(min_lon, min_lat, max_lon, max_lat)
+    stored = cache.cell_weather_day((c.id for c in cells), species, day)
+
+    out: list[dict[str, Any]] = []
+    computed_at: str | None = None
+    unavailable = 0
+    for c in cells:
+        entries = {sid: stored[c.id, sid] for sid in species if (c.id, sid) in stored}
+        if len(entries) < len(species):
+            unavailable += 1
+            continue
+        item: dict[str, Any] = c.as_dict()
+        if any(e.stale for e in entries.values()):
+            item["stale"] = True
+        item["f"] = {
+            sid: {alt: round(v["M_eff"] * v["phi"], FIELD_DECIMALS) for alt, v in e.by_alt.items()}
+            for sid, e in entries.items()
+        }
+        out.append(item)
+        latest = max(e.computed_at for e in entries.values())
+        if computed_at is None or latest > computed_at:
+            computed_at = latest
+    # Réponse construite directement : sur 20 000 cellules, la sérialisation générique de FastAPI
+    # (validation puis encodage récursif) coûterait plus que la lecture elle-même.
+    return JSONResponse(
+        {
+            "today": today.isoformat(),
+            "computed_at": computed_at,
+            "day": day.isoformat(),
+            "scoring_version": SCORING_VERSION,
+            "cells": out,
+            "unavailable": unavailable,
+        }
+    )

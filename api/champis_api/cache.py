@@ -26,6 +26,9 @@ from champis_pipeline.weather_store import SCHEMA
 BUCKET_HOURS = 12  # deux rafraîchissements par jour (décision du 17 oct. 2026)
 HISTORY_VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil")
 HISTORY_KEEP_DAYS = 400  # au-delà, plus aucune fenêtre du modèle ne lit
+# Les onze lignes d'une entrée `cell_weather` commencent à J−3 de son `today`
+# (`weather_service.DAYS_BEFORE`, repris ici pour ne pas importer le service dans le cache).
+CELL_WEATHER_DAYS_BEFORE = 3
 
 
 @dataclass(frozen=True)
@@ -37,6 +40,16 @@ class StoredCellWeather:
     computed_at: str
     stale: bool
     rows: list[dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class StoredCellDay:
+    """Un seul jour d'une entrée précalculée : `by_alt` (classe d'altitude → `M`, `M_eff`,
+    `phi`) de la ligne de `/weather/bbox` pour ce jour, pour `/weather/field`."""
+
+    computed_at: str
+    stale: bool
+    by_alt: dict[str, dict[str, float]]
 
 
 def bucket_now(now: datetime) -> str:
@@ -264,7 +277,10 @@ class WeatherCache:
     ) -> int:
         """Range les lignes `M`, `M_eff`, `phi` par jour et classe d'altitude d'une cellule et
         d'une espèce, telles que `/weather/bbox` les sert : (cellule, espèce, périmé, lignes).
-        Remplace l'entrée existante de la paire ; renvoie le nombre d'entrées écrites."""
+        Remplace l'entrée existante de la paire ; renvoie le nombre d'entrées écrites.
+
+        Les lignes sont les onze jours J−3 → J+7 de `today`, dans l'ordre
+        (`weather_service.days_around`) : `cell_weather_day` lit le jour par sa position."""
         at = now.astimezone(UTC).isoformat(timespec="seconds")
         rows = [
             (cell_id, species, today.isoformat(), at, int(stale), json.dumps(day_rows))
@@ -295,6 +311,45 @@ class WeatherCache:
             for cell_id, sid, today, at, stale, rows_json in rows:
                 out[cell_id, sid] = StoredCellWeather(today, at, bool(stale), json.loads(rows_json))
         return out
+
+    def cell_weather_day(
+        self, cell_ids: Iterable[str], species: Iterable[str], day: date
+    ) -> dict[tuple[str, str], StoredCellDay]:
+        """Le seul jour `day` des entrées précalculées, par (cellule, espèce), pour `/weather/field`
+        sur une emprise de plusieurs milliers de cellules.
+
+        Une seule requête, quelle que soit l'emprise : les identifiants passent en un tableau JSON
+        (`json_each`), et la ligne du jour est extraite dans SQLite par sa position, `day − today`
+        + `DAYS_BEFORE` dans les onze lignes J−3 → J+7 du calcul (`weather_service.days_around`),
+        sans charger les onze jours en Python. Une paire sans ligne pour `day` (J+7 entre minuit
+        et la pré-chauffe) est absente du résultat, comme une paire jamais calculée.
+        """
+        ids = list(cell_ids)
+        sp = list(species)
+        if not ids or not sp:
+            return {}
+        rows = self.db.execute(
+            "SELECT cell_id, species, computed_at, stale, json_extract(rows_json, "
+            "'$[' || (CAST(julianday(?) - julianday(today) AS INTEGER) + ?) || '].by_alt') "
+            "FROM cell_weather "
+            f"WHERE species IN ({','.join('?' * len(sp))}) "
+            "AND cell_id IN (SELECT value FROM json_each(?)) "
+            "AND json_extract(rows_json, "
+            "'$[' || (CAST(julianday(?) - julianday(today) AS INTEGER) + ?) || '].date') = ?",
+            [
+                day.isoformat(),
+                CELL_WEATHER_DAYS_BEFORE,
+                *sp,
+                json.dumps(ids),
+                day.isoformat(),
+                CELL_WEATHER_DAYS_BEFORE,
+                day.isoformat(),
+            ],
+        ).fetchall()
+        return {
+            (cell_id, sid): StoredCellDay(at, bool(stale), json.loads(by_alt))
+            for cell_id, sid, at, stale, by_alt in rows
+        }
 
     def cell_weather_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM cell_weather").fetchone()[0]

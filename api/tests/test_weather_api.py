@@ -938,3 +938,248 @@ async def test_large_json_responses_are_gzipped(api):
     assert len(r.json()["cells"]) == 2  # httpx décompresse : le contenu est intact
     small = await api.get("/health", headers={"Accept-Encoding": "gzip"})
     assert "content-encoding" not in small.headers  # sous le seuil, rien à gagner
+
+
+# ------------------------------------------------------------------ champ compact (4 nov. 2026)
+
+BBOX_FR = {"min_lon": -6.0, "min_lat": 41.0, "max_lon": 10.0, "max_lat": 52.0}
+
+
+def _eleven_rows(today: date, by_alt: dict) -> list[dict]:
+    """Les onze lignes J−3 → J+7 d'une entrée `cell_weather`, comme `cell_weather()` les produit."""
+    return [
+        {"date": (today + timedelta(days=k)).isoformat(), "by_alt": by_alt} for k in range(-3, 8)
+    ]
+
+
+async def _precompute(grid, client):
+    """Pré-chauffe puis passe de l'indice : `cell_weather` est rempli pour les deux cellules."""
+    from champis_api.departements import compute
+    from champis_api.warm import warm
+    from champis_pipeline.species import list_species
+
+    assert (await warm(grid, client)).ok
+    await compute(grid, client, client.cache, list_species())
+
+
+@pytest.mark.asyncio
+async def test_field_is_m_eff_times_phi_rounded_from_the_precomputed_weather(
+    api, grid, scenario, client
+):
+    """`/weather/field` : par cellule, `f[espèce][classe] = M_eff × phi` à trois décimales pour le
+    seul jour demandé, lu dans `cell_weather` (spec › Points ouverts › Carte visible dès
+    l'ouverture, 4 nov. 2026) ; les classes sont celles de `by_alt` de `/weather/bbox`."""
+    await _precompute(grid, client)
+    calls_before = list(scenario.calls)
+
+    r = await api.get(
+        "/weather/field",
+        params={**BBOX_FR, "day": J, "species": ["boletus_edulis", "cantharellus_cibarius"]},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert scenario.calls == calls_before  # aucun appel Open-Meteo, aucun calcul
+    assert body["today"] == J and body["day"] == J and body["scoring_version"] == "1.0.0"
+    assert body["computed_at"] is not None and body["unavailable"] == 0
+    assert [c["id"] for c in body["cells"]] == ["c_0930_6680", "c_0935_6680"]
+    first = body["cells"][0]
+    assert set(first) == {"id", "lat", "lon", "elevation_m", "alt_classes", "f"}  # pas de `stale`
+    assert first["lat"] == 47.12 and first["lon"] == 6.31 and first["elevation_m"] == 650
+    assert first["alt_classes"] == [450, 1350]
+    assert set(first["f"]) == {"boletus_edulis", "cantharellus_cibarius"}
+    assert set(first["f"]["boletus_edulis"]) == {"450", "1350"}
+    assert set(body["cells"][1]["f"]["boletus_edulis"]) == {"150"}
+
+    bbox = (await api.get("/weather/bbox", params={**BBOX_FR, "day": J})).json()
+    assert bbox["computed_at"] == body["computed_at"]
+    for cell, ref in zip(body["cells"], bbox["cells"], strict=True):
+        assert cell["id"] == ref["cell"]["id"]
+        for sid, by_alt in cell["f"].items():
+            (row,) = ref["species"][sid]
+            for alt, f in by_alt.items():
+                v = row["by_alt"][alt]
+                assert f == round(v["M_eff"] * v["phi"], 3)
+                assert len(str(f).split(".")[-1]) <= 3
+
+
+@pytest.mark.asyncio
+async def test_field_default_species_is_all_and_unknown_is_404(api, grid, client):
+    from champis_pipeline.species import list_species
+
+    await _precompute(grid, client)
+    r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
+    assert r.status_code == 200
+    assert all(set(c["f"]) == set(list_species()) for c in r.json()["cells"])
+    r = await api.get("/weather/field", params={**BBOX_FR, "day": J, "species": "amanita_x"})
+    assert r.status_code == 404 and "amanita_x" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_field_day_is_required_and_bounded_to_the_window(api):
+    r = await api.get("/weather/field", params=BBOX_FR)
+    assert r.status_code == 422  # `day` obligatoire
+    for off in (-4, 8):
+        bad = (TODAY + timedelta(days=off)).isoformat()
+        r = await api.get("/weather/field", params={**BBOX_FR, "day": bad})
+        assert r.status_code == 422, off
+        assert r.json()["detail"] == (
+            f"day={bad} hors de la fenêtre J−3 → J+7 "
+            f"({(TODAY - timedelta(days=3)).isoformat()} → {(TODAY + timedelta(days=7)).isoformat()})"
+        )
+    for off in (-3, 7):  # bornes incluses : rien à servir, mais pas une erreur
+        r = await api.get(
+            "/weather/field", params={**BBOX_FR, "day": (TODAY + timedelta(days=off)).isoformat()}
+        )
+        assert r.status_code == 200 and r.json()["cells"] == []
+
+
+@pytest.mark.asyncio
+async def test_field_never_computes_on_demand(api, scenario, client):
+    """Cellules absentes du précalcul : omises et comptées, jamais calculées ni demandées à
+    Open-Meteo (contrairement à `/weather/bbox`), `computed_at` nul sans cellule servie."""
+    assert client.cache.cell_weather_count() == 0
+    r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["cells"] == [] and body["unavailable"] == 2 and body["computed_at"] is None
+    assert body["scoring_version"] == "1.0.0"
+    assert scenario.calls == [] and client.cache.cell_weather_count() == 0
+
+
+@pytest.mark.asyncio
+async def test_field_partial_precompute_stale_and_missing_day(api, grid, client):
+    """Une cellule précalculée hier (lignes J−4 → J+6, sans J+7), périmée ; l'autre sans ligne
+    pour une des espèces demandées : omise."""
+    yesterday = TODAY - timedelta(days=1)
+    rows = _eleven_rows(
+        yesterday,
+        {
+            "450": {"M": 0.5, "M_eff": 0.6, "phi": 0.25},
+            "1350": {"M": 0.1, "M_eff": 0.12345, "phi": 1.0},
+        },
+    )
+    client.cache.put_cell_weather(
+        [(CELL, "boletus_edulis", True, rows), (CELL, "cantharellus_cibarius", True, rows)],
+        yesterday,
+        NOW - timedelta(days=1),
+    )
+    client.cache.put_cell_weather(
+        [
+            (
+                "c_0935_6680",
+                "boletus_edulis",
+                False,
+                _eleven_rows(TODAY, {"150": {"M": 1, "M_eff": 1, "phi": 1}}),
+            )
+        ],
+        TODAY,
+        NOW,
+    )
+
+    r = await api.get(
+        "/weather/field",
+        params={**BBOX_FR, "day": J, "species": ["boletus_edulis", "cantharellus_cibarius"]},
+    )
+    body = r.json()
+    assert [c["id"] for c in body["cells"]] == [CELL] and body["unavailable"] == 1
+    assert body["cells"][0]["stale"] is True
+    assert body["cells"][0]["f"] == {
+        "boletus_edulis": {"450": 0.15, "1350": 0.123},
+        "cantharellus_cibarius": {"450": 0.15, "1350": 0.123},
+    }
+    assert body["computed_at"] == (NOW - timedelta(days=1)).astimezone(UTC).isoformat(
+        timespec="seconds"
+    )
+
+    # J+7 d'aujourd'hui manque dans les lignes d'hier : la cellule est indisponible ce jour-là,
+    # l'autre, précalculée aujourd'hui, est servie
+    r = await api.get(
+        "/weather/field",
+        params={
+            **BBOX_FR,
+            "day": (TODAY + timedelta(days=7)).isoformat(),
+            "species": "boletus_edulis",
+        },
+    )
+    assert [c["id"] for c in r.json()["cells"]] == ["c_0935_6680"]
+    assert r.json()["unavailable"] == 1
+
+    # Avec la seule espèce que la seconde cellule a, elle est servie, sans `stale`
+    r = await api.get("/weather/field", params={**BBOX_FR, "day": J, "species": "boletus_edulis"})
+    body = r.json()
+    assert [c["id"] for c in body["cells"]] == [CELL, "c_0935_6680"] and body["unavailable"] == 0
+    assert "stale" not in body["cells"][1] and body["cells"][1]["f"] == {
+        "boletus_edulis": {"150": 1.0}
+    }
+    assert body["computed_at"] == NOW.astimezone(UTC).isoformat(timespec="seconds")
+
+
+@pytest.mark.asyncio
+async def test_field_reads_the_bbox_in_one_sql_query(api, grid, client):
+    await _precompute(grid, client)
+    statements: list[str] = []
+    client.cache.db.set_trace_callback(statements.append)
+    try:
+        r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
+    finally:
+        client.cache.db.set_trace_callback(None)
+    assert r.status_code == 200 and len(r.json()["cells"]) == 2
+    assert len(statements) == 1 and "cell_weather" in statements[0]
+
+
+@pytest.mark.asyncio
+async def test_field_is_gzipped_and_unbounded(client, store, monkeypatch):
+    """Pas de plafond de cellules (la grille entière tient dans une réponse) ; gzip au-delà de
+    1 Kio comme les autres réponses. Grille de douze cellules, là où `/weather/bbox` refuserait."""
+    from champis_api.app import State, create_app
+    from champis_api.grid import Cell, WeatherGrid
+    from champis_api.routers import weather as router
+    from champis_pipeline.species import list_species
+
+    cells = [
+        Cell(f"c_{900 + 5 * i:04d}_6680", 47.1, 6.0 + 0.07 * i, (150.0, 450.0)) for i in range(12)
+    ]
+    rows = _eleven_rows(
+        TODAY,
+        {"150": {"M": 0.5, "M_eff": 0.6, "phi": 0.25}, "450": {"M": 0.1, "M_eff": 0.2, "phi": 1.0}},
+    )
+    client.cache.put_cell_weather(
+        [(c.id, sid, False, rows) for c in cells for sid in list_species()], TODAY, NOW
+    )
+    monkeypatch.setattr(router, "MAX_BBOX_CELLS", 1)
+    app = create_app(
+        state=State(grid=WeatherGrid(cells), client=client, cache=client.cache, store=store)
+    )
+    async with app.router.lifespan_context(app):
+        transport_ = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport_, base_url="http://test") as api:
+            r = await api.get(
+                "/weather/field", params={**BBOX_FR, "day": J}, headers={"Accept-Encoding": "gzip"}
+            )
+            assert r.status_code == 200 and r.headers.get("content-encoding") == "gzip"
+            body = r.json()
+            assert len(body["cells"]) == 12 and body["unavailable"] == 0
+            assert body["cells"][0]["f"]["boletus_edulis"] == {"150": 0.15, "450": 0.2}
+            assert (await api.get("/weather/bbox", params=BBOX_FR)).status_code == 422
+
+
+def test_cell_weather_day_at_grid_scale():
+    """Lecture par lot sur une grille de la taille de la France : une requête, toutes les paires,
+    seulement le jour demandé (mesure complète dans la PR : ≈ 1 s de lecture pour 22 672
+    cellules × 4 espèces sur la machine de test)."""
+    import time
+
+    cache = WeatherCache()
+    n, species = 2000, ["boletus_edulis", "cantharellus_cibarius"]
+    ids = [f"c_{i:04d}_6400" for i in range(n)]
+    days = [(TODAY + timedelta(days=k)).isoformat() for k in range(-3, 8)]
+    rows = [{"date": d, "by_alt": {"150": {"M": 0.4, "M_eff": 0.5, "phi": 0.5}}} for d in days]
+    cache.put_cell_weather(((cid, sid, False, rows) for cid in ids for sid in species), TODAY, NOW)
+    t0 = time.perf_counter()
+    got = cache.cell_weather_day(ids, species, TODAY + timedelta(days=7))
+    elapsed = time.perf_counter() - t0
+    assert len(got) == n * len(species)
+    assert got[ids[0], "boletus_edulis"].by_alt == {"150": {"M": 0.4, "M_eff": 0.5, "phi": 0.5}}
+    assert cache.cell_weather_day(ids, species, TODAY + timedelta(days=8)) == {}
+    assert cache.cell_weather_day([], species, TODAY) == {}
+    assert elapsed < 5  # garde-fou large : ≈ 0,05 s ici, la CI est plus lente et partagée
