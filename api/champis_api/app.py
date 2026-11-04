@@ -39,6 +39,9 @@ from .weather_client import OpenMeteoClient
 
 log = logging.getLogger(__name__)
 PARIS = ZoneInfo("Europe/Paris")
+# Chemins hors limitation de débit : relais des PMTiles (`/tiles/<nom>`, pas le manifeste `/tiles`)
+# et fichiers statiques du site. Lectures nombreuses, sans calcul ni appel externe.
+RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
 
 
 @dataclass
@@ -148,12 +151,16 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["X-Champis-User", "Content-Type"],
     )
-    # Service public : seau à jetons par IP, écritures bien plus rares que lectures
+    # Service public : seau à jetons par IP, écritures bien plus rares que lectures. Le relais de
+    # tuiles et les fichiers du site en sont exemptés (étude du 4 nov. 2026) : un écran de carte
+    # vaut 75 à 150 requêtes Range, le seau de 120 lectures laissait des tuiles blanches dès la
+    # première vue ; le limiteur protège le CPU et Open-Meteo, pas la sortie du bucket.
     app.add_middleware(
         RateLimitMiddleware,
         read_per_minute=settings.rate_read_per_minute,
         write_per_minute=settings.rate_write_per_minute,
         max_body=settings.max_body_bytes,
+        exempt_prefixes=RATE_LIMIT_EXEMPT,
     )
     app.include_router(species.router)
     app.include_router(weather.router)

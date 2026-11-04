@@ -43,6 +43,10 @@ async def test_middleware_limits_reads_writes_and_body(grid, client, store):
             assert (await c.get("/health")).status_code == 200
         r = await c.get("/health")
         assert r.status_code == 429 and int(r.headers["retry-after"]) >= 1
+        # relais de tuiles et fichiers du site : jamais limités (un écran = 75 à 150 requêtes Range)
+        for path in ("/tiles/T-x.pmtiles", "/web/carte.html", "/shared/palette.json"):
+            assert (await c.get(path)).status_code != 429, path
+        assert (await c.get("/tiles")).status_code == 429  # le manifeste, lui, compte
         # une autre IP n'est pas touchée
         assert (await c.get("/health", headers={"X-Forwarded-For": "5.6.7.8"})).status_code == 200
         h = {"X-Forwarded-For": "5.6.7.8", "X-Champis-User": "11111111-1111-4111-8111-111111111111"}

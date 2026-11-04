@@ -57,15 +57,17 @@ class RateLimitMiddleware:
         write_per_minute: float = 20,
         max_body: int = 256 * 1024,
         clock: Callable[[], float] = time.monotonic,
+        exempt_prefixes: tuple[str, ...] = (),
     ):
         self.app = app
         self.reads = TokenBuckets(read_per_minute, clock)
         self.writes = TokenBuckets(write_per_minute, clock)
         self.max_body = max_body
+        self.exempt_prefixes = exempt_prefixes
         self._requests = 0
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
+        if scope["type"] != "http" or scope.get("path", "").startswith(self.exempt_prefixes):
             await self.app(scope, receive, send)
             return
         headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
