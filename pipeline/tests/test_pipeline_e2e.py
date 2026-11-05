@@ -577,16 +577,30 @@ def test_cli_status_on_stderr_and_failure_code(capsys, monkeypatch):
     assert "Traceback" in capsys.readouterr().err
 
 
-def test_batch_resumes_and_isolates_failures(tmp_path):
+def _fake_t(dept: str, species: list[str] | None = None) -> None:
+    """Un T vide par espèce sous le hash courant, comme `terrain.compute` les nomme."""
+    from champis_pipeline import config
+    from champis_pipeline.species import list_species, species_hash
+
+    for sid in species or list_species():
+        out = config.T_DIR / sid / f"{dept}-{species_hash(sid)}.tif"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.touch()
+
+
+def test_batch_resumes_and_isolates_failures(tmp_path, monkeypatch):
     """Un département en échec n'arrête pas les autres ; les « ok » ne sont pas refaits sans force."""
     from concurrent.futures import ThreadPoolExecutor
 
-    from champis_pipeline import batch
+    from champis_pipeline import batch, config
 
+    monkeypatch.setattr(config, "T_DIR", tmp_path / "T")
     calls: list[str] = []
 
     def runner(dept, species, force):
         calls.append(dept)
+        if dept != "02":
+            _fake_t(dept, species)
         return batch.DeptResult(dept, dept != "02", "boom" if dept == "02" else "ok", 0.1, "t")
 
     status_path = tmp_path / "batch_status.json"
@@ -622,6 +636,66 @@ def test_batch_resumes_and_isolates_failures(tmp_path):
         status_path=status_path,
     )
     assert calls == ["01"]
+
+
+def test_batch_redoes_ok_dept_when_species_hash_changes(tmp_path, monkeypatch):
+    """Un fichier espèce modifié change son hash : le T manque, le département « ok » est repris."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from champis_pipeline import batch, config, species
+
+    monkeypatch.setattr(config, "T_DIR", tmp_path / "T")
+    calls: list[str] = []
+
+    def runner(dept, sp, force):
+        calls.append(dept)
+        _fake_t(dept, sp)
+        return batch.DeptResult(dept, True, "ok", 0.1, "t")
+
+    kw = dict(jobs=1, runner=runner, executor_factory=ThreadPoolExecutor)
+    status_path = tmp_path / "batch_status.json"
+    batch.batch(["01", "02"], None, status_path=status_path, **kw)
+    assert sorted(calls) == ["01", "02"]
+    calls.clear()
+    assert batch.pending(["01", "02"], None, False, batch.load_status(status_path)) == []
+
+    real = species.species_hash
+    monkeypatch.setattr(
+        species,
+        "species_hash",
+        lambda sid: "deadbeef" if sid == "boletus_aereus" else real(sid),
+    )
+    assert batch.missing_t("01") == ["boletus_aereus"]
+    batch.batch(["01", "02"], None, status_path=status_path, **kw)
+    assert sorted(calls) == ["01", "02"]
+    calls.clear()
+    batch.batch(["01", "02"], None, status_path=status_path, **kw)
+    assert calls == []
+
+
+def test_tiles_missing_t_says_why_and_how_to_fix(tmp_path, monkeypatch):
+    """Les T absents sous le hash courant : une ligne courte, la cause et la commande qui répare."""
+    from champis_pipeline import config, tiles
+    from champis_pipeline.species import species_hash
+
+    monkeypatch.setattr(tiles, "T_DIR", tmp_path / "T")
+    monkeypatch.setattr(tiles, "TILES_DIR", tmp_path / "tiles")
+    monkeypatch.setattr(config, "T_DIR", tmp_path / "T")
+    sid = "boletus_aereus"
+    depts = [f"{i:02d}" for i in range(1, 13)]
+    folder = tmp_path / "T" / sid
+    folder.mkdir(parents=True)
+    for d in depts[:11]:
+        (folder / f"{d}-00000000.tif").touch()  # T d'un ancien hash
+    (folder / f"12-{species_hash(sid)}.tif").touch()
+    with pytest.raises(FileNotFoundError) as e:
+        tiles.build(sid, depts)
+    msg = str(e.value)
+    assert "\n" not in msg and "PosixPath" not in msg
+    assert f"sous le hash {species_hash(sid)} pour 11/12 département(s)" in msg
+    assert "01 02 03 04 05 06 07 08 09 10 … (+1)" in msg
+    assert "11 ont un T sous un autre hash" in msg
+    assert "champis-pipeline batch" in msg
 
 
 def test_parse_depts():

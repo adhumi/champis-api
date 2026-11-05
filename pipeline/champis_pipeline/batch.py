@@ -2,7 +2,9 @@
 
 Un processus par département (mémoire ~2 Go chacun, skill geo-pipeline), les erreurs n'arrêtent
 pas les autres, et `data/batch_status.json` garde l'état pour reprendre : un département « ok »
-n'est pas refait sans `--force`. Les étapes elles-mêmes restent idempotentes (fichiers présents =
+dont les T de chaque espèce existent sous le hash courant n'est pas refait sans `--force`. Un
+fichier espèce modifié change ce hash : ses T manquent, le département est repris, et comme
+download et grid sont déjà sur disque seul le terrain est recalculé. Les étapes elles-mêmes restent idempotentes (fichiers présents =
 rien à faire), donc relancer après une coupure ne coûte que ce qui manque.
 """
 
@@ -34,6 +36,33 @@ def status_file() -> Path:
 
 
 DEPTS_ALL = sorted(BDFORET_EDITIONS)
+
+
+def missing_t(dept: str, species: list[str] | None = None) -> list[str]:
+    """Espèces dont le T du département manque sous le hash courant du fichier espèce."""
+    from . import config
+    from .species import list_species, species_hash
+
+    return [
+        sid
+        for sid in species or list_species()
+        if not (config.T_DIR / sid / f"{dept}-{species_hash(sid)}.tif").exists()
+    ]
+
+
+def pending(
+    depts: list[str],
+    species: list[str] | None,
+    force: bool,
+    status: dict[str, dict],
+) -> list[str]:
+    """Départements à (re)faire : tous avec `force`, sinon ceux qui ne sont pas « ok » ou dont un T
+    manque (fichier espèce modifié depuis le dernier passage, T effacé à la main)."""
+    return [
+        d
+        for d in depts
+        if force or status.get(d, {}).get("ok") is not True or missing_t(d, species)
+    ]
 
 
 @dataclass
@@ -107,7 +136,7 @@ def batch(
             return ProcessPoolExecutor(n, mp_context=multiprocessing.get_context("spawn"))
 
     status = load_status(status_path)
-    todo = [d for d in depts if force or status.get(d, {}).get("ok") is not True]
+    todo = pending(depts, species, force, status)
     log.info("batch : %d départements à faire, %d déjà ok", len(todo), len(depts) - len(todo))
     if not todo:
         return status

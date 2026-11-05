@@ -229,8 +229,7 @@ def cmd_batch(args) -> None:
 
     c = console.get()
     depts = batch.parse_depts(args.depts)
-    done_before = {d for d in depts if batch.load_status().get(d, {}).get("ok") is True}
-    todo = len(depts) if args.force else len(depts) - len(done_before)
+    todo = len(batch.pending(depts, args.species, args.force, batch.load_status()))
     c.title(
         f"batch · {len(depts)} département(s), {len(depts) - todo} déjà ok, {todo} à faire, "
         f"{args.jobs} en parallèle"

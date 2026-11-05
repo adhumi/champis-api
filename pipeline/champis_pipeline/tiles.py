@@ -124,7 +124,7 @@ def _build(
         return out
     missing = [p for p in srcs if not p.exists()]
     if missing:
-        raise FileNotFoundError(f"{kind} manquants : {missing}")
+        raise FileNotFoundError(_missing_message(kind, missing, len(srcs)))
 
     work = TILES_DIR / "_work" / f"{kind}-{tag}"
     work.mkdir(parents=True, exist_ok=True)
@@ -135,6 +135,36 @@ def _build(
     _write_pmtiles(mbt, out)
     log.info("écrit %s", out)
     return out
+
+
+def _dept_list(depts: list[str], shown: int = 10) -> str:
+    head = " ".join(depts[:shown])
+    return head if len(depts) <= shown else f"{head} … (+{len(depts) - shown})"
+
+
+def _missing_message(kind: str, missing: list[Path], total: int) -> str:
+    """Une ligne (seule la première ligne d'une exception atteint la ligne de l'étape) : quels
+    départements, pourquoi le plus souvent, et la commande qui répare."""
+    remedy = "relance `champis-pipeline batch` sur les mêmes départements"
+    if kind != "T":
+        depts = sorted(p.parent.name for p in missing)
+        return (
+            f"{missing[0].name} manquant pour {len(depts)}/{total} département(s) "
+            f"({_dept_list(depts)}) : {remedy}"
+        )
+    folder, h = missing[0].parent, missing[0].stem.rsplit("-", 1)[-1]
+    depts = sorted(p.stem.rsplit("-", 1)[0] for p in missing)
+    stale = [d for d in depts if any(folder.glob(f"{d}-*.tif"))]
+    why = (
+        f" ; {len(stale)} ont un T sous un autre hash : le fichier espèce a changé depuis le "
+        "dernier terrain"
+        if stale
+        else ""
+    )
+    return (
+        f"T {folder.name} manquant sous le hash {h} pour {len(depts)}/{total} département(s) "
+        f"({_dept_list(depts)}){why} ; {remedy} (seuls les T manquants sont recalculés)"
+    )
 
 
 def _pmtiles_count(path: Path) -> int | None:
