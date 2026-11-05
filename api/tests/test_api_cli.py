@@ -12,6 +12,7 @@ import pytest
 from champis_api import cli
 from champis_api.cache import WeatherCache
 from champis_api.settings import Settings
+from champis_pipeline.species import list_species
 from champis_pipeline.storage import S3Config
 from conftest import GRID, NOW, TODAY, MemoryBucket, seed_from_scenario
 from fixtures.open_meteo import Scenario, transport
@@ -151,7 +152,9 @@ def test_doctor_reports_the_compact_field_table(settings, scenario, capsys):
     capsys.readouterr()
     assert cli.main(["doctor", "--offline"]) == 0
     err = capsys.readouterr().err
-    assert "ok      champ compact" in err and "154 lignes cell_field pour 14 entrées" in err
+    entries = len(GRID["cells"]) * len(list_species())  # une entrée par (cellule, espèce)
+    assert "ok      champ compact" in err
+    assert f"{entries * 11} lignes cell_field pour {entries} entrées" in err  # 11 jours par entrée
 
     db = sqlite3.connect(settings.cache_db)
     db.execute("DELETE FROM cell_field")
@@ -159,7 +162,7 @@ def test_doctor_reports_the_compact_field_table(settings, scenario, capsys):
     db.close()
     assert cli.main(["doctor", "--offline"]) == 0
     err = capsys.readouterr().err
-    assert "manque  champ compact" in err and "0 lignes cell_field pour 14 entrées" in err
+    assert "manque  champ compact" in err and f"0 lignes cell_field pour {entries} entrées" in err
     assert "en retard : reconstruite au démarrage de l'API" in err
 
     db = sqlite3.connect(settings.cache_db)
@@ -168,7 +171,7 @@ def test_doctor_reports_the_compact_field_table(settings, scenario, capsys):
     db.close()
     assert cli.main(["doctor", "--offline"]) == 0
     err = capsys.readouterr().err
-    assert "manque  champ compact" in err and "table cell_field absente (14 entrées" in err
+    assert "manque  champ compact" in err and f"table cell_field absente ({entries} entrées" in err
     assert "dérivée de cell_weather au démarrage" in err
     # le doctor n'a rien créé : la table manque toujours
     db = sqlite3.connect(settings.cache_db)
