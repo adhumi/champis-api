@@ -106,9 +106,11 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
                     settings.tile_cache_mb,
                 )
         try:
-            # un worker importe, les autres attendent puis constatent que c'est fait
-            with file_lock(settings.cache_db.parent / SEED_LOCK):
-                sync_seed(cache, bucket, settings.weather_seed, settings.cache_db.parent)
+            # un worker importe, les autres attendent puis constatent que c'est fait ; dans un
+            # fil : la migration de `cell_field` peut prendre une minute sur la France
+            await asyncio.to_thread(
+                _startup_imports, cache, bucket, settings.weather_seed, settings.cache_db.parent
+            )
         except Exception:  # un bucket injoignable ne doit pas empêcher l'API de démarrer
             log.exception("amorçage : import impossible, on continue avec le cache existant")
         store = Store(settings.database_url) if settings.database_url else None
@@ -259,6 +261,17 @@ async def lead(lock_path: Path, background, retry_s: float) -> None:
     finally:
         if handle is not None:
             handle.close()
+
+
+def _startup_imports(
+    cache: WeatherCache, bucket: BucketLike | None, seed: Path, work_dir: Path
+) -> None:
+    """Sous le verrou d'amorçage : l'amorçage publié s'il est plus récent, puis la migration
+    d'une base d'avant `cell_field` (dérivée de `cell_weather`, idempotente ; spec › Points
+    ouverts › Stockage compact par jour pour /weather/field, 5 nov. 2026)."""
+    with file_lock(work_dir / SEED_LOCK):
+        sync_seed(cache, bucket, seed, work_dir)
+        cache.ensure_cell_field()
 
 
 def _refresh_cache(cache_db: Path, bucket: BucketLike, work_dir: Path):

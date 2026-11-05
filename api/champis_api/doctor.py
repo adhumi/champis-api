@@ -2,7 +2,8 @@
 
 Vérifie ce qui, dans la pratique, bloque une publication ou un déploiement : `.env`, espace disque,
 grille météo (version 2, hash des espèces), amorçage, clé Open-Meteo, bucket (joignable), pré-chauffe
-(intégrée à l'API ou déléguée au service cron, et la date du dernier cache publié), notification
+(intégrée à l'API ou déléguée au service cron, et la date du dernier cache publié), champ compact
+`cell_field` du cache local (présent et dérivé du même passage que `cell_weather`), notification
 « mes coins », cache disque du relais de tuiles, base des observations, clé APNs, identifiants CDS,
 vecteurs de parité. Rien n'est modifié ; le réseau n'est touché que pour le bucket (`--offline`
 l'évite).
@@ -13,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -47,6 +49,7 @@ def run_checks(settings: Settings | None = None, offline: bool = False) -> list[
         _open_meteo(settings),
         _bucket(settings, offline),
         _warm(settings, offline),
+        _cell_field(settings),
         _notify(settings),
         _tile_cache(settings),
         _database(settings),
@@ -221,6 +224,41 @@ def _warm(settings: Settings, offline: bool) -> Check:
         OK,
         f"{detail} ; dernier cache publié le {meta['published'][:16]} "
         f"({meta.get('cells', 0)} cellules, {meta.get('cell_weather', 0)} entrées), {poll}",
+    )
+
+
+def _cell_field(settings: Settings) -> Check:
+    """`/weather/field` ne lit que `cell_field`, dérivée de `cell_weather` par la pré-chauffe
+    (5 nov. 2026) : la table doit exister et venir du même passage. Une base d'avant la table est
+    migrée au démarrage de l'API et à l'import d'un instantané ; ici on ne fait que lire."""
+    from .cache import cell_field_status
+
+    path = settings.cache_db
+    if not path.exists():
+        return Check("champ compact", INFO, f"{path} absent : rien de précalculé en local")
+    db = sqlite3.connect(str(path), timeout=5.0)
+    try:
+        st = cell_field_status(db)
+    finally:
+        db.close()
+    if not st.present:
+        return Check(
+            "champ compact",
+            MISSING,
+            f"table cell_field absente ({st.weather_entries} entrées cell_weather)",
+            "base d'avant le 5 nov. 2026 : dérivée de cell_weather au démarrage de l'API",
+        )
+    detail = (
+        f"{st.field_rows} lignes cell_field pour {st.weather_entries} entrées cell_weather, "
+        f"calcul du {st.field_at[:16] if st.field_at else 'jamais'}"
+    )
+    if st.current:
+        return Check("champ compact", OK, detail)
+    return Check(
+        "champ compact",
+        MISSING,
+        detail + f" ≠ cell_weather du {st.weather_at[:16] if st.weather_at else 'jamais'}",
+        "en retard : reconstruite au démarrage de l'API, ou `make warm`",
     )
 
 

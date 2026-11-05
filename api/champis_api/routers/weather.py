@@ -35,9 +35,6 @@ MAX_BBOX_CELLS = 5000
 # qui protégeait le quota avant la pré-chauffe ; les autres sont listées `unavailable`.
 MAX_BBOX_COMPUTE = 40
 UNAVAILABLE_NOT_PRECOMPUTED = "météo pas encore précalculée : prochaine pré-chauffe"
-# Décimales de `f` dans `/weather/field` : les seuils d'affichage sont au centième, la troisième
-# décimale garde le classement entre cellules proches sans alourdir la réponse.
-FIELD_DECIMALS = 3
 
 
 def _grid(request: Request) -> WeatherGrid:
@@ -232,13 +229,15 @@ async def get_weather_field(
     pour le seul jour `day`, obligatoire, dans la fenêtre J−3 → J+7 de `today` (sinon 422).
     Les classes sont celles de `by_alt` de `/weather/bbox`.
 
-    Servi **uniquement** depuis la météo précalculée à la dernière pré-chauffe (`cell_weather`),
-    en une seule requête SQL : aucun calcul à la demande, aucun appel Open-Meteo, aucun plafond
-    de cellules (la grille entière tient dans une réponse, compressée par le middleware). Une
-    cellule de l'emprise que le précalcul n'a pas pour toutes les espèces demandées, ou sans
-    ligne pour `day` (J+7 entre minuit et la pré-chauffe), est omise et comptée dans
-    `unavailable`. `stale` (`true`) n'apparaît que sur une cellule dont le précalcul est périmé.
-    `computed_at` est le plus récent des précalculs servis, `null` sans cellule.
+    Servi **uniquement** depuis `cell_field`, la table compacte par jour que la pré-chauffe
+    dérive de `cell_weather` dans la même transaction (spec › Points ouverts › Stockage compact
+    par jour pour /weather/field, 5 nov. 2026), en une seule requête SQL : aucun calcul à la
+    demande, aucun appel Open-Meteo, aucun plafond de cellules (la grille entière tient dans une
+    réponse, compressée par le middleware). Une cellule de l'emprise que le précalcul n'a pas pour
+    toutes les espèces demandées, ou sans ligne pour `day` (J+7 entre minuit et la pré-chauffe),
+    est omise et comptée dans `unavailable`. `stale` (`true`) n'apparaît que sur une cellule dont
+    le précalcul est périmé. `computed_at` est le plus récent des précalculs servis, `null` sans
+    cellule.
     """
     today = client.today()
     first, last = today - timedelta(days=DAYS_BEFORE), today + timedelta(days=DAYS_AFTER)
@@ -249,27 +248,23 @@ async def get_weather_field(
             f"({first.isoformat()} → {last.isoformat()})",
         )
     cells = grid.in_bbox(min_lon, min_lat, max_lon, max_lat)
-    stored = cache.cell_weather_day((c.id for c in cells), species, day)
+    stored = cache.cell_field((c.id for c in cells), species, day)
 
     out: list[dict[str, Any]] = []
     computed_at: str | None = None
     unavailable = 0
     for c in cells:
-        entries = {sid: stored[c.id, sid] for sid in species if (c.id, sid) in stored}
-        if len(entries) < len(species):
+        e = stored.get(c.id)
+        if e is None:
             unavailable += 1
             continue
         item: dict[str, Any] = c.as_dict()
-        if any(e.stale for e in entries.values()):
+        if e.stale:
             item["stale"] = True
-        item["f"] = {
-            sid: {alt: round(v["M_eff"] * v["phi"], FIELD_DECIMALS) for alt, v in e.by_alt.items()}
-            for sid, e in entries.items()
-        }
+        item["f"] = e.f
         out.append(item)
-        latest = max(e.computed_at for e in entries.values())
-        if computed_at is None or latest > computed_at:
-            computed_at = latest
+        if computed_at is None or e.computed_at > computed_at:
+            computed_at = e.computed_at
     # Réponse construite directement : sur 20 000 cellules, la sérialisation générique de FastAPI
     # (validation puis encodage récursif) coûterait plus que la lecture elle-même.
     return JSONResponse(

@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import threading
 import time
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -31,6 +32,7 @@ from conftest import GRID, NOW, TODAY, MemoryBucket, seed_from_scenario
 from fixtures.open_meteo import Scenario
 
 CELL = "c_0930_6680"
+BY_ALT = {"450": {"M": 0.5, "M_eff": 0.6, "phi": 0.25}}
 
 
 def _filled(path: Path, tag: str) -> WeatherCache:
@@ -41,7 +43,9 @@ def _filled(path: Path, tag: str) -> WeatherCache:
     cache.put_history(CELL, {"2026-10-01": day}, "forecast")
     cache.put_soil_clim(CELL, {"10": [0.1] * 11})
     cache.put_dept_index([("25", "boletus_edulis", "2026-10-17", 0.5, 1.0)], TODAY, NOW)
-    cache.put_cell_weather([(CELL, "boletus_edulis", False, [{"date": tag}])], TODAY, NOW)
+    cache.put_cell_weather(
+        [(CELL, "boletus_edulis", False, [{"date": tag, "by_alt": BY_ALT}])], TODAY, NOW
+    )
     cache.meta_set("seed_generated", tag)
     return cache
 
@@ -58,7 +62,7 @@ def test_snapshot_is_one_self_contained_file_and_import_replaces_everything(tmp_
     copy = WeatherCache(snap)
     assert copy.db.execute("PRAGMA journal_mode").fetchone()[0] != "wal"
     assert copy.cell_weather([CELL], ["boletus_edulis"])[CELL, "boletus_edulis"].rows == [
-        {"date": "A"}
+        {"date": "A", "by_alt": BY_ALT}
     ]
     copy.close()
 
@@ -71,13 +75,15 @@ def test_snapshot_is_one_self_contained_file_and_import_replaces_everything(tmp_
         "soil_clim": 1,
         "dept_index": 1,
         "cell_weather": 1,
+        "cell_field": 1,
         "meta": 3,  # seed_generated + les deux clés de l'indice
     }
     assert b.get(CELL, "forecast", "2026-10-17T12") == {"tag": "A"}
     assert b.meta_get("seed_generated") == "A" and b.soil_clim("c_only_in_b") is None
     assert b.cell_weather([CELL], ["boletus_edulis"])[CELL, "boletus_edulis"].rows == [
-        {"date": "A"}
+        {"date": "A", "by_alt": BY_ALT}
     ]
+    assert b.db.execute("SELECT date, f FROM cell_field").fetchall() == [("A", '{"450": 0.15}')]
     # un instantané illisible : rien n'est perdu, l'erreur remonte, la base reste utilisable
     bad = tmp_path / "bad.db"
     bad.write_bytes(b"pas une base")
@@ -88,6 +94,53 @@ def test_snapshot_is_one_self_contained_file_and_import_replaces_everything(tmp_
     b.close()
 
 
+def test_import_of_a_snapshot_without_cell_field_derives_it(tmp_path: Path, caplog):
+    """Migration (spec › Points ouverts › Stockage compact par jour pour /weather/field,
+    5 nov. 2026) : un instantané publié par un cron d'avant la table n'a pas `cell_field` ;
+    l'import la dérive de `cell_weather` dans la même transaction, et l'API sert `/weather/field`
+    comme si la passe l'avait écrite. Même chose pour une table présente mais vide."""
+    days = [(TODAY + timedelta(days=k)).isoformat() for k in range(-3, 8)]
+    old = _filled(tmp_path / "old.db", "old")
+    old.put_cell_weather(
+        [(CELL, "boletus_edulis", True, [{"date": d, "by_alt": BY_ALT} for d in days])],
+        TODAY,
+        NOW,
+    )
+    old.put_cell_weather(
+        [(CELL, "cantharellus_cibarius", False, [{"date": d, "by_alt": BY_ALT} for d in days])],
+        TODAY,
+        NOW,
+    )
+    snap = tmp_path / "old.snapshot.db"
+    old.snapshot(snap)
+    old.close()
+    legacy = sqlite3.connect(snap)
+    legacy.execute("DROP TABLE cell_field")  # l'instantané tel qu'un ancien cron l'a produit
+    legacy.commit()
+    legacy.close()
+
+    api = WeatherCache(tmp_path / "api.db", shared=True)
+    with caplog.at_level(logging.INFO, logger="champis_api.cache"):
+        counts = api.import_cache_db(snap)
+    assert counts["cell_weather"] == 2 and counts["cell_field"] == 22
+    assert any("sans cell_field" in r.message for r in caplog.records)
+    got = api.cell_field([CELL], ["boletus_edulis", "cantharellus_cibarius"], TODAY)
+    assert got[CELL].f == {"boletus_edulis": {"450": 0.15}, "cantharellus_cibarius": {"450": 0.15}}
+    assert got[CELL].stale  # une des deux espèces vient d'un précalcul périmé
+    assert not api.cell_field([CELL], ["cantharellus_cibarius"], TODAY)[CELL].stale
+    assert api.cell_field_status().current
+
+    # table présente mais vide (instantané d'une passe partielle d'avant la table) : pareil
+    empty = sqlite3.connect(snap)
+    empty.executescript(
+        "CREATE TABLE cell_field (cell_id TEXT, species TEXT, date TEXT, computed_at TEXT, "
+        "stale INTEGER, f TEXT, PRIMARY KEY (species, date, cell_id)) WITHOUT ROWID;"
+    )
+    empty.close()
+    assert api.import_cache_db(snap)["cell_field"] == 22
+    api.close()
+
+
 def test_publish_and_sync_cache_through_the_bucket(tmp_path: Path):
     bucket = MemoryBucket()
     cron = _filled(tmp_path / "cron.db", "cron")
@@ -95,6 +148,7 @@ def test_publish_and_sync_cache_through_the_bucket(tmp_path: Path):
     info = publish_cache(bucket, cron, tmp_path / "work", now=at)
     assert info["published"] == "2026-11-04T02:40:00+00:00"
     assert info["cells"] == 1 and info["cell_weather"] == 1 and info["today"] == TODAY.isoformat()
+    assert info["cell_field"] == 1
     assert info["bytes"] == len(bucket.objects[CACHE_DB_KEY]) > 0
     assert bucket.json[CACHE_META_KEY] == info
     assert not (tmp_path / "work" / "weather_cache.publish.db").exists()
@@ -232,3 +286,64 @@ async def test_lifespan_leader_imports_the_cron_cache_and_locks_the_seed(
     handle = try_lock(vol / LEADER_LOCK)
     assert handle is not None  # rendu à l'arrêt
     handle.close()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_migrates_a_volume_from_before_cell_field(tmp_path: Path, caplog):
+    """Premier déploiement après le 5 nov. 2026 : le volume de l'API porte `cell_weather` mais pas
+    `cell_field` (ni bucket, ni amorçage à importer). Le démarrage la dérive, sous le verrou
+    d'amorçage et dans un fil, et `/weather/field` répond aussitôt."""
+    grid_path = tmp_path / "weather_grid.json"
+    grid_path.write_text(json.dumps(GRID), encoding="utf-8")
+    vol = tmp_path / "vol"
+    vol.mkdir()
+    today = date.today()  # le vrai client prend l'heure réelle : la passe d'hier soir, disons
+    days = [(today + timedelta(days=k)).isoformat() for k in range(-3, 8)]
+    old = WeatherCache(vol / "weather_cache.db", shared=True)
+    old.put_cell_weather(
+        [(CELL, "boletus_edulis", False, [{"date": d, "by_alt": BY_ALT} for d in days])],
+        today,
+        datetime.now(UTC),
+    )
+    old.db.execute("DROP TABLE cell_field")
+    old.db.commit()
+    old.close()
+
+    settings = Settings(
+        weather_grid=grid_path,
+        cache_db=vol / "weather_cache.db",
+        weather_seed=tmp_path / "absent.json",
+        s3=None,
+        database_url="",
+        apns_key="",
+        warm_hours=(),
+        warm_on_start=False,
+        notify_hours=(),
+        cache_poll_minutes=0,
+        leader_retry_s=0.01,
+        serve_web=False,
+    )
+    app = create_app(settings)
+    with caplog.at_level(logging.INFO, logger="champis_api.cache"):
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as c,
+        ):
+            r = await c.get(
+                "/weather/field",
+                params={
+                    "min_lon": 6.0,
+                    "min_lat": 47.0,
+                    "max_lon": 6.5,
+                    "max_lat": 47.3,
+                    "day": today.isoformat(),
+                    "species": "boletus_edulis",
+                },
+            )
+    assert r.status_code == 200, r.text
+    assert [cell["id"] for cell in r.json()["cells"]] == [CELL]
+    assert r.json()["cells"][0]["f"] == {"boletus_edulis": {"450": 0.15}}
+    assert any("reconstruite depuis cell_weather : 11 lignes" in m.message for m in caplog.records)
+    check = WeatherCache(vol / "weather_cache.db", shared=True)
+    assert check.cell_field_status().current and check.cell_field_count() == 11
+    check.close()

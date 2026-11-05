@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS cell_weather (
     rows_json TEXT NOT NULL,
     PRIMARY KEY (cell_id, species)
 );
+CREATE TABLE IF NOT EXISTS cell_field (
+    cell_id TEXT NOT NULL,
+    species TEXT NOT NULL,
+    date TEXT NOT NULL,
+    computed_at TEXT NOT NULL,
+    stale INTEGER NOT NULL,
+    f TEXT NOT NULL,
+    PRIMARY KEY (species, date, cell_id)
+) WITHOUT ROWID;
 """
 
 META_GENERATED = "seed_generated"  # date (ISO) de l'amorçage, comparée par l'API au démarrage

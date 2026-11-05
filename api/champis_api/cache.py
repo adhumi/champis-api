@@ -9,12 +9,22 @@ climatologie du sol.
   elle couvre la date). Décision du 17 oct. 2026 : « amorcer, puis accumuler », l'API ne parle
   plus qu'à la prévision.
 - `soil_clim` : 11 quantiles mensuels d'humidité du sol par cellule (amorçage), permanents.
+- `cell_weather` : les onze jours détaillés (`M`, `M_eff`, `phi` par classe d'altitude) de chaque
+  (cellule, espèce), rangés par la pré-chauffe, servis par `/weather/bbox` (2 nov. 2026).
+- `cell_field` : dérivée de `cell_weather` dans la même transaction, une ligne par (espèce, jour,
+  cellule) avec `f = M_eff × phi` arrondi par classe d'altitude ; c'est la seule table que lit
+  `/weather/field` (spec › Points ouverts › Stockage compact par jour pour /weather/field,
+  5 nov. 2026). `WITHOUT ROWID` : les lignes vivent dans l'arbre de la clé primaire, sans index
+  à côté ; France, 7 espèces : ≈ 1,7 M de lignes, ≈ 170 Mo, dont une requête ne touche que les
+  (espèce, jour) demandés, au lieu de parcourir les 326 Mo de `cell_weather` pour un jour.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -26,9 +36,15 @@ from champis_pipeline.weather_store import SCHEMA
 BUCKET_HOURS = 12  # deux rafraîchissements par jour (décision du 17 oct. 2026)
 HISTORY_VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil")
 HISTORY_KEEP_DAYS = 400  # au-delà, plus aucune fenêtre du modèle ne lit
-# Les onze lignes d'une entrée `cell_weather` commencent à J−3 de son `today`
-# (`weather_service.DAYS_BEFORE`, repris ici pour ne pas importer le service dans le cache).
+# Fenêtre des onze lignes d'une entrée `cell_weather` autour de son `today` : J−3 → J+7
+# (`weather_service.DAYS_BEFORE` / `DAYS_AFTER`, repris ici pour ne pas importer le service).
 CELL_WEATHER_DAYS_BEFORE = 3
+CELL_WEATHER_DAYS_AFTER = 7
+# Décimales de `f` dans `cell_field` et `/weather/field` : les seuils d'affichage sont au
+# centième, la troisième décimale garde le classement entre cellules proches.
+FIELD_DECIMALS = 3
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -43,13 +59,54 @@ class StoredCellWeather:
 
 
 @dataclass(frozen=True)
-class StoredCellDay:
-    """Un seul jour d'une entrée précalculée : `by_alt` (classe d'altitude → `M`, `M_eff`,
-    `phi`) de la ligne de `/weather/bbox` pour ce jour, pour `/weather/field`."""
+class StoredCellField:
+    """Le champ compact d'une cellule pour un jour, assemblé par SQLite depuis ses lignes
+    `cell_field` : `f[espèce][classe d'altitude] = M_eff × phi` arrondi, tel que `/weather/field`
+    le sert ; `stale` si une des espèces vient d'un précalcul périmé, `computed_at` le plus
+    récent des espèces."""
 
     computed_at: str
     stale: bool
-    by_alt: dict[str, dict[str, float]]
+    f: dict[str, dict[str, float]]
+
+
+@dataclass(frozen=True)
+class CellFieldStatus:
+    """État de `cell_field` par rapport à `cell_weather`, pour `doctor` et la migration."""
+
+    present: bool  # la table existe (base créée ou ouverte depuis le 5 nov. 2026)
+    weather_entries: int
+    weather_at: str | None  # MAX(computed_at) de `cell_weather`
+    field_rows: int
+    field_at: str | None  # MAX(computed_at) de `cell_field`
+
+    @property
+    def current(self) -> bool:
+        """À jour : dérivée du même passage que `cell_weather` (même `computed_at` le plus
+        récent), ou rien à dériver. Le nombre de lignes n'est pas 11 × les entrées : une entrée
+        d'un passage antérieur n'a que ses jours encore dans la fenêtre courante."""
+        if not self.present:
+            return False
+        if self.weather_entries == 0:
+            return self.field_rows == 0
+        return self.field_at == self.weather_at and self.field_rows > 0
+
+
+def field_of(by_alt: dict[str, dict[str, float]]) -> dict[str, float]:
+    """`f` d'une ligne `by_alt` : `M_eff × phi` arrondi à `FIELD_DECIMALS` par classe d'altitude,
+    mêmes clés que `by_alt` (contrat de `/weather/field`, PR #75)."""
+    return {alt: round(v["M_eff"] * v["phi"], FIELD_DECIMALS) for alt, v in by_alt.items()}
+
+
+def cell_field_status(db: sqlite3.Connection) -> CellFieldStatus:
+    """Lecture seule, sur n'importe quelle connexion (le `doctor` n'ouvre pas de `WeatherCache`
+    pour ne rien créer dans une base d'avant la table)."""
+    tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    w_n, w_at = db.execute("SELECT COUNT(*), MAX(computed_at) FROM cell_weather").fetchone()
+    if "cell_field" not in tables:
+        return CellFieldStatus(False, w_n, w_at, 0, None)
+    f_n, f_at = db.execute("SELECT COUNT(*), MAX(computed_at) FROM cell_field").fetchone()
+    return CellFieldStatus(True, w_n, w_at, f_n, f_at)
 
 
 def bucket_now(now: datetime) -> str:
@@ -63,7 +120,8 @@ class WeatherCache:
 
     BUSY_TIMEOUT_S = 30.0  # plusieurs workers uvicorn écrivent dans le même fichier (4 nov. 2026)
     # Tables copiées en bloc par `import_cache_db` : l'état complet d'une pré-chauffe
-    TABLES = ("raw", "history", "soil_clim", "dept_index", "cell_weather", "meta")
+    TABLES = ("raw", "history", "soil_clim", "dept_index", "cell_weather", "cell_field", "meta")
+    REBUILD_BATCH = 20_000  # lignes `cell_field` par `executemany` à la reconstruction
 
     def __init__(self, path: Path | str = ":memory:", shared: bool = False):
         """`shared` : le fichier est lu et écrit par plusieurs processus (cache du service,
@@ -201,14 +259,26 @@ class WeatherCache:
     def import_cache_db(self, path: Path) -> dict[str, int]:
         """Remplace tout le contenu par celui d'une base au même schéma (cache publié par le
         service cron, `champis-api warm --publish`), en une transaction : les lecteurs voient
-        l'ancien état, puis le nouveau, jamais un mélange. Renvoie le nombre de lignes par table."""
+        l'ancien état, puis le nouveau, jamais un mélange. Renvoie le nombre de lignes par table.
+
+        Un instantané d'avant `cell_field` (cron déployé avant le 5 nov. 2026) n'a pas la table,
+        ou l'a vide : elle est dérivée de `cell_weather` dans la même transaction
+        (`rebuild_cell_field`), dans le fil de l'import, jamais dans la boucle d'événements."""
         self.db.execute("ATTACH DATABASE ? AS pub", (str(path),))
         counts: dict[str, int] = {}
         try:
+            pub_tables = {
+                r[0]
+                for r in self.db.execute("SELECT name FROM pub.sqlite_master WHERE type = 'table'")
+            }
             for table in self.TABLES:  # noms contrôlés ci-dessus
                 self.db.execute(f"DELETE FROM {table}")
-                self.db.execute(f"INSERT INTO {table} SELECT * FROM pub.{table}")
+                if table in pub_tables:
+                    self.db.execute(f"INSERT INTO {table} SELECT * FROM pub.{table}")
                 counts[table] = self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if counts["cell_weather"] and not counts["cell_field"]:
+                log.info("instantané sans cell_field : dérivée de cell_weather à l'import")
+                counts["cell_field"] = self._rebuild_cell_field()
             self.db.commit()
         except BaseException:
             self.db.rollback()
@@ -279,14 +349,22 @@ class WeatherCache:
         d'une espèce, telles que `/weather/bbox` les sert : (cellule, espèce, périmé, lignes).
         Remplace l'entrée existante de la paire ; renvoie le nombre d'entrées écrites.
 
-        Les lignes sont les onze jours J−3 → J+7 de `today`, dans l'ordre
-        (`weather_service.days_around`) : `cell_weather_day` lit le jour par sa position."""
+        Dans la même transaction, chaque jour de l'entrée devient une ligne de `cell_field`
+        (`f = M_eff × phi` arrondi par classe d'altitude), remplacée par (espèce, jour, cellule) :
+        `/weather/field` ne lit que cette table. Les jours d'un passage antérieur sortis de la
+        fenêtre courante sont purgés une fois par passe (`prune_cell_field`), pas ici."""
         at = now.astimezone(UTC).isoformat(timespec="seconds")
-        rows = [
-            (cell_id, species, today.isoformat(), at, int(stale), json.dumps(day_rows))
-            for cell_id, species, stale, day_rows in entries
-        ]
+        rows, field_rows = [], []
+        for cell_id, species, stale, day_rows in entries:
+            rows.append((cell_id, species, today.isoformat(), at, int(stale), json.dumps(day_rows)))
+            field_rows.extend(
+                (cell_id, species, row["date"], at, int(stale), json.dumps(field_of(row["by_alt"])))
+                for row in day_rows
+            )
         self.db.executemany("INSERT OR REPLACE INTO cell_weather VALUES (?, ?, ?, ?, ?, ?)", rows)
+        self.db.executemany(
+            "INSERT OR REPLACE INTO cell_field VALUES (?, ?, ?, ?, ?, ?)", field_rows
+        )
         self.db.commit()
         return len(rows)
 
@@ -312,47 +390,133 @@ class WeatherCache:
                 out[cell_id, sid] = StoredCellWeather(today, at, bool(stale), json.loads(rows_json))
         return out
 
-    def cell_weather_day(
-        self, cell_ids: Iterable[str], species: Iterable[str], day: date
-    ) -> dict[tuple[str, str], StoredCellDay]:
-        """Le seul jour `day` des entrées précalculées, par (cellule, espèce), pour `/weather/field`
-        sur une emprise de plusieurs milliers de cellules.
+    def cell_weather_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM cell_weather").fetchone()[0]
 
-        Une seule requête, quelle que soit l'emprise : les identifiants passent en un tableau JSON
-        (`json_each`), et la ligne du jour est extraite dans SQLite par sa position, `day − today`
-        + `DAYS_BEFORE` dans les onze lignes J−3 → J+7 du calcul (`weather_service.days_around`),
-        sans charger les onze jours en Python. Une paire sans ligne pour `day` (J+7 entre minuit
-        et la pré-chauffe) est absente du résultat, comme une paire jamais calculée.
+    # ------------------------------------------------------------------ champ compact par jour
+
+    def cell_field(
+        self, cell_ids: Iterable[str], species: Iterable[str], day: date
+    ) -> dict[str, StoredCellField]:
+        """Le champ compact du jour `day` pour ces cellules et ces espèces, par cellule, pour
+        `/weather/field` sur une emprise de plusieurs milliers de cellules.
+
+        Une seule requête, quelle que soit l'emprise, sur la clé primaire (espèce, jour, cellule) :
+        les identifiants passent en un tableau JSON (`json_each`), et SQLite assemble lui-même
+        `f` par cellule (`json_group_object`), un seul `json.loads` par cellule au lieu d'un par
+        espèce (France : 22 672 au lieu de 90 688, ≈ 0,2 s de moins). Une cellule sans ligne pour
+        `day` et **toutes** les espèces demandées (jamais calculée, J+7 entre minuit et la
+        pré-chauffe, espèce manquante) est absente du résultat. Les clés de `f` suivent l'ordre de
+        l'index (espèces triées), pas celui de la requête : un objet JSON n'est pas ordonné.
         """
         ids = list(cell_ids)
         sp = list(species)
         if not ids or not sp:
             return {}
         rows = self.db.execute(
-            "SELECT cell_id, species, computed_at, stale, json_extract(rows_json, "
-            "'$[' || (CAST(julianday(?) - julianday(today) AS INTEGER) + ?) || '].by_alt') "
-            "FROM cell_weather "
-            f"WHERE species IN ({','.join('?' * len(sp))}) "
+            "SELECT cell_id, MAX(computed_at), MAX(stale), json_group_object(species, json(f)) "
+            "FROM cell_field "
+            f"WHERE species IN ({','.join('?' * len(sp))}) AND date = ? "
             "AND cell_id IN (SELECT value FROM json_each(?)) "
-            "AND json_extract(rows_json, "
-            "'$[' || (CAST(julianday(?) - julianday(today) AS INTEGER) + ?) || '].date') = ?",
-            [
-                day.isoformat(),
-                CELL_WEATHER_DAYS_BEFORE,
-                *sp,
-                json.dumps(ids),
-                day.isoformat(),
-                CELL_WEATHER_DAYS_BEFORE,
-                day.isoformat(),
-            ],
+            "GROUP BY cell_id HAVING COUNT(*) = ?",
+            [*sp, day.isoformat(), json.dumps(ids), len(sp)],
         ).fetchall()
         return {
-            (cell_id, sid): StoredCellDay(at, bool(stale), json.loads(by_alt))
-            for cell_id, sid, at, stale, by_alt in rows
+            cell_id: StoredCellField(at, bool(stale), json.loads(f))
+            for cell_id, at, stale, f in rows
         }
 
-    def cell_weather_count(self) -> int:
-        return self.db.execute("SELECT COUNT(*) FROM cell_weather").fetchone()[0]
+    def prune_cell_field(self, today: date) -> int:
+        """Purge les jours hors de la fenêtre J−3 → J+7 de `today` (ceux des passages antérieurs
+        que le remplacement par (espèce, jour, cellule) n'a pas recouverts). Un parcours de la
+        table, une fois par passe de pré-chauffe ; renvoie le nombre de lignes supprimées."""
+        first = (today - timedelta(days=CELL_WEATHER_DAYS_BEFORE)).isoformat()
+        last = (today + timedelta(days=CELL_WEATHER_DAYS_AFTER)).isoformat()
+        cur = self.db.execute("DELETE FROM cell_field WHERE date < ? OR date > ?", (first, last))
+        self.db.commit()
+        return cur.rowcount
+
+    def cell_field_count(self) -> int:
+        return self.db.execute("SELECT COUNT(*) FROM cell_field").fetchone()[0]
+
+    def cell_field_status(self) -> CellFieldStatus:
+        return cell_field_status(self.db)
+
+    def _rebuild_cell_field(self) -> int:
+        """Vide `cell_field` et la re-dérive de `cell_weather`, sans valider : l'appelant tient la
+        transaction. Les jours hors de la fenêtre du `today` le plus récent sont écartés."""
+        self.db.execute("DELETE FROM cell_field")
+        latest = self.db.execute("SELECT MAX(today) FROM cell_weather").fetchone()[0]
+        if latest is None:
+            return 0
+        today = date.fromisoformat(latest)
+        first = (today - timedelta(days=CELL_WEATHER_DAYS_BEFORE)).isoformat()
+        last = (today + timedelta(days=CELL_WEATHER_DAYS_AFTER)).isoformat()
+        n = 0
+        batch: list[tuple[str, str, str, str, int, str]] = []
+        cursor = self.db.execute(
+            "SELECT cell_id, species, computed_at, stale, rows_json FROM cell_weather"
+        )
+        for cell_id, species, at, stale, rows_json in cursor:
+            for row in json.loads(rows_json):
+                if first <= row["date"] <= last:
+                    batch.append(
+                        (
+                            cell_id,
+                            species,
+                            row["date"],
+                            at,
+                            stale,
+                            json.dumps(field_of(row["by_alt"])),
+                        )
+                    )
+            if len(batch) >= self.REBUILD_BATCH:
+                self.db.executemany(
+                    "INSERT OR REPLACE INTO cell_field VALUES (?, ?, ?, ?, ?, ?)", batch
+                )
+                n += len(batch)
+                batch.clear()
+        if batch:
+            self.db.executemany(
+                "INSERT OR REPLACE INTO cell_field VALUES (?, ?, ?, ?, ?, ?)", batch
+            )
+            n += len(batch)
+        return n
+
+    def rebuild_cell_field(self) -> int:
+        """Migration : dérive `cell_field` de `cell_weather` (base d'une API déployée avant la
+        table, instantané ancien). Idempotente, en une transaction, journalisée ; sur la France
+        ≈ 1 M de lignes à écrire, de l'ordre de la minute, à faire dans un fil (démarrage, import),
+        jamais dans la boucle d'événements. Renvoie le nombre de lignes écrites."""
+        t0 = time.perf_counter()
+        try:
+            n = self._rebuild_cell_field()
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        log.info(
+            "cell_field reconstruite depuis cell_weather : %d lignes en %.1f s",
+            n,
+            time.perf_counter() - t0,
+        )
+        return n
+
+    def ensure_cell_field(self) -> int | None:
+        """Au démarrage : reconstruit `cell_field` si elle n'est pas dérivée du même passage que
+        `cell_weather` (base d'avant la table). Renvoie le nombre de lignes écrites, None si rien
+        à faire."""
+        status = self.cell_field_status()
+        if status.current:
+            return None
+        log.info(
+            "cell_field absente ou en retard (%d lignes, %s) sur cell_weather (%d entrées, %s)",
+            status.field_rows,
+            status.field_at,
+            status.weather_entries,
+            status.weather_at,
+        )
+        return self.rebuild_cell_field()
 
     # ------------------------------------------------------------------ métadonnées
 

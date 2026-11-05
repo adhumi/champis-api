@@ -7,7 +7,9 @@ fin de chaque pré-chauffe, stocké dans le SQLite du volume, servi par `GET /de
 
 Le même passage range dans la table `cell_weather` les lignes `M`, `M_eff`, `Φ` de chaque
 cellule et de chaque espèce : `GET /weather/bbox` les sert telles quelles, sans recalcul, ce qui
-permet de peindre une emprise de plusieurs centaines de cellules (décision du 2 nov. 2026).
+permet de peindre une emprise de plusieurs centaines de cellules (décision du 2 nov. 2026). Dans
+la même transaction, `cell_field` reçoit le champ compact `M_eff × Φ` par jour que sert
+`GET /weather/field` ; la passe purge ensuite les jours sortis de la fenêtre (5 nov. 2026).
 
 Une cellule sans météo (indisponible, historique trop court) sort du numérateur et du
 dénominateur ; `coverage` dit quelle part de Σ T a été couverte. Jamais de valeur inventée : un
@@ -43,6 +45,7 @@ class DeptIndexReport:
     cells_without_weather: int
     rows: int
     stored: int = 0  # entrées (cellule, espèce) rangées pour `GET /weather/bbox`
+    field_rows: int = 0  # lignes `cell_field` après purge, pour `GET /weather/field`
 
 
 def aggregate(
@@ -115,15 +118,21 @@ async def compute(
         )
     rows = aggregate(grid, weather, species_ids, days)
     cache.put_dept_index(rows, today, now)
-    report = DeptIndexReport(len(grid.departements()), len(cells), missing, len(rows), stored)
+    pruned = cache.prune_cell_field(today)
+    report = DeptIndexReport(
+        len(grid.departements()), len(cells), missing, len(rows), stored, cache.cell_field_count()
+    )
     log.info(
         "indice par département : %d départements, %d cellules (%d sans météo), %d lignes ; "
-        "météo par cellule rangée pour /weather/bbox : %d entrées",
+        "météo par cellule rangée pour /weather/bbox : %d entrées ; champ compact pour "
+        "/weather/field : %d lignes (%d purgées hors fenêtre)",
         report.departements,
         report.cells,
         report.cells_without_weather,
         report.rows,
         report.stored,
+        report.field_rows,
+        pruned,
     )
     return report
 

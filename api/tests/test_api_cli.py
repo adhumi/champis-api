@@ -138,6 +138,45 @@ def test_doctor_runs_through_the_cli(settings, capsys):
     assert err.splitlines()[-1].startswith("2 point(s) à régler") or "point(s) à régler" in err
 
 
+def test_doctor_reports_the_compact_field_table(settings, scenario, capsys):
+    """Ligne « champ compact » : absente sans cache local ; `ok` après une passe (`cell_field`
+    dérivée du même passage que `cell_weather`) ; `manque` si la table n'existe pas (base d'avant
+    le 5 nov. 2026) ou si elle est en retard sur `cell_weather`."""
+    import sqlite3
+
+    cache = WeatherCache(settings.cache_db)
+    seed_from_scenario(cache, scenario, [c["id"] for c in GRID["cells"]])
+    cache.close()
+    assert cli.main(["-q", "warm", "--interval", "0"]) == 0
+    capsys.readouterr()
+    assert cli.main(["doctor", "--offline"]) == 0
+    err = capsys.readouterr().err
+    assert "ok      champ compact" in err and "154 lignes cell_field pour 14 entrées" in err
+
+    db = sqlite3.connect(settings.cache_db)
+    db.execute("DELETE FROM cell_field")
+    db.commit()
+    db.close()
+    assert cli.main(["doctor", "--offline"]) == 0
+    err = capsys.readouterr().err
+    assert "manque  champ compact" in err and "0 lignes cell_field pour 14 entrées" in err
+    assert "en retard : reconstruite au démarrage de l'API" in err
+
+    db = sqlite3.connect(settings.cache_db)
+    db.execute("DROP TABLE cell_field")
+    db.commit()
+    db.close()
+    assert cli.main(["doctor", "--offline"]) == 0
+    err = capsys.readouterr().err
+    assert "manque  champ compact" in err and "table cell_field absente (14 entrées" in err
+    assert "dérivée de cell_weather au démarrage" in err
+    # le doctor n'a rien créé : la table manque toujours
+    db = sqlite3.connect(settings.cache_db)
+    names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    db.close()
+    assert "cell_field" not in names
+
+
 def test_help_lists_every_command(capsys):
     with pytest.raises(SystemExit) as e:
         cli.main(["--help"])

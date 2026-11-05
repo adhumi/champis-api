@@ -6,7 +6,7 @@ connaissance, que sur un seul service : le cron et l'API ne partagent donc pas d
 travaille sur sa propre copie du cache et, à la fin de chaque passe, en dépose un instantané dans
 le bucket (`weather/weather_cache.db`, `VACUUM INTO` : un seul fichier compact) avec une fiche
 (`weather/weather_cache.json` : `published`, `today`, `dept_index_at`, `cells`, `cell_weather`,
-`bytes`). L'API compare la fiche à sa clé `meta` `cache_published`, au démarrage puis toutes les
+`cell_field`, `bytes`). L'API compare la fiche à sa clé `meta` `cache_published`, au démarrage puis toutes les
 `CHAMPIS_CACHE_POLL_MINUTES`, et importe l'instantané en une transaction (`import_cache_db` :
 remplacement table par table, les workers lisent l'ancien état puis le nouveau).
 
@@ -43,6 +43,7 @@ def cache_info(cache: WeatherCache) -> dict[str, Any]:
         "dept_index_at": meta[0] if meta else None,
         "cells": cache.seeded_cells(),
         "cell_weather": cache.cell_weather_count(),
+        "cell_field": cache.cell_field_count(),
     }
 
 
@@ -107,9 +108,11 @@ def sync_cache(
         tmp.unlink(missing_ok=True)
     cache.meta_set(META_CACHE_PUBLISHED, meta["published"])
     log.info(
-        "cache importé depuis le bucket : %s, %d cellules, %d entrées de météo précalculée",
+        "cache importé depuis le bucket : %s, %d cellules, %d entrées de météo précalculée, "
+        "%d lignes de champ compact",
         meta["published"],
         counts.get("soil_clim", 0),
         counts.get("cell_weather", 0),
+        counts.get("cell_field", 0),
     )
     return meta
