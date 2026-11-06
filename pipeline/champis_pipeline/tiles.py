@@ -18,6 +18,11 @@ T × 254 de la i-ème espèce du groupe (ordre alphabétique des identifiants), 
 pour ce canal ; l'alpha est un canal de données, jamais une transparence. Construit en empilant
 les tuiles des MBTiles de travail des jeux T, sans rien re-rendre ni réduire (spec : Points
 ouverts › PMTiles par groupe, 4 nov. 2026) : deux requêtes par tuile côté clients au lieu de cinq.
+
+La version du rendu (`RENDER_VERSION`) entre dans l'empreinte `d<…>` du nom (un correctif du
+rendu = un nouveau jeu, voir `_depts_hash`) et dans les métadonnées (`champis_render`) : un fichier
+local d'une version antérieure est refait sans `--force` (`_done`), les extraits par département et
+les G héritent de la version du jeu complet, `status` signale les anciens jeux encore sur disque.
 """
 
 from __future__ import annotations
@@ -58,6 +63,16 @@ MIN_ZOOM = 6
 MAX_ZOOM = 15
 TILE = 256
 NODATA = 255
+# Version du rendu : entre dans l'empreinte `d<…>` du nom (`_depts_hash`, donc un nouveau jeu à
+# chaque correctif) et dans les métadonnées (`champis_render`) de chaque PMTiles, comparée par
+# `_done`. À incrémenter à chaque correctif qui change les pixels sans changer l'espèce, le
+# scoring ni les départements.
+#   1 : fenêtre source arrondie au plus proche (sans clé) : perdait une colonne ou une ligne de
+#       25 m au bord des tuiles, d'où des traits transparents en « L » aux coins (la grille
+#       Lambert-93 est tournée de ~2° par rapport au Web Mercator dans l'Est de la France).
+#   2 : fenêtre source couvrante (floor / ceil + marge), 30 oct. 2026.
+RENDER_VERSION = 2
+RENDER_KEY = "champis_render"
 CHUNK_TILES = 64  # carré de tuiles z15 (64 × 64) par tâche parallèle
 MERGE_MEM_MB = 1024
 GROUP_BATCH = 500  # tuiles G par tâche parallèle (quelques dizaines de Mo de PNG RGBA par lot)
@@ -69,7 +84,16 @@ def default_jobs() -> int:
 
 
 def _depts_hash(depts: list[str]) -> str:
-    return hashlib.sha256(",".join(sorted(depts)).encode()).hexdigest()[:6]
+    """Empreinte `d<…>` du jeu : les départements *et* la version du rendu (`RENDER_VERSION`).
+
+    Les clients (site, API, app) traitent `depts_hash` comme un identifiant opaque et tout le
+    système suppose un nom de PMTiles immuable (`_done`, `publish` par taille, cache disque du
+    relais, `immutable` côté navigateurs, cache de l'app par nom). Un correctif du rendu change
+    donc l'empreinte : nouveau nom, nouveau jeu, l'ancien est écarté par `publish --prune` et plus
+    rien ne peut servir d'anciens octets sous le nouveau nom (décision du 5 nov. 2026).
+    """
+    key = ",".join(sorted(depts)) + f"|r{RENDER_VERSION}"
+    return hashlib.sha256(key.encode()).hexdigest()[:6]
 
 
 def t_tag(species_id: str, depts: list[str]) -> str:
@@ -167,25 +191,61 @@ def _missing_message(kind: str, missing: list[Path], total: int) -> str:
     )
 
 
-def _pmtiles_count(path: Path) -> int | None:
-    """Tuiles adressées par un PMTiles, `None` s'il est illisible (vide, tronqué)."""
+def _pmtiles_info(path: Path) -> tuple[int, int] | None:
+    """(tuiles adressées, version du rendu) d'un PMTiles, `None` s'il est illisible (vide,
+    tronqué). Sans clé `champis_render` dans les métadonnées, le rendu est la version 1."""
     from pmtiles.reader import MmapSource, Reader
+    from pmtiles.tile import MagicNumberNotFound, SpecVersionUnsupported
 
     try:
         with open(path, "rb") as f:
-            return Reader(MmapSource(f)).header()["addressed_tiles_count"]
-    except (OSError, ValueError, IndexError, KeyError):
+            reader = Reader(MmapSource(f))
+            count = reader.header()["addressed_tiles_count"]
+            render = int(reader.metadata().get(RENDER_KEY, 1))
+    except (
+        OSError,
+        ValueError,
+        IndexError,
+        KeyError,
+        TypeError,
+        MagicNumberNotFound,
+        SpecVersionUnsupported,
+    ):
         return None
+    return count, render
+
+
+def _pmtiles_count(path: Path) -> int | None:
+    """Tuiles adressées par un PMTiles, `None` s'il est illisible (vide, tronqué)."""
+    info = _pmtiles_info(path)
+    return None if info is None else info[0]
+
+
+def render_version(path: Path) -> int | None:
+    """Version du rendu (`RENDER_VERSION`) qui a produit ce PMTiles ; `None` s'il est illisible."""
+    info = _pmtiles_info(path)
+    return None if info is None or not info[0] else info[1]
 
 
 def _done(out: Path, force: bool) -> bool:
     """`out` est-il un PMTiles fini qu'on peut sauter ? Un fichier vide ou illisible (laissé par un
-    plantage d'une version antérieure, qui écrivait en place) est refait, avec un avertissement."""
+    plantage d'une version antérieure, qui écrivait en place) est refait, avec un avertissement ;
+    un fichier rendu par une version antérieure de ce module (`RENDER_VERSION`) aussi : c'est ce
+    qui garantit qu'un correctif du rendu finit dans le bucket sans qu'on pense à `--force`."""
     if force or not out.exists():
         return False
-    if _pmtiles_count(out):
+    info = _pmtiles_info(out)
+    if info is None or not info[0]:
+        log.warning("%s illisible ou vide (écriture interrompue) : refait", out.name)
+    elif info[1] < RENDER_VERSION:
+        log.warning(
+            "%s rendu par le tuilage v%d (traits transparents aux bords des tuiles) : refait en v%d",
+            out.name,
+            info[1],
+            RENDER_VERSION,
+        )
+    else:
         return True
-    log.warning("%s illisible ou vide (écriture interrompue) : refait", out.name)
     out.unlink()
     return False
 
@@ -395,6 +455,7 @@ def _mbtiles(src_path: Path, out: Path, name: str, description: str, kind: str, 
             ("maxzoom", str(MAX_ZOOM)),
             ("bounds", f"{w},{south},{e},{n}"),
             ("description", description),
+            (RENDER_KEY, str(RENDER_VERSION)),
         ],
     )
     count = _render_max_zoom(db, src_path, (w, south, e, n), jobs)
@@ -745,6 +806,7 @@ def _group_mbtiles(
             ("maxzoom", str(MAX_ZOOM)),
             ("bounds", f"{w},{south},{e},{n}"),
             ("description", description),
+            (RENDER_KEY, str(RENDER_VERSION)),
         ],
     )
     db.commit()

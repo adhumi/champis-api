@@ -88,6 +88,30 @@ def test_set_status_local_and_bucket(data: Path):
     assert s.bucket is None and s.bucket_error.startswith("ConnectionError")
 
 
+def test_set_status_lists_other_local_sets(data: Path):
+    """Les PMTiles locaux d'autres jeux (autres départements, ou rendu antérieur : l'empreinte
+    `d<…>` porte RENDER_VERSION) sont signalés avec leur taille ; pas ceux du jeu attendu ni des
+    jeux d'un seul département du jeu (hors ligne de l'app)."""
+    from champis_pipeline.tiles import _depts_hash
+
+    names = publish.expected_names(["25", "39"], SPECIES)
+    _touch(config.TILES_DIR / names[0], 10)
+    dept_only = publish.expected_names(["25"], SPECIES)[0]
+    _touch(config.TILES_DIR / dept_only, 3)
+    other_depts = (
+        f"T-boletus_edulis-{species_hash('boletus_edulis')}-p1.0.0-d{_depts_hash(['70'])}.pmtiles"
+    )
+    _touch(config.TILES_DIR / other_depts, 7)
+    old_render = "T-boletus_edulis-00000000-p1.0.0-dabcdef.pmtiles"
+    _touch(config.TILES_DIR / old_render, 20)
+    _touch(config.TILES_DIR / "notes.txt", 1)
+    s = status.set_status(["25", "39"], SPECIES)
+    assert [(n, b) for n, b, _ in s.other_local] == [(old_render, 20), (other_depts, 7)]
+    assert s.other_local_bytes == 27
+    assert all(render is None for _, _, render in s.other_local)  # fichiers factices, illisibles
+    assert status.set_status(["25"], SPECIES).other_local[0][0] == old_render
+
+
 def test_publish_plan_and_dry_run(data: Path, capsys, monkeypatch):
     from champis_pipeline import cli
     from champis_pipeline.tiles import _depts_hash

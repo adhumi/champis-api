@@ -58,6 +58,13 @@ class SetStatus:
     bucket: list[str] | None = None  # None : bucket non configuré ou non interrogé
     bucket_error: str | None = None
     manifest_generated: str | None = None
+    # PMTiles locaux hors du jeu attendu : autres départements ou rendu antérieur (`RENDER_VERSION`
+    # change l'empreinte `d<…>`) ; ils ne servent plus et occupent le disque. (nom, octets, version)
+    other_local: list[tuple[str, int, int | None]] = field(default_factory=list)
+
+    @property
+    def other_local_bytes(self) -> int:
+        return sum(b for _, b, _ in self.other_local)
 
 
 def dept_status(
@@ -104,6 +111,7 @@ def set_status(
     status = SetStatus(
         sorted(depts), expected, [n for n in expected if (config.TILES_DIR / n).exists()]
     )
+    status.other_local = other_local_sets(expected, status.depts)
     if bucket is not None:
         try:
             present = bucket.list(TILES_PREFIX)
@@ -113,6 +121,28 @@ def set_status(
         except Exception as e:  # réseau, identifiants : on le dit, on ne plante pas
             status.bucket_error = f"{type(e).__name__}: {e}"
     return status
+
+
+def other_local_sets(expected: list[str], depts: list[str]) -> list[tuple[str, int, int | None]]:
+    """PMTiles de `data/tiles` hors du jeu attendu : (nom, octets, version du rendu), par nom. Les
+    jeux d'un seul département de `depts` (hors ligne de l'app, `tiles --per-dept`) ne sont pas
+    « autres » : on les reconnaît à leur empreinte `d<…>` courante."""
+    from .storage import parse_tile_name
+    from .tiles import _depts_hash, render_version
+
+    if not config.TILES_DIR.is_dir():
+        return []
+    wanted = set(expected)
+    current = {_depts_hash([d]) for d in depts}
+    out = []
+    for path in sorted(config.TILES_DIR.glob("*.pmtiles")):
+        if path.name in wanted:
+            continue
+        info = parse_tile_name(path.name)
+        if info and info["depts_hash"] in current:
+            continue
+        out.append((path.name, path.stat().st_size, render_version(path)))
+    return out
 
 
 def table(rows: list[list[str]], header: tuple[str, ...]) -> str:

@@ -381,6 +381,15 @@ def cmd_status(args) -> None:
             "" if s.bucket is None else ("  bucket" if n in s.bucket else "  ------")
         )
         c.info(f"{marks}  {n}")
+    if s.other_local:
+        c.warn(
+            f"{len(s.other_local)} PMTiles d'autres jeux dans {tiles.TILES_DIR} "
+            f"({console.size(s.other_local_bytes)}) : autres départements ou rendu antérieur à "
+            f"v{tiles.RENDER_VERSION} ; plus servis, à supprimer à la main"
+        )
+        for name, size, render in s.other_local:
+            why = "illisible" if render is None else f"rendu v{render}"
+            c.info(f"-----  {name}  {console.size(size)}  ({why})")
 
 
 # ---------------------------------------------------------------------- entrée
