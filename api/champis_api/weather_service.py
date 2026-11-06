@@ -18,6 +18,7 @@ from .scoring import (
     DailySeries,
     phenology_window,
     required_series_days,
+    season_phase,
     trigger_event,
     weather_index,
 )
@@ -139,7 +140,13 @@ def cell_weather(
                     row["factors"] = factors
                     # phrases en clair et âge de la pluie déclenchante (refonte UX, lot 2)
                     row["trigger_days"] = trigger_days
-                    row["summary"] = summary(factors, phi, trigger_days)
+                    row["summary"] = summary(
+                        factors,
+                        phi,
+                        trigger_days,
+                        lag=sp["weather"]["trigger"].get("lag_days"),
+                        phase=season_phase(sp, d, alt),
+                    )
                 by_alt[str(int(alt))] = row
             day_rows.append({"date": d.isoformat(), "by_alt": by_alt})
         out_species[sid] = day_rows

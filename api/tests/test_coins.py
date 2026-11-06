@@ -193,6 +193,9 @@ async def test_put_and_get_coins(api, store: Store):
     assert today_row["value"] == body["coins"][0]["score"]
     assert today_row["leading"] == body["coins"][0]["leading"]
     assert set(days[0]) == {"date", "value", "leading"}
+    # étape B2 : les phrases du jour de l'espèce porteuse, à la classe du coin, pour sa fiche
+    phrases = body["coins"][0]["summary"]
+    assert phrases and all(isinstance(p, str) for p in phrases)
     # validation : cible inconnue, espèce inconnue dans t, T hors [0, 1], trop de coins
     bad = _coin(target="morilles")
     assert (await api.put("/coins", json={"coins": [bad]}, headers=H)).status_code == 422

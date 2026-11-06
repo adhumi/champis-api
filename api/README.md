@@ -113,7 +113,7 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 - `GET /observations` — les miennes, les plus récentes d'abord.
 - `DELETE /observations` — `{"deleted": n}`.
 - `PUT /coins` — `{"apns_token"?, "sandbox"?, "coins": [{id, name, lat, lon, target, alt_class, t}]}` (≤ 50) : remplace la liste complète (le serveur ne fusionne pas) et le jeton de notification. `target` = espèce ou groupe affiché ; `alt_class` = centre de la classe d'altitude du pixel (couche A) ; `t` = `{espèce: T}` lu par l'app dans les tuiles au moment où le coin est créé — le backend n'a pas les tuiles.
-- `GET /coins` — mes coins avec `score` du jour (max sur les espèces de `T_e × M_eff_e × Φ_e`, cellule la plus proche, classe d'altitude du coin), `leading`, et `best_day`/`best` si un jour de J+1 à J+7 fait mieux.
+- `GET /coins` — mes coins avec `score` du jour (max sur les espèces de `T_e × M_eff_e × Φ_e`, cellule la plus proche, classe d'altitude du coin), `leading`, `best_day`/`best` si un jour de J+1 à J+7 fait mieux, et `summary` : les phrases du jour pour l'espèce qui porte le score, à la classe d'altitude du coin (étape B2, 6 nov. 2026 : « grosse pluie il y a 6 jours : en plein dans le délai de pousse », « début de saison »…).
 
 **Notification** (`champis_api.coins.notify_all` ; service cron `champis-api notify --pull`, ou tâche intégrée à `CHAMPIS_NOTIFY_HOURS` en repli, ou `champis-api notify` à la main) : après la pré-chauffe du matin, une seule notification par appareil, récapitulative, envoyée seulement si au moins un coin est « bon » ou « excellent » (seuil lu dans `shared/palette.json`). Un jeton refusé par APNs (`Unregistered`, `BadDeviceToken`) est retiré, on n'insiste pas. L'app ne fait aucun rafraîchissement en arrière-plan.
 

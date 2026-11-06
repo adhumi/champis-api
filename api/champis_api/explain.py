@@ -14,7 +14,6 @@ SOIL_WET = 0.75
 SOIL_DRY = 0.25
 MEMORY_DRY = 0.5
 TEMP_BAD = 0.3
-TRIGGER_FULL = 0.999
 
 
 def ago(days: int) -> str:
@@ -25,18 +24,46 @@ def ago(days: int) -> str:
     return f"il y a {days} jours"
 
 
-def summary(factors: dict[str, float], phi: float, trigger_days: int | None) -> list[str]:
-    """Deux à cinq phrases courtes, sans chiffre de score, dans l'ordre : pluie, sol, freins, saison."""
+SEASON_WORDS = {
+    "hors": "hors saison",
+    "debut": "début de saison",
+    "pleine": "pleine saison",
+    "fin": "fin de saison",
+}
+
+
+def rain_phrase(trigger_days: int | None, lag: dict[str, float] | None) -> str:
+    """La grosse pluie retenue et ce qu'elle annonce, d'après le délai de pousse de l'espèce
+    (`weather.trigger.lag_days` de son fichier : jamais une valeur écrite ici). Étape B2, 6 nov. 2026 :
+    « trop tôt, pousse attendue dans 6 à 16 jours », « en plein dans le délai de pousse », « la pousse
+    s'essouffle »."""
+    if trigger_days is None:
+        return "pas de grosse pluie récente"
+    head = f"grosse pluie {ago(trigger_days)}"
+    if not lag:
+        return head
+    low, high = round(lag["opt_low"]), round(lag["opt_high"])
+    if trigger_days < low:
+        return f"{head} : trop tôt, pousse attendue dans {low - trigger_days} à {high - trigger_days} jours"
+    if trigger_days <= high:
+        return f"{head} : en plein dans le délai de pousse"
+    return f"{head} : la pousse s'essouffle"
+
+
+def summary(
+    factors: dict[str, float],
+    phi: float,
+    trigger_days: int | None,
+    lag: dict[str, float] | None = None,
+    phase: str | None = None,
+) -> list[str]:
+    """Deux à cinq phrases courtes, sans chiffre de score, dans l'ordre : pluie, sol, freins, saison.
+
+    `lag` : `lag_days` de l'espèce (sens du délai de pousse) ; `phase` : position du jour dans la
+    saison (`scoring.season_phase`). Sans eux, les phrases restent justes mais moins précises."""
     if phi <= 0:
         return ["hors saison"]
-    out: list[str] = []
-    trigger = factors.get("trigger", 0.0)
-    if trigger <= 0 or trigger_days is None:
-        out.append("pas de pluie déclenchante récente")
-    elif trigger >= TRIGGER_FULL:
-        out.append(f"pluie déclenchante {ago(trigger_days)}")
-    else:
-        out.append(f"pluie déclenchante {ago(trigger_days)}, hors du meilleur délai")
+    out: list[str] = [rain_phrase(trigger_days, lag)]
     soil = factors.get("soil_moisture")
     if soil is not None:
         if soil >= SOIL_WET:
@@ -56,5 +83,8 @@ def summary(factors: dict[str, float], phi: float, trigger_days: int | None) -> 
     temp = factors.get("temp")
     if temp is not None and temp < TEMP_BAD:
         out.append("températures défavorables")
-    out.append("pleine saison" if phi >= 1.0 else "en marge de la saison")
+    if phase in SEASON_WORDS:
+        out.append(SEASON_WORDS[phase])
+    else:
+        out.append("pleine saison" if phi >= 1.0 else "en marge de la saison")
     return out

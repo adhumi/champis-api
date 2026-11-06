@@ -6,8 +6,8 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
-from champis_api.explain import ago, summary
-from champis_api.scoring import factor_trigger, trigger_event
+from champis_api.explain import ago, rain_phrase, summary
+from champis_api.scoring import factor_trigger, season_phase, trigger_event
 from champis_pipeline.species import load_species
 from conftest import TODAY, make_series
 
@@ -28,28 +28,69 @@ def _factors(**over):
     return base | over
 
 
+LAG = EDULIS["weather"]["trigger"]["lag_days"]  # lu dans le fichier d'espèce, jamais écrit ici
+
+
 def test_summary_orders_rain_soil_brakes_season():
     assert summary(_factors(), 1.0, 12) == [
-        "pluie déclenchante il y a 12 jours",
+        "grosse pluie il y a 12 jours",
         "sol bien humide",
         "pleine saison",
     ]
     assert summary(_factors(trigger=0.0), 1.0, None) == [
-        "pas de pluie déclenchante récente",
+        "pas de grosse pluie récente",
         "sol bien humide",
         "pleine saison",
     ]
-    assert summary(_factors(trigger=0.4), 0.5, 3) == [
-        "pluie déclenchante il y a 3 jours, hors du meilleur délai",
-        "sol bien humide",
-        "en marge de la saison",
-    ]
+    assert summary(_factors(trigger=0.4), 0.5, 3)[-1] == "en marge de la saison"  # sans phase
     assert summary(_factors(soil_moisture=0.5), 1.0, 0)[1] == "sol moyennement humide"
     assert summary(_factors(soil_moisture=0.1), 1.0, 1) == [
-        "pluie déclenchante hier",
+        "grosse pluie hier",
         "sol sec",
         "pleine saison",
     ]
+
+
+def test_rain_phrase_says_too_early_on_time_or_fading_from_the_species_lag():
+    """Étape B2 (spec › Produit, 6 nov. 2026) : le sens du délai de pousse, d'après `lag_days` de
+    l'espèce ; une pluie toute fraîche dit quand la pousse est attendue."""
+    low, high = round(LAG["opt_low"]), round(LAG["opt_high"])
+    early = rain_phrase(low - 4, LAG)
+    assert (
+        early
+        == f"grosse pluie il y a {low - 4} jours : trop tôt, pousse attendue dans 4 à {high - low + 4} jours"
+    )
+    assert rain_phrase(low, LAG).endswith(": en plein dans le délai de pousse")
+    assert rain_phrase(high, LAG).endswith(": en plein dans le délai de pousse")
+    assert rain_phrase(high + 1, LAG).endswith(": la pousse s'essouffle")
+    assert rain_phrase(0, LAG).startswith(
+        "grosse pluie aujourd'hui : trop tôt, pousse attendue dans"
+    )
+    assert rain_phrase(None, LAG) == "pas de grosse pluie récente"
+    assert rain_phrase(5, None) == "grosse pluie il y a 5 jours"
+
+
+def test_summary_says_the_season_side():
+    for phase, words in [
+        ("debut", "début de saison"),
+        ("pleine", "pleine saison"),
+        ("fin", "fin de saison"),
+    ]:
+        assert summary(_factors(), 0.6, 12, LAG, phase)[-1] == words
+
+
+def test_season_phase_follows_the_peak_and_the_altitude():
+    """Mêmes dates que Φ : avant le pic, au pic, après, hors saison (fichier du cèpe de Bordeaux)."""
+    year = TODAY.year
+    peak_start = date.fromisoformat(f"{year}-{EDULIS['phenology']['peak']['start']}")
+    peak_end = date.fromisoformat(f"{year}-{EDULIS['phenology']['peak']['end']}")
+    season_end = date.fromisoformat(f"{year}-{EDULIS['phenology']['season']['end']}")
+    ref = EDULIS["phenology"]["altitude_shift"]["reference_m"]
+    assert season_phase(EDULIS, peak_start - timedelta(days=5), ref) == "debut"
+    assert season_phase(EDULIS, peak_start + timedelta(days=5), ref) == "pleine"
+    assert season_phase(EDULIS, peak_end + timedelta(days=5), ref) == "fin"
+    assert season_phase(EDULIS, season_end + timedelta(days=10), ref) == "hors"
+    assert season_phase(EDULIS, date(year, 1, 15), ref) == "hors"
 
 
 def test_summary_names_every_active_brake():
@@ -57,7 +98,7 @@ def test_summary_names_every_active_brake():
         _factors(frost=0.2, heat=0.5, water_balance=0.4, memory=0.3, temp=0.1), 1.0, 10
     )
     assert phrases == [
-        "pluie déclenchante il y a 10 jours",
+        "grosse pluie il y a 10 jours",
         "sol bien humide",
         "gel ces dernières nuits",
         "trop chaud ces derniers jours",

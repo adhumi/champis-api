@@ -50,6 +50,8 @@ class CoinScore:
     leading: str | None  # espèce qui porte le score du jour
     # les onze jours (refonte UX, lot 1, 1er nov. 2026) : la fiche d'un coin et sa tendance
     days: tuple[CoinDay, ...] = ()
+    # phrases du jour pour l'espèce qui porte le score, à la classe du coin (étape B2, 6 nov. 2026)
+    summary: tuple[str, ...] = ()
 
 
 def nearest_alt_class(cell: Cell, alt_m: float) -> str:
@@ -61,7 +63,8 @@ def nearest_alt_class(cell: Cell, alt_m: float) -> str:
 def score_coins(
     coins: list[Coin], grid: WeatherGrid, weather: dict[str, dict], today: date
 ) -> list[CoinScore]:
-    """`weather` : cellule → réponse de `cell_weather` (detail=False). Pur et testable."""
+    """`weather` : cellule → réponse de `cell_weather` ; avec `detail=True`, les phrases du jour
+    (`summary`) accompagnent le score. Pur et testable."""
     out = []
     all_days = days_around(today)
     for coin in coins:
@@ -94,12 +97,14 @@ def score_coins(
             out.append(CoinScore(coin, None, None, None, None, days))
             continue
         t_val, lead = per_day[today]
+        today_row = next(r for r in w["species"][lead] if r["date"] == today.isoformat())
+        phrases = tuple(today_row["by_alt"][alt].get("summary", ()))
         later = [(v, d) for d, (v, _) in per_day.items() if d > today]
         best = max(later, default=None)
         if best and best[0] > t_val:
-            out.append(CoinScore(coin, t_val, best[1], best[0], lead, days))
+            out.append(CoinScore(coin, t_val, best[1], best[0], lead, days, phrases))
         else:
-            out.append(CoinScore(coin, t_val, None, None, lead, days))
+            out.append(CoinScore(coin, t_val, None, None, lead, days, phrases))
     return out
 
 
@@ -184,7 +189,8 @@ async def weather_for(
     out = {}
     for cid, raw in res.raws.items():
         try:
-            out[cid] = cell_weather(cells[cid], raw, species, today, detail=False)
+            # détail pour les phrases du jour de la fiche (étape B2) : quelques coins par appareil
+            out[cid] = cell_weather(cells[cid], raw, species, today, detail=True)
         except (HistoryTooShortError, SeriesGapError) as e:
             log.info("coins : cellule %s sans météo (%s)", cid, e)
     return out

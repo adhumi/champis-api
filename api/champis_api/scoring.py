@@ -308,6 +308,27 @@ def phenology_window(species: dict[str, Any], day: date, alt_m: float) -> float:
     return min(1.0, max(0.0, phi))
 
 
+def season_phase(species: dict[str, Any], day: date, alt_m: float) -> str:
+    """Position du jour dans la saison, pour les phrases (étape B2, 6 nov. 2026) : « hors » hors de
+    la saison, « debut » avant le pic, « pleine » au pic (ou quand Φ atteint 1 par un pic
+    secondaire), « fin » après. Mêmes dates et même décalage d'altitude que `phenology_window`."""
+    p = species["phenology"]
+    year = day.year
+    doy = day.timetuple().tm_yday
+    shift = p.get("altitude_shift", {"reference_m": 0, "max_days": 0})
+    ds = _shift_days(shift, alt_m, "start_days_per_100m")
+    de = _shift_days(shift, alt_m, "end_days_per_100m")
+    s_start = _day_of_year(_parse_md(p["season"]["start"]), year) + ds
+    s_end = _day_of_year(_parse_md(p["season"]["end"]), year) + de
+    p_start = _day_of_year(_parse_md(p["peak"]["start"]), year) + ds
+    p_end = _day_of_year(_parse_md(p["peak"]["end"]), year) + de
+    if not s_start <= doy <= s_end:
+        return "hors"
+    if p_start <= doy <= p_end or phenology_window(species, day, alt_m) >= 1.0:
+        return "pleine"
+    return "debut" if doy < p_start else "fin"
+
+
 # --------------------------------------------------------------------------- score, groupes, palette
 
 
