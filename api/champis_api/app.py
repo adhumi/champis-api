@@ -32,6 +32,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import counts
 from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
@@ -53,6 +54,7 @@ PARIS = ZoneInfo("Europe/Paris")
 # Chemins hors limitation de débit : relais des PMTiles (`/tiles/<nom>`, pas le manifeste `/tiles`)
 # et fichiers statiques du site. Lectures nombreuses, sans calcul ni appel externe.
 RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
+MAP_PAGE = "/web/carte.html"  # ses ouvertures sont comptées (mesure minimale, étape C2)
 SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
 LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
 
@@ -160,7 +162,9 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
                         settings.cache_db.parent,
                         settings.cache_poll_minutes,
                     ),
-                    warm_scheduler(grid, warmer, settings.warm_hours, settings.warm_on_start),
+                    warm_scheduler(
+                        grid, warmer, settings.warm_hours, settings.warm_on_start, store
+                    ),
                 ]
                 if store is not None and apns is not None and settings.notify_hours:
                     tasks.append(notify_scheduler(store, grid, client, apns, settings.notify_hours))
@@ -200,6 +204,22 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         max_body=settings.max_body_bytes,
         exempt_prefixes=RATE_LIMIT_EXEMPT,
     )
+
+    @app.middleware("http")
+    async def count_map_opens(request, call_next):
+        """Mesure minimale (étape C, lot C2) : une ouverture de la carte du site de plus, rien
+        d'autre ; ni adresse IP, ni en-tête, ni identifiant ne sont lus ou gardés."""
+        response = await call_next(request)
+        if (
+            request.method == "GET"
+            and request.url.path == MAP_PAGE
+            and response.status_code in (200, 304)
+        ):
+            store = getattr(getattr(request.app.state, "champis", None), "store", None)
+            if store is not None:
+                await asyncio.to_thread(counts.bump_quietly, store, "web_map_opens")
+        return response
+
     app.include_router(species.router)
     app.include_router(weather.router)
     app.include_router(tiles.router)
@@ -305,17 +325,21 @@ async def cache_refresher(
 
 
 async def warm_scheduler(
-    grid: WeatherGrid, client: OpenMeteoClient, hours: tuple[int, ...], on_start: bool
+    grid: WeatherGrid,
+    client: OpenMeteoClient,
+    hours: tuple[int, ...],
+    on_start: bool,
+    store: Store | None = None,
 ) -> None:
     if on_start:
-        await _warm_once(grid, client)
+        await _warm_once(grid, client, store)
     if not hours:
         return
     while True:
         at = next_warm(datetime.now(PARIS), hours)
         log.info("prochaine pré-chauffe à %s", at.isoformat(timespec="minutes"))
         await asyncio.sleep((at - datetime.now(PARIS)).total_seconds())
-        await _warm_once(grid, client)
+        await _warm_once(grid, client, store)
 
 
 async def notify_scheduler(
@@ -336,9 +360,15 @@ async def notify_scheduler(
             log.exception("notification des coins en échec")
 
 
-async def _warm_once(grid: WeatherGrid, client: OpenMeteoClient) -> None:
+async def _warm_once(
+    grid: WeatherGrid, client: OpenMeteoClient, store: Store | None = None
+) -> None:
     try:
         report = await warm(grid, client)
+        if store is not None:
+            await asyncio.to_thread(
+                counts.record_warm, store, report.cells, len(report.unavailable)
+            )
         log.info(
             "pré-chauffe terminée : %d cellules, %d indisponibles, %d périmées",
             report.cells,

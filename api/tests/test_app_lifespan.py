@@ -95,7 +95,7 @@ async def test_warm_scheduler_runs_on_start_then_waits_for_the_next_local_hour(m
     warmed: list[str] = []
     sleeps: list[float] = []
 
-    async def fake_warm_once(grid, client):
+    async def fake_warm_once(grid, client, store=None):
         warmed.append("warm")
 
     async def fake_sleep(seconds):

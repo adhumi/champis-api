@@ -286,12 +286,27 @@ def test_shared_texts_index_and_species_about():
         "especes",
         "cueillir-sans-nuire",
         "confidentialite",
+        "mentions-legales",  # étape C, lot C1 (6 nov. 2026)
     ]
     for article in index["articles"]:
         body = (texts / article["file"]).read_text(encoding="utf-8")
         assert body.startswith("# " + article["title"] + "\n"), article["id"]
     assert any(a.get("species") for a in index["articles"])
     assert "pharmacien" in (texts / "especes.md").read_text(encoding="utf-8")
+    # étape C, lot C1 : éditeur, hébergeur, licences décidées et recours à la CNIL écrits en clair
+    legal = (texts / "mentions-legales.md").read_text(encoding="utf-8")
+    for words in (
+        "Adrien Humilière",
+        "[hello@champis.app](mailto:hello@champis.app)",
+        "Railway Corporation",
+        "licence MIT",
+        "CC BY 4.0",
+        "centre antipoison",
+    ):
+        assert words in legal, words
+    privacy = (texts / "confidentialite.md").read_text(encoding="utf-8")
+    for words in ("Pas de cookie", "Pays-Bas", "CNIL", "OpenStreetMap", "data.geopf.fr"):
+        assert words in privacy, words
 
     for path in sorted((ROOT / "species").glob("*.json")):
         sp = json.loads(path.read_text(encoding="utf-8"))

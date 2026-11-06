@@ -9,9 +9,10 @@ from pathlib import Path
 
 import httpx
 import pytest
-from champis_api import cli
+from champis_api import cli, counts
 from champis_api.cache import WeatherCache
 from champis_api.settings import Settings
+from champis_api.store import Store
 from champis_pipeline.species import list_species
 from champis_pipeline.storage import S3Config
 from conftest import GRID, NOW, TODAY, MemoryBucket, seed_from_scenario
@@ -61,8 +62,14 @@ def test_warm_fills_the_cache_and_computes_the_department_index(settings, scenar
     cache.close()
     assert cli.main(["-q", "warm", "--interval", "0"]) == 0
     err = capsys.readouterr().err
-    assert "[1/2] pré-chauffe du cache météo" in err and "[2/2] indice par département" in err
+    assert "[1/3] pré-chauffe du cache météo" in err and "[2/3] indice par département" in err
     assert "2 cellules, 0 indisponibles" in err and "2 départements" in err
+    # mesure minimale (étape C2) : la base est configurée, le bilan du jour y est écrit
+    assert "[3/3] bilan dans la mesure" in err and "0 cellules sans météo" in err
+    store = Store(settings.database_url)
+    day = counts.today()
+    assert store.counts_since(day)[day] == {"warm_cells": 2, "cells_without_weather": 0}
+    store.close()
     assert err.splitlines()[-1].startswith("pré-chauffe terminée en ")
     assert "forecast" in scenario.calls
     cache = WeatherCache(settings.cache_db)
@@ -226,10 +233,11 @@ def test_cron_pass_pulls_warms_and_publishes_what_the_api_imports(
 
     assert cli.main(["-q", "warm", "--interval", "0", "--pull", "--publish"]) == 0
     err = capsys.readouterr().err
-    assert "[1/5] cache publié dans le bucket" in err and "deja fait" in err and "aucun" in err
-    assert "[2/5] amorçage" in err and "2 cellules importées" in err
-    assert "[3/5] pré-chauffe" in err and "[4/5] indice" in err
-    assert "[5/5] publication du cache dans le bucket" in err and "2 cellules" in err
+    assert "[1/6] cache publié dans le bucket" in err and "deja fait" in err and "aucun" in err
+    assert "[2/6] amorçage" in err and "2 cellules importées" in err
+    assert "[3/6] pré-chauffe" in err and "[4/6] indice" in err
+    assert "[5/6] publication du cache dans le bucket" in err and "2 cellules" in err
+    assert "[6/6] bilan dans la mesure" in err
     assert bucket.uploads[-1] == CACHE_DB_KEY and bucket.downloads == ["weather/weather_seed.db"]
     meta = bucket.json[CACHE_META_KEY]
     assert meta["cells"] == 2 and meta["cell_weather"] > 0 and meta["today"] == TODAY.isoformat()
@@ -261,8 +269,8 @@ def test_cron_pass_pulls_warms_and_publishes_what_the_api_imports(
     settings.cache_db.unlink()
     assert cli.main(["-q", "warm", "--interval", "0", "--pull", "--publish"]) == 0
     err = capsys.readouterr().err
-    assert "[1/5] cache publié dans le bucket" in err and f"{meta['published']}, 2 cellules" in err
-    assert "[2/5] amorçage" in err and "2 cellules amorcées" in err  # déjà dans l'instantané
+    assert "[1/6] cache publié dans le bucket" in err and f"{meta['published']}, 2 cellules" in err
+    assert "[2/6] amorçage" in err and "2 cellules amorcées" in err  # déjà dans l'instantané
     assert bucket.downloads[-1] == CACHE_DB_KEY and bucket.uploads.count(CACHE_DB_KEY) == 2
 
 

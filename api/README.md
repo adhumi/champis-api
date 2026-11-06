@@ -119,6 +119,20 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 
 **Protection** (service public) : seau à jetons par IP et par worker (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
 
+## Mesure minimale (étape C, lot C2)
+
+Spec › Produit › Mesure minimale (6 nov. 2026) : des totaux par jour civil (heure de Paris), calculés côté serveur à partir de ce que Champis reçoit ou stocke déjà ; ni cookie, ni identifiant, ni adresse IP, ni outil tiers. Table `daily_counts` (jour, nom, valeur) de la même base que les observations (`counts.py`), lignes de plus de 400 jours effacées à chaque notification du matin.
+
+| Compteur | Écrit par |
+| --- | --- |
+| `web_map_opens` | l'API, à chaque `GET /web/carte.html` servi (200 ou 304) ; rien d'autre de la requête n'est lu |
+| `observations_found`, `observations_not_found` | `Store.add_observations`, observations nouvelles seulement (un renvoi ne compte pas) ; l'effacement d'un appareil ne les retire pas : ce sont des totaux |
+| `devices_with_coins`, `coins` | la notification du matin (`notify_all`), relevé du jour |
+| `notify_sent`, `notify_failed` | la notification du matin, cumulés sur la journée |
+| `warm_cells`, `cells_without_weather` | la pré-chauffe, seulement si `DATABASE_URL` est fournie au service `champis-warm` (sinon l'étape n'existe pas) |
+
+Lecture : `make stats` (`champis-api stats --days 14`, tableau sur stdout, « · » = rien de relevé ce jour-là, jamais un zéro inventé) ; `make doctor` en donne la veille en une ligne. Les soutiens et les coûts restent un relevé manuel mensuel.
+
 ## Open-Meteo (skill `open-meteo`)
 
 `weather_client.py` est le seul module qui appelle Open-Meteo. Décision du 17 oct. 2026, **« amorcer, puis accumuler »** :

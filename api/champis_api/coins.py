@@ -20,6 +20,7 @@ from datetime import date
 
 from champis_pipeline.species import load_palette, load_species
 
+from . import counts
 from .apns import ApnsClient
 from .grid import Cell, WeatherGrid
 from .scoring import palette_class
@@ -229,6 +230,7 @@ async def notify_all(
             if res.token_invalid:
                 store.clear_token(device.user_id)
                 report.tokens_cleared += 1
+    counts.record_notify(store, report.sent, report.failed)  # mesure minimale (étape C2)
     log.info(
         "notifications coins : %d appareils, %d envoyées, %d sans rien à annoncer, %d échecs (%d jetons retirés)",
         report.devices,

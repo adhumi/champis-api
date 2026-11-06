@@ -53,6 +53,7 @@ def run_checks(settings: Settings | None = None, offline: bool = False) -> list[
         _notify(settings),
         _tile_cache(settings),
         _database(settings),
+        _counts(settings),
         _apns(settings),
         _cds(),
         _species(),
@@ -320,6 +321,27 @@ def _database(settings: Settings) -> Check:
             "sur Railway : service Postgres connecté, DATABASE_URL injectée",
         )
     return Check("observations et coins", OK, url.split("://", 1)[0] + " (mot de passe masqué)")
+
+
+def _counts(settings: Settings) -> Check:
+    """Mesure minimale (étape C, lot C2) : les compteurs de la veille, en une ligne."""
+    from datetime import timedelta
+
+    from . import counts
+    from .store import Store
+
+    if not settings.database_url:
+        return Check("mesure", INFO, "pas de base : aucun compteur", "DATABASE_URL")
+    try:
+        store = Store(settings.database_url)
+        try:
+            yesterday = counts.today() - timedelta(days=1)
+            data = store.counts_since(yesterday)
+        finally:
+            store.close()
+    except Exception as e:  # base injoignable : un état des lieux, pas un échec
+        return Check("mesure", INFO, f"base injoignable ({type(e).__name__})")
+    return Check("mesure", OK, counts.summary(data, yesterday), "détail : champis-api stats")
 
 
 def _apns(settings: Settings) -> Check:

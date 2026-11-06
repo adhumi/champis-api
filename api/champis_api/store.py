@@ -28,11 +28,13 @@ from sqlalchemy import (
     Text,
     create_engine,
     delete,
+    func,
     insert,
     select,
     update,
 )
-from sqlalchemy.engine import Engine
+from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
 metadata = MetaData()
@@ -74,6 +76,17 @@ coins = Table(
     Column("alt_class", Integer, nullable=False),  # centre de la classe d'altitude du pixel (m)
     Column("t_json", Text, nullable=False),  # {espèce: T du pixel} lu dans les tuiles par l'app
     Column("created_at", DateTime(timezone=True), nullable=False),
+)
+
+
+# Mesure minimale (étape C, lot C2, 6 nov. 2026, `counts.py`) : des totaux par jour, rien par
+# personne ; aucune adresse IP, aucun identifiant.
+daily_counts = Table(
+    "daily_counts",
+    metadata,
+    Column("day", Date, primary_key=True),
+    Column("name", String(48), primary_key=True),
+    Column("value", Integer, nullable=False),
 )
 
 
@@ -156,6 +169,13 @@ class Store:
             ]
             if fresh:
                 conn.execute(insert(observations), fresh)
+                # mesure minimale : observations reçues ce jour-là, en nombre seulement
+                from .counts import today
+
+                day = today(now)
+                found = sum(1 for r in fresh if r["found"])
+                self._bump(conn, day, "observations_found", found)
+                self._bump(conn, day, "observations_not_found", len(fresh) - found)
         return {"inserted": len(fresh), "duplicates": len(known)}
 
     def observations_of(self, user_id: str) -> list[dict[str, Any]]:
@@ -258,6 +278,55 @@ class Store:
             conn.execute(
                 update(devices).where(devices.c.user_id == user_id).values(apns_token=None)
             )
+
+    # ------------------------------------------------------------------ mesure minimale
+
+    def bump(self, day: date, name: str, n: int = 1) -> None:
+        """Ajoute `n` au compteur du jour (plusieurs processus peuvent compter en même temps)."""
+        with self.engine.begin() as conn:
+            self._bump(conn, day, name, n)
+
+    def set_count(self, day: date, name: str, value: int) -> None:
+        """Relevé (état du jour) : remplace la valeur."""
+        with self.engine.begin() as conn:
+            self._write(conn, day, name, value, add=False)
+
+    def _bump(self, conn: Connection, day: date, name: str, n: int) -> None:
+        if n:
+            self._write(conn, day, name, n, add=True)
+
+    @staticmethod
+    def _write(conn: Connection, day: date, name: str, value: int, add: bool) -> None:
+        where = (daily_counts.c.day == day, daily_counts.c.name == name)
+        new = daily_counts.c.value + value if add else value
+        if conn.execute(update(daily_counts).where(*where).values(value=new)).rowcount:
+            return
+        try:
+            with conn.begin_nested():  # un autre processus a pu créer la ligne entre-temps
+                conn.execute(insert(daily_counts).values(day=day, name=name, value=value))
+        except IntegrityError:
+            conn.execute(update(daily_counts).where(*where).values(value=new))
+
+    def counts_since(self, since: date) -> dict[date, dict[str, int]]:
+        with self.engine.connect() as conn:
+            res = conn.execute(select(daily_counts).where(daily_counts.c.day >= since))
+            out: dict[date, dict[str, int]] = {}
+            for r in res:
+                out.setdefault(r.day, {})[r.name] = int(r.value)
+            return out
+
+    def purge_counts(self, before: date) -> int:
+        """13 mois puis effacés (`counts.KEEP_DAYS`)."""
+        with self.engine.begin() as conn:
+            return conn.execute(delete(daily_counts).where(daily_counts.c.day < before)).rowcount
+
+    def coin_totals(self) -> tuple[int, int]:
+        """(appareils avec au moins un coin, nombre de coins)."""
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(func.count(func.distinct(coins.c.user_id)), func.count())
+            ).one()
+            return int(row[0]), int(row[1])
 
     @staticmethod
     def _coin(r) -> Coin:

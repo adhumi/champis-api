@@ -7,7 +7,8 @@ dépose le cache local dans le bucket (migration d'une API qui pré-chauffait el
 `champis-api seed [--out data/weather_seed.db] [--interval 1] [--climatology]` — amorçage de
 l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
 de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket ;
-`champis-api doctor [--offline]` — l'environnement est-il prêt.
+`champis-api doctor [--offline]` — l'environnement est-il prêt ; `champis-api stats [--days 14]` —
+mesure minimale, les compteurs agrégés par jour (étape C, lot C2).
 
 Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/)."""
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from datetime import timedelta
 from pathlib import Path
 
 import httpx
@@ -23,6 +25,7 @@ from champis_pipeline import console
 from champis_pipeline.progress import tqdm
 from champis_pipeline.species import list_species
 
+from . import counts
 from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
@@ -74,7 +77,7 @@ async def _warm(interval: float, pull: bool, publish: bool) -> int:
     settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
     cache = WeatherCache(settings.cache_db, shared=True)
     steps = c.steps(
-        2 + 2 * pull + publish,
+        2 + 2 * pull + publish + bool(settings.database_url),
         f"warm · {len(grid.cells)} cellules · une requête toutes les {interval:g} s",
     )
     try:
@@ -105,6 +108,16 @@ async def _warm(interval: float, pull: bool, publish: bool) -> int:
                 )
         if publish:  # même incomplète, la passe vaut mieux que l'instantané de la veille
             _publish_cache_step(steps, settings, cache, bucket)
+        if (
+            settings.database_url
+        ):  # mesure minimale (étape C2) : le bilan du jour, si la base est là
+            with steps.step("bilan dans la mesure") as step:
+                store = Store(settings.database_url)
+                try:
+                    counts.record_warm(store, report.cells, len(report.unavailable))
+                finally:
+                    store.close()
+                step.note(f"{len(report.unavailable)} cellules sans météo")
     finally:
         cache.close()
     for cid, reason in sorted(report.unavailable.items()):
@@ -290,6 +303,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="dépose un instantané du cache météo local dans le bucket (migration vers le cron)",
     )
     p = sub.add_parser(
+        "stats", help="mesure minimale : les compteurs agrégés par jour (Adrien seul)"
+    )
+    p.add_argument("--days", type=int, default=14, help="nombre de jours, aujourd'hui compris")
+    p = sub.add_parser(
         "doctor", help="l'environnement est-il prêt ? (.env, grille, bucket, base, APNs…)"
     )
     p.add_argument("--offline", action="store_true", help="ne pas interroger le bucket")
@@ -303,9 +320,29 @@ def _doctor(offline: bool) -> int:
     return 0  # un état des lieux, pas un échec : `make doctor` reste silencieux côté make
 
 
+def _stats(days: int) -> int:
+    """Mesure minimale (étape C, lot C2) : un tableau par jour sur stdout, le plus récent en haut."""
+    from champis_pipeline.status import table
+
+    settings = Settings()
+    if not settings.database_url:
+        raise SystemExit("pas de base (DATABASE_URL) : aucun compteur à lire")
+    store = Store(settings.database_url)
+    try:
+        end = counts.today()
+        span = [end - timedelta(days=k) for k in range(max(days, 1))]
+        data = store.counts_since(span[-1])
+    finally:
+        store.close()
+    print(table(counts.rows(data, span), counts.header()))
+    return 0
+
+
 def _dispatch(args) -> int:
     if args.cmd == "doctor":
         return _doctor(args.offline)
+    if args.cmd == "stats":
+        return _stats(args.days)
     if args.cmd == "notify":
         return asyncio.run(_notify(args.pull))
     if args.cmd == "publish-cache":

@@ -90,6 +90,10 @@ log: ## Affiche le dernier journal de data/logs/
 doctor: ## L'environnement est-il prêt ? .env, disque, grille météo, amorçage, bucket, base, APNs, CDS, vecteurs
 	$(API) doctor
 
+.PHONY: stats
+stats: ## Mesure minimale : compteurs agrégés par jour (carte, observations, coins, notifications, météo) ; DAYS=14
+	$(API) stats --days $(or $(DAYS),14)
+
 .PHONY: status
 status: ## Où en est chaque département (raw, grid, T, batch, tuiles, G compris) et le jeu DEPTS (local, bucket)
 	$(PIPELINE) status --depts $(DEPTS) $(GR) $(SP)
