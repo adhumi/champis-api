@@ -10,6 +10,7 @@ from champis_api.scoring import (
     DailySeries,
     group_score,
     palette_class,
+    palette_color,
     phenology_window,
     weather_index,
 )
@@ -70,4 +71,5 @@ def test_group_and_palette_vectors():
         assert group_score(c["scores"]) == c["expected"]
     pal = load_palette()
     for c in _load("palette.json")["cases"]:
-        assert palette_class(c["score"], pal) == c["expected"]
+        cls = palette_class(c["score"], pal)
+        assert {**cls, "rgba": list(palette_color(c["score"], pal))} == c["expected"]
