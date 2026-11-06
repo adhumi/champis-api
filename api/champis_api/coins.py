@@ -117,10 +117,25 @@ def label_fr(value: float) -> str:
     return next(t["fr"] for t in load_palette()["thresholds"] if t["label"] == cls["label"])
 
 
+def day_words(d: date) -> str:
+    """`2026-11-08` → `samedi 8` : le jour de la semaine et son numéro, jamais un J+n."""
+    return f"{DAY_NAMES[d.weekday()]} {d.day}"
+
+
+def _species_words(species_id: str | None) -> str:
+    """Nom français de l'espèce, en minuscule initiale pour une phrase (« cèpe de Bordeaux »)."""
+    if not species_id:
+        return ""
+    name = load_species(species_id)["names"]["fr"]
+    return name[:1].lower() + name[1:]
+
+
 def compose(scores: list[CoinScore], today: date) -> tuple[str, str, str] | None:
     """(titre, corps, id du meilleur coin) de la notification, ou None s'il n'y a rien à annoncer.
 
-    L'id du coin le mieux noté part dans la charge utile (`coin_id`) : l'app ouvre sa fiche.
+    En mots, sans score ni point décimal (spec › Produit › étape A, 6 nov. 2026) : le libellé de
+    la palette, l'espèce qui porte le score, le meilleur jour à venir écrit « samedi 8 ». L'id du
+    coin le mieux noté part dans la charge utile (`coin_id`) : l'app ouvre sa fiche.
     """
     threshold = good_threshold()
     ready = sorted(
@@ -129,24 +144,27 @@ def compose(scores: list[CoinScore], today: date) -> tuple[str, str, str] | None
     )
     if not ready:
         return None
-    n = len(ready)
-    title = f"Champis — {n} coin{'s' if n > 1 else ''} prêt{'s' if n > 1 else ''} aujourd'hui"
+    labels = [label_fr(s.today).lower() for s in ready]
+    if len(ready) == 1:
+        title = f"Champis — {ready[0].coin.name} : {labels[0]} aujourd'hui"
+    else:
+        kinds = sorted(set(labels), key=labels.index)
+        words = " ou ".join(f"{k}s" for k in kinds)
+        title = f"Champis — {len(ready)} coins {words} aujourd'hui"
     parts = []
-    for s in ready:
-        sp = load_species(s.leading)["names"]["fr"] if s.leading else ""
-        parts.append(f"{s.coin.name} : {label_fr(s.today).lower()} ({s.today:.2f}, {sp})")
+    for s, label in zip(ready, labels, strict=True):
+        sp = _species_words(s.leading)
+        parts.append(f"{s.coin.name} : {label}" + (f" ({sp})" if sp else ""))
+    body = ". ".join(parts) + "."
     others = [s for s in scores if s.today is not None and s.today < threshold]
-    body = " · ".join(parts)
-    if others:
-        body += (
-            f". Les {len(others)} autres restent sous « bon »."
-            if len(others) > 1
-            else (f". {others[0].coin.name} reste sous « bon ».")
-        )
+    if len(others) > 1:
+        body += f" Les {len(others)} autres restent sous « bon »."
+    elif others:
+        body += f" {others[0].coin.name} reste sous « bon »."
     peaks = [s for s in scores if s.best_day is not None and s.best >= threshold]
     if peaks:
         p = max(peaks, key=lambda s: s.best)
-        body += f" Pic {DAY_NAMES[p.best_day.weekday()]} : {p.coin.name} {p.best:.2f}."
+        body += f" Meilleur jour à venir : {day_words(p.best_day)} pour {p.coin.name}."
     return title, body, ready[0].coin.id
 
 

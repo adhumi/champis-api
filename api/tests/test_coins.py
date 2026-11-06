@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import timedelta
+from datetime import date, timedelta
 
 import httpx
 import jwt
 import pytest
 from champis_api.apns import ApnsClient
-from champis_api.coins import compose, good_threshold, notify_all, score_coins
+from champis_api.coins import compose, day_words, good_threshold, notify_all, score_coins
 from champis_api.store import Coin, Store
 from champis_api.warm import warm
 from conftest import TODAY
@@ -130,10 +130,45 @@ def test_compose_only_when_a_coin_is_good():
     ]
     title, body, coin_id = compose(ready, TODAY)
     assert coin_id == "1"  # le coin le mieux noté : l'app ouvre sa fiche
-    assert title == "Champis — 1 coin prêt aujourd'hui"
-    assert "Combe : excellent (0.82, Cèpe de Bordeaux)" in body
-    assert "Tourbière reste sous « bon »" in body
-    assert "Pic" in body and "0.90" in body
+    # en mots, sans score ni point décimal (spec › Produit › étape A, 6 nov. 2026)
+    assert title == "Champis — Combe : excellent aujourd'hui"
+    peak = TODAY + timedelta(days=2)
+    assert body == (
+        "Combe : excellent (cèpe de Bordeaux). Tourbière reste sous « bon ». "
+        f"Meilleur jour à venir : {day_words(peak)} pour Combe."
+    )
+    assert not any(ch.isdigit() for ch in body.replace(str(peak.day), ""))
+
+
+def test_compose_names_several_coins_and_their_labels():
+    from champis_api.coins import CoinScore
+
+    c1 = Coin("1", USER, "Combe", 0, 0, "cepes", 450, {"boletus_edulis": 1})
+    c2 = Coin("2", USER, "Hêtraie", 0, 0, "girolles", 450, {"cantharellus_cibarius": 1})
+    c3 = Coin("3", USER, "Sapinière", 0, 0, "cepes", 450, {"boletus_edulis": 1})
+    c4 = Coin("4", USER, "Lisière", 0, 0, "cepes", 450, {"boletus_edulis": 1})
+    scores = [
+        CoinScore(c2, 0.6, None, None, "cantharellus_cibarius"),
+        CoinScore(c1, 0.8, None, None, "boletus_edulis"),
+        CoinScore(c3, 0.2, None, None, "boletus_edulis"),
+        CoinScore(c4, 0.1, None, None, "boletus_edulis"),
+    ]
+    title, body, coin_id = compose(scores, TODAY)
+    assert coin_id == "1"
+    assert title == "Champis — 2 coins excellents ou bons aujourd'hui"
+    assert body == (
+        "Combe : excellent (cèpe de Bordeaux). Hêtraie : bon (girolle). "
+        "Les 2 autres restent sous « bon »."
+    )
+    same = [CoinScore(c1, 0.6, None, None, None), CoinScore(c3, 0.7, None, None, None)]
+    title, body, _ = compose(same, TODAY)
+    assert title == "Champis — 2 coins bons aujourd'hui"
+    assert body == "Sapinière : bon. Combe : bon."
+
+
+def test_day_words_is_a_weekday_and_its_number():
+    assert day_words(date(2026, 11, 7)) == "samedi 7"
+    assert day_words(date(2026, 11, 1)) == "dimanche 1"
 
 
 @pytest.mark.asyncio
