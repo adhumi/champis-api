@@ -36,6 +36,8 @@ from rasterio.transform import from_origin
 CEPES = ["boletus_aereus", "boletus_edulis", "boletus_pinophilus", "boletus_reticulatus"]
 GIROLLES = ["cantharellus_alborufescens", "cantharellus_cibarius", "cantharellus_pallens"]
 LACTAIRES = ["lactarius_deliciosus"]
+PIEDS_DE_MOUTON = ["hydnum_repandum"]
+TROMPETTES = ["craterellus_cornucopioides"]
 LON, LAT = 6.37, 47.19  # une hêtraie du Doubs
 DEPT = "99"
 BOUNDS = (LON - 0.05, LAT - 0.05, LON + 0.05, LAT + 0.05)
@@ -141,7 +143,13 @@ def _read(pm: Path, z: int, x: int, y: int) -> np.ndarray | None:
 
 def test_species_groups_and_hash_follow_the_species_files():
     """Groupes et ordre des canaux depuis `species/*.json` ; hash = sha256 des hashes concaténés."""
-    assert species_groups() == {"cepes": CEPES, "girolles": GIROLLES, "lactaires": LACTAIRES}
+    assert species_groups() == {
+        "cepes": CEPES,
+        "girolles": GIROLLES,
+        "lactaires": LACTAIRES,
+        "pieds_de_mouton": PIEDS_DE_MOUTON,
+        "trompettes": TROMPETTES,
+    }
     assert species_groups(["boletus_edulis", "cantharellus_pallens", "boletus_aereus"]) == {
         "cepes": ["boletus_aereus", "boletus_edulis"],
         "girolles": ["cantharellus_pallens"],
@@ -150,6 +158,8 @@ def test_species_groups_and_hash_follow_the_species_files():
         ("cepes", 1, CEPES),
         ("girolles", 1, GIROLLES),
         ("lactaires", 1, LACTAIRES),
+        ("pieds_de_mouton", 1, PIEDS_DE_MOUTON),
+        ("trompettes", 1, TROMPETTES),
     ]
     expected = hashlib.sha256("".join(species_hash(s) for s in CEPES).encode()).hexdigest()[:8]
     assert group_hash(CEPES) == expected and len(expected) == 8
