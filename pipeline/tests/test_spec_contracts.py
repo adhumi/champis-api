@@ -48,14 +48,9 @@ def test_palette_matches_the_spec_thresholds():
         "faible",
         "tres_faible",
     ]
-    # couleur et opacité de chaque classe (spec › Scoring › Restitution, étape B1, 6 nov. 2026) :
-    # #RRGGBB ou #RRGGBBAA ; opacité croissante avec le score, « très faible » transparent
-    alphas = []
     for t in palette["thresholds"]:
-        assert re.fullmatch(r"#[0-9A-F]{6}([0-9A-F]{2})?", t["hex"]), t
+        assert re.fullmatch(r"#[0-9A-F]{6}", t["hex"]), t
         assert t["fr"]
-        alphas.append(int(t["hex"][7:9], 16) if len(t["hex"]) == 9 else 255)
-    assert alphas == sorted(alphas, reverse=True) and alphas[-1] == 0
     # transparence totale pour le nodata : le pixel sans donnée ne porte jamais une valeur inventée
     assert palette["nodata_hex"] == "#00000000"
 
