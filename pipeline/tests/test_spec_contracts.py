@@ -17,6 +17,7 @@ from champis_pipeline import SCORING_VERSION
 from champis_pipeline.species import (
     ASPECT_CLASSES,
     COVER_CLASSES,
+    REFERENTIAL,
     ROOT,
     all_species_hash,
     fingerprint_bytes,
@@ -78,7 +79,7 @@ def test_palette_tile_encodings_match_the_pipeline():
 
 def test_species_files_pass_their_validator(capsys):
     """Spec › Modèle d'espèce : `species/validate.py` est le contrat (structure, poids, trapèzes, refs)."""
-    result = runpy.run_path(str(ROOT / "species" / "validate.py"), run_name="not_main")
+    result = runpy.run_path(str(REFERENTIAL / "species" / "validate.py"), run_name="not_main")
     assert result["main"]() == 0, capsys.readouterr().out
     out = capsys.readouterr().out
     assert "ok  " in out and "32 codes TFV" in out
@@ -255,18 +256,12 @@ def test_committed_weather_grid_has_the_documented_shape():
 
 
 def test_repo_layout_matches_claude_md():
-    """CLAUDE.md › Structure : les dossiers que les skills et le Makefile supposent existent."""
-    for name in (
-        "species",
-        "mapping",
-        "shared/vectors",
-        "shared/palette.json",
-        "pipeline",
-        "api",
-        "web",
-        "Makefile",
-    ):
+    """CLAUDE.md › Structure : les dossiers que les skills et le Makefile supposent existent ; le
+    référentiel est le sous-module `champis/` (découpage des dépôts, 6 nov. 2026)."""
+    for name in ("pipeline", "api", "Makefile", "champis"):
         assert (ROOT / name).exists(), name
+    for name in ("species", "mapping", "shared/vectors", "shared/palette.json", "shared/texts"):
+        assert (REFERENTIAL / name).exists(), name
     assert (ROOT / ".env.example").exists()
     assert not (Path(ROOT) / ".env").exists() or ".env" in (ROOT / ".gitignore").read_text(
         encoding="utf-8"
@@ -276,7 +271,7 @@ def test_repo_layout_matches_claude_md():
 def test_shared_texts_index_and_species_about():
     """Spec › App iOS (lot 4) : `shared/texts/index.json` liste les articles de Comprendre et chaque
     fichier existe avec un titre de niveau 1 ; chaque espèce porte un bloc `about` sourcé."""
-    texts = ROOT / "shared" / "texts"
+    texts = REFERENTIAL / "shared" / "texts"
     index = json.loads((texts / "index.json").read_text(encoding="utf-8"))
     assert index["version"] == 1
     ids = [a["id"] for a in index["articles"]]
@@ -308,7 +303,7 @@ def test_shared_texts_index_and_species_about():
     for words in ("Pas de cookie", "Pays-Bas", "CNIL", "OpenStreetMap", "data.geopf.fr"):
         assert words in privacy, words
 
-    for path in sorted((ROOT / "species").glob("*.json")):
+    for path in sorted((REFERENTIAL / "species").glob("*.json")):
         sp = json.loads(path.read_text(encoding="utf-8"))
         about = sp["about"]
         assert about["confusions"], path.stem
@@ -320,7 +315,7 @@ def test_shared_texts_index_and_species_about():
 
 def test_species_fingerprint_ignores_about():
     """Spec › Modèle d'espèce : `about` est exclu de l'empreinte, relire une fiche ne renomme rien."""
-    raw = (ROOT / "species" / "boletus_edulis.json").read_bytes()
+    raw = (REFERENTIAL / "species" / "boletus_edulis.json").read_bytes()
     data = json.loads(raw)
     about = data.pop("about")
     bare = (json.dumps(data, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
@@ -330,6 +325,6 @@ def test_species_fingerprint_ignores_about():
     assert fingerprint_bytes(reread) == bare
     # l'empreinte publiée (vecteurs, tuiles) est bien celle du modèle seul
     vectors = json.loads(
-        (ROOT / "shared" / "vectors" / "trapezoid.json").read_text(encoding="utf-8")
+        (REFERENTIAL / "shared" / "vectors" / "trapezoid.json").read_text(encoding="utf-8")
     )
     assert all_species_hash() == vectors["generated_by"]["species_hash"]

@@ -652,13 +652,54 @@ def test_error_messages_hide_the_api_key():
 
 
 @pytest.mark.asyncio
-async def test_static_web_is_served(api):
+async def test_root_sends_to_the_site(api):
+    """Le site est un service à part sur champis.app (découpage des dépôts, 6 nov. 2026)."""
     r = await api.get("/", follow_redirects=False)
-    assert r.status_code == 307 and r.headers["location"] == "/web/"
-    r = await api.get("/web/")
-    assert r.status_code == 200 and "<title>Champis" in r.text
-    assert (await api.get("/shared/palette.json")).json()["version"] == 1
-    assert (await api.get("/species/boletus_edulis.json")).json()["id"] == "boletus_edulis"
+    assert r.status_code == 307 and r.headers["location"] == "https://champis.app"
+    assert (await api.get("/web/carte.html")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_dev_mode_serves_the_referential_and_a_web_copy(grid, client, tmp_path):
+    """En développement, l'API sert /shared et /species du sous-module, et /web d'une copie de
+    champis-web (CHAMPIS_WEB_DIR), aux mêmes chemins que le service statique de production."""
+    import dataclasses
+
+    import httpx
+    from champis_api.app import State, create_app
+    from champis_api.settings import Settings
+
+    (tmp_path / "web").mkdir()
+    (tmp_path / "web" / "index.html").write_text("<title>Champis</title>", encoding="utf-8")
+    settings = dataclasses.replace(Settings(), serve_web=True, web_dir=tmp_path)
+    app = create_app(settings, state=State(grid=grid, client=client, cache=client.cache))
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        r = await c.get("/", follow_redirects=False)
+        assert r.headers["location"] == "/web/"
+        assert "<title>Champis" in (await c.get("/web/")).text
+        assert (await c.get("/shared/palette.json")).json()["version"] == 1
+        assert (await c.get("/species/boletus_edulis.json")).json()["id"] == "boletus_edulis"
+
+
+@pytest.mark.asyncio
+async def test_tiles_relay_is_readable_from_the_site(api):
+    """CORS : le lecteur PMTiles du navigateur envoie Range et lit Content-Range et ETag."""
+    r = await api.options(
+        "/tiles/T-x.pmtiles",
+        headers={
+            "Origin": "https://champis.app",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "range",
+        },
+    )
+    assert r.status_code == 200
+    assert "range" in r.headers["access-control-allow-headers"].lower()
+    r = await api.get("/tiles", headers={"Origin": "https://champis.app"})
+    exposed = r.headers.get("access-control-expose-headers", "").lower()
+    assert "content-range" in exposed and "etag" in exposed
 
 
 def test_next_warm_picks_next_local_hour():

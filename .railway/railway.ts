@@ -13,10 +13,13 @@
 // été ; on garde l'UTC fixe. Chaque exécution doit se terminer (≈ 40 min pour la France) ; si la
 // précédente tourne encore, Railway saute l'exécution. Un volume ne se monte que sur un seul service
 // (doc Railway) : les crons n'en ont pas et relaient le cache météo par le bucket (--pull/--publish).
-import { bucket, defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
+import { bucket, defineRailway, postgres, preserve, project, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
-  const source = github("adhumi/champis", { branch: "main" }); // Dockerfile à la racine, détecté par Railway
+  // Découpage des dépôts (6 nov. 2026) : l'API et les crons viennent de champis-api, avec le
+  // référentiel en sous-module champis/ ; le site est le service statique de adhumi/champis-web.
+  // Railway ne récupère pas les sous-modules : les services n'ont plus de source GitHub, la CI de
+  // champis-api les déploie avec `railway up` (.github/workflows/ci.yml, job deploy).
 
   const db = postgres("Postgres");
   const storage = bucket("storage", { region: "ams" }); // PMTiles, amorçage météo, instantané du cache
@@ -25,7 +28,6 @@ export default defineRailway(() => {
   // Identifiants du bucket et clés : posés une fois sur l'API (« Connect Service to Bucket »),
   // référencés par les crons ; `preserve()` garde les valeurs déjà dans Railway, jamais dans le dépôt.
   const api = service("champis", {
-    source,
     healthcheck: "/health",
     healthcheckTimeout: 120,
     deploy: { restartPolicyType: "on_failure", restartPolicyMaxRetries: 5 },
@@ -56,7 +58,6 @@ export default defineRailway(() => {
 
   // Pré-chauffe : repart de l'instantané publié, calcule la France, redépose l'instantané.
   const warm = service("champis-warm", {
-    source,
     start: "uv run champis-api -q warm --pull --publish",
     deploy: { cronSchedule: "0 2,14 * * *", restartPolicyType: "never" },
     replicas: { "europe-west4-drams3a": 1 },
@@ -65,7 +66,6 @@ export default defineRailway(() => {
 
   // Notification « mes coins », après la pré-chauffe du matin.
   const notify = service("champis-notify", {
-    source,
     start: "uv run champis-api -q notify --pull",
     deploy: { cronSchedule: "0 6 * * *", restartPolicyType: "never" },
     replicas: { "europe-west4-drams3a": 1 },

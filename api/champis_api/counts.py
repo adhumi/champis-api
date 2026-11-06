@@ -6,7 +6,9 @@ cookie, pas d'identifiant nouveau, pas d'outil tiers, aucune adresse IP conserv�
 `daily_counts` (jour, nom, valeur) de la même base que les observations, gardée 13 mois, lue par
 Adrien seul (`champis-api stats`, une ligne dans `doctor`).
 
-- `web_map_opens` : ouvertures de `/web/carte.html` (réponses 200 ou 304), par l'API qui sert le site ;
+- `web_map_opens` : ouvertures de la carte du site, comptées par l'API sur le `GET /tiles` que la
+  page fait une fois à l'ouverture, reconnu à son en-tête Origin (le site est sur champis.app, l'API
+  sur api.champis.app depuis le découpage des dépôts ; l'app iOS n'envoie pas d'Origin) ;
 - `observations_found`, `observations_not_found` : observations reçues ce jour-là (nouvelles seulement) ;
 - `devices_with_coins`, `coins` : relevés à chaque notification du matin ;
 - `notify_sent`, `notify_failed` : notifications de ce jour-là ;

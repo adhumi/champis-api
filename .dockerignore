@@ -9,3 +9,6 @@ reports
 **/.ruff_cache
 .claude
 .env
+champis/.git
+champis/.github
+champis/docs

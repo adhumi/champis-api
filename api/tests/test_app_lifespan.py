@@ -82,7 +82,9 @@ async def test_lifespan_without_database_turns_field_endpoints_off(tmp_path: Pat
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://t"
         ) as c:
-            assert (await c.get("/", follow_redirects=False)).status_code == 404
+            # le site est un service à part : la racine de l'API y renvoie (découpage du 6 nov. 2026)
+            r = await c.get("/", follow_redirects=False)
+            assert r.status_code == 307 and r.headers["location"] == "https://champis.app"
             r = await c.get(
                 "/observations", headers={"X-Champis-User": "11111111-1111-1111-1111-111111111111"}
             )

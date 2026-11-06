@@ -16,7 +16,7 @@ from typing import Any
 from champis_pipeline import SCORING_VERSION, console
 from champis_pipeline.scoring import trapezoid
 from champis_pipeline.species import (
-    ROOT,
+    REFERENTIAL,
     all_species_hash,
     list_species,
     load_palette,
@@ -32,7 +32,9 @@ from .scoring import (
     weather_index,
 )
 
-OUT_DIR = ROOT / "shared" / "vectors"
+OUT_DIR = (
+    REFERENTIAL / "shared" / "vectors"
+)  # dans le sous-module : à committer dans adhumi/champis
 EPS = 1e-9
 
 

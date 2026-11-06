@@ -6,6 +6,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -15,7 +16,24 @@ jobs:
   python:
     runs-on: ubuntu-latest
     steps:
+      # Le référentiel adhumi/champis est le sous-module champis/ ; tant qu'il est privé, le jeton
+      # par défaut ne le lit pas : CHAMPIS_REFERENTIEL_TOKEN (jeton à granularité fine, lecture du
+      # contenu de adhumi/champis seulement). Une fois le dépôt public, le secret devient inutile.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Le jeton du référentiel ne voit que adhumi/champis : il ne sert qu'au sous-module, par une
+      # réécriture d'URL limitée à ce dépôt (le dépôt courant est cloné avec le jeton par défaut).
+      - name: Référentiel (sous-module champis/)
+        run: |
+          if [ -n "$REFERENTIEL_TOKEN" ]; then
+            git config --global url."https://x-access-token:${REFERENTIEL_TOKEN}@github.com/adhumi/champis.git".insteadOf "https://github.com/adhumi/champis.git"
+          fi
+          git submodule update --init --depth 1 champis
+          git -C champis log --oneline -1
+        env:
+          REFERENTIEL_TOKEN: ${{ secrets.CHAMPIS_REFERENTIEL_TOKEN }}
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -36,4 +54,58 @@ jobs:
         run: uv run champis-vectors --check
 
       - name: Fichiers espèces
-        run: uv run python species/validate.py
+        run: uv run python champis/species/validate.py
+
+  # Railway ne récupère pas les sous-modules (build depuis un instantané sans .git) : la CI, qui a le
+  # référentiel, déploie l'API et les deux crons avec `railway up` après des tests verts sur main, ou
+  # à la main (workflow_dispatch). RAILWAY_TOKEN : jeton de projet Railway (environnement production).
+  deploy:
+    needs: python
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy-${{ matrix.service }}
+      cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        # l'API : on suit le build et le déploiement (--ci) ; les crons ne tournent qu'à leur heure,
+        # on dépose l'image sans attendre (--detach)
+        include:
+          - service: champis
+            mode: --ci
+          - service: champis-warm
+            mode: --detach
+          - service: champis-notify
+            mode: --detach
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Le jeton du référentiel ne voit que adhumi/champis : il ne sert qu'au sous-module, par une
+      # réécriture d'URL limitée à ce dépôt (le dépôt courant est cloné avec le jeton par défaut).
+      - name: Référentiel (sous-module champis/)
+        run: |
+          if [ -n "$REFERENTIEL_TOKEN" ]; then
+            git config --global url."https://x-access-token:${REFERENTIEL_TOKEN}@github.com/adhumi/champis.git".insteadOf "https://github.com/adhumi/champis.git"
+          fi
+          git submodule update --init --depth 1 champis
+          git -C champis log --oneline -1
+        env:
+          REFERENTIEL_TOKEN: ${{ secrets.CHAMPIS_REFERENTIEL_TOKEN }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Railway CLI
+        run: npm install -g @railway/cli
+
+      # sans remote GitHub, la CLI envoie l'arbre de travail, sous-module compris
+      - name: Déploiement (${{ matrix.service }})
+        run: |
+          git remote remove origin
+          railway up ${{ matrix.mode }} --service ${{ matrix.service }}
+        env:
+          RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
