@@ -1,4 +1,5 @@
-# champis-api sur Railway : FastAPI + cache SQLite sur volume (/data) + carte web statique.
+# champis-api sur Railway : FastAPI + cache SQLite sur volume (/data). Le site est un service à part
+# (adhumi/champis-web) depuis le découpage des dépôts (6 nov. 2026).
 # La même image sert aux services cron (railway.warm.toml, railway.notify.toml) : seul le
 # `startCommand` change ; la pré-chauffe n'est plus dans l'API (décision du 4 nov. 2026).
 FROM python:3.12-slim-bookworm
@@ -16,10 +17,10 @@ RUN uv sync --no-install-workspace
 
 COPY pipeline pipeline
 COPY api api
-COPY species species
-COPY mapping mapping
-COPY shared shared
-COPY web web
+# Référentiel (sous-module champis/ : espèces, table BD Forêt, palette, textes, vecteurs)
+COPY champis/species champis/species
+COPY champis/mapping champis/mapping
+COPY champis/shared champis/shared
 COPY data/weather_grid.json data/weather_grid.json
 # Repli local (Doubs) tant qu'aucun amorçage n'est publié dans le bucket (weather/weather_seed.db) ;
 # le motif [n] rend le COPY tolérant si le fichier n'est pas versionné.

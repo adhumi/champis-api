@@ -49,7 +49,7 @@ setup: ## Installe l'environnement (uv sync --group dev) et crée .env depuis .e
 	if [ ! -f .env ]; then cp .env.example .env && echo "  .env créé : complète le bucket et les clés"; fi
 
 .PHONY: test
-test: ## Tests Python (pipeline, api, web) : `make test ARGS="-k batch"` pour filtrer
+test: ## Tests Python (pipeline, api) : `make test ARGS="-k batch"` pour filtrer
 	$(UV) pytest $(ARGS)
 
 .PHONY: coverage
@@ -67,7 +67,7 @@ fmt: ## Ruff : corrige ce qui peut l'être et formate
 	$(UV) ruff format .
 
 .PHONY: vectors
-vectors: ## Régénère shared/vectors/ (contrat de parité Python/Swift) ; à relancer si le scoring change
+vectors: ## Régénère champis/shared/vectors/ (contrat de parité, dans le sous-module : PR sur adhumi/champis) ; si le scoring change
 	$(UV) champis-vectors
 
 .PHONY: check
@@ -75,11 +75,16 @@ check: ## Exactement la CI : lint, format, tests avec couverture ≥ 90 %, vecte
 	$(MAKE) --no-print-directory lint
 	$(UV) pytest --cov=champis_pipeline --cov=champis_api --cov-report=term --cov-fail-under=90
 	$(UV) champis-vectors --check
-	$(UV) python species/validate.py
+	$(UV) python champis/species/validate.py
 
 .PHONY: serve
-serve: ## API locale avec rechargement : http://localhost:8000 (/species, /weather, /tiles, /web/)
+serve: ## API locale avec rechargement : http://localhost:8000 (/species, /weather, /tiles) ; le site : make serve dans champis-web
 	$(UV) uvicorn champis_api.app:app --reload
+
+.PHONY: referential
+referential: ## Met le sous-module champis/ (référentiel) à la dernière version de main, à committer ici
+	git submodule update --init --remote champis
+	git -C champis log --oneline -1
 
 .PHONY: log
 log: ## Affiche le dernier journal de data/logs/

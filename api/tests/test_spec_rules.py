@@ -19,7 +19,7 @@ from champis_api.scoring import (
     weather_index_raw,
 )
 from champis_pipeline.species import (
-    ROOT,
+    REFERENTIAL,
     all_species_hash,
     list_species,
     load_palette,
@@ -135,7 +135,7 @@ async def test_health_and_species_contract(api):
     assert body["palette"] == load_palette()
     assert sorted(body["species"]) == list_species()
     for sid in list_species():
-        on_disk = json.loads((ROOT / "species" / f"{sid}.json").read_text(encoding="utf-8"))
+        on_disk = json.loads((REFERENTIAL / "species" / f"{sid}.json").read_text(encoding="utf-8"))
         assert body["species"][sid] == on_disk, sid
 
 

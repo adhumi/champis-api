@@ -7,14 +7,19 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from functools import cache, lru_cache
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[2]
-SPECIES_DIR = ROOT / "species"
-MAPPING_FILE = ROOT / "mapping" / "bdforet_to_hosts.json"
-PALETTE_FILE = ROOT / "shared" / "palette.json"
+ROOT = Path(__file__).resolve().parents[2]  # racine de champis-api : data/, .env, reports/
+# Référentiel adhumi/champis (species/, mapping/, shared/) : sous-module `champis/` depuis le
+# découpage des dépôts (spec › Produit › Étape C, lot C7, 6 nov. 2026) ; CHAMPIS_REFERENTIAL pour
+# pointer ailleurs (une copie de travail du référentiel, par exemple).
+REFERENTIAL = Path(os.environ.get("CHAMPIS_REFERENTIAL") or ROOT / "champis")
+SPECIES_DIR = REFERENTIAL / "species"
+MAPPING_FILE = REFERENTIAL / "mapping" / "bdforet_to_hosts.json"
+PALETTE_FILE = REFERENTIAL / "shared" / "palette.json"
 
 ASPECT_CLASSES = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "flat"]
 COVER_CLASSES = ["fermee", "ouverte", "sans_couvert", "plantation", "non_foret"]

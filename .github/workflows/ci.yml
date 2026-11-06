@@ -15,7 +15,13 @@ jobs:
   python:
     runs-on: ubuntu-latest
     steps:
+      # Le référentiel adhumi/champis est le sous-module champis/ ; tant qu'il est privé, le jeton
+      # par défaut ne le lit pas : CHAMPIS_REFERENTIEL_TOKEN (jeton à granularité fine, lecture du
+      # contenu de adhumi/champis). Une fois le dépôt public, le secret devient inutile.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CHAMPIS_REFERENTIEL_TOKEN || github.token }}
 
       - uses: astral-sh/setup-uv@v5
         with:
@@ -36,4 +42,4 @@ jobs:
         run: uv run champis-vectors --check
 
       - name: Fichiers espèces
-        run: uv run python species/validate.py
+        run: uv run python champis/species/validate.py

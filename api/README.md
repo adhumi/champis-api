@@ -35,7 +35,7 @@ La première application crée les deux services cron, pose leurs variables par 
 2. Railway → New Project → Deploy from GitHub repo `adhumi/champis`, branche `main`. Le build utilise le `Dockerfile`.
 3. Ajouter un **volume** monté sur `/data` (le cache SQLite `weather_cache.db` y vit ; sans volume, chaque déploiement repart à froid). Ajouter un service **Postgres** et le connecter au service API : Railway injecte `DATABASE_URL`, les tables se créent au démarrage.
 4. Variables déjà fixées dans l'image : `CHAMPIS_WEATHER_GRID`, `CHAMPIS_CACHE_DB=/data/weather_cache.db`, `CHAMPIS_WARM_HOURS=` et `CHAMPIS_NOTIFY_HOURS=` vides (aucune tâche de fond : le cron s'en charge). **À ajouter : `CHAMPIS_OPEN_METEO_API_KEY`** (plan payant Open-Meteo, en variable secrète Railway : l'IP de sortie Railway est partagée et bridée sur l'API gratuite ; en **variable partagée du projet**, les crons en ont besoin aussi). Optionnel : `CHAMPIS_WORKERS` (2), `CHAMPIS_CACHE_POLL_MINUTES` (10), `CHAMPIS_CORS_ORIGINS`.
-5. Health check : `/health` (`cache_published` = date du dernier instantané du cron importé). La carte est servie par le même service sur `/web/` (l'URL de l'API y est pré-remplie avec l'origine de la page).
+5. Health check : `/health` (`cache_published` = date du dernier instantané du cron importé). Le site n'est plus servi ici : c'est le service statique de `adhumi/champis-web` sur `champis.app`, qui appelle l'API sur `api.champis.app` (CORS ouvert, `Range` autorisé, `Content-Range` et `ETag` exposés pour le lecteur PMTiles du navigateur).
 
 **Les deux services cron** (même dépôt, même image) :
 
@@ -74,7 +74,10 @@ Migration d'une API qui pré-chauffait elle-même : avant la première exécutio
 | `CHAMPIS_CACHE_POLL_MINUTES` | `10` | Minutes entre deux lectures de la fiche du cache publié par le cron ; `0` = import au démarrage seulement |
 | `CHAMPIS_WORKERS` | `2` | Workers uvicorn (Dockerfile seulement) |
 | `CHAMPIS_LEADER_RETRY_S` | `60` | Secondes entre deux tentatives d'un worker pour devenir meneur |
-| `CHAMPIS_SERVE_WEB` | `1` | Servir `web/`, `shared/`, `species/` en statique |
+| `CHAMPIS_SERVE_WEB` | vide | Développement : servir `/shared` et `/species` du référentiel (`champis/`), et `/web` d'une copie de champis-web (`CHAMPIS_WEB_DIR`) |
+| `CHAMPIS_WEB_DIR` | vide | Chemin d'une copie de `adhumi/champis-web` (développement, avec `CHAMPIS_SERVE_WEB=1`) |
+| `CHAMPIS_SITE_URL` | `https://champis.app` | Le site : `GET /` y renvoie, et ses `GET /tiles` comptent les ouvertures de la carte |
+| `CHAMPIS_REFERENTIAL` | `champis/` | Chemin du référentiel (sous-module par défaut) |
 | `DATABASE_URL` (ou `CHAMPIS_DATABASE_URL`) | `sqlite:///data/champis.db` | Observations et coins : Postgres Railway (variable injectée par le service Postgres, « Connect ») ; en local sans Postgres, SQLite. Vide = `/observations` et `/coins` en 503 |
 | `CHAMPIS_APNS_KEY`, `CHAMPIS_APNS_KEY_ID`, `CHAMPIS_APNS_TEAM_ID` | *(vides)* | Clé APNs `.p8` (contenu PEM en variable secrète, ou chemin), son identifiant, l'identifiant d'équipe Apple. Sans eux, aucune notification n'est envoyée |
 | `CHAMPIS_APNS_TOPIC` | `fr.adhumi.champis` | Sujet APNs = identifiant de bundle de l'app |
@@ -97,7 +100,7 @@ Les tuiles ne tiennent ni dans l'image ni dans le dépôt (France ≈ 2–4 Go p
 - `GET /departements[?species=<id>…][&day=<date>]` — indice par département pour la vue France (spec › Scoring) : `I = Σ T × M_eff × Φ / Σ T` sur les pixels forestiers du département, par cellule météo et classe d'altitude, pour chaque espèce et chaque jour J−3 → J+7 (`day` pour un seul jour) ; `coverage` = part de Σ T dont la météo était disponible ; par groupe, le maximum des espèces et l'espèce `leading` (règle 9). Calculé à la fin de chaque pré-chauffe sur le cache (aucun appel Open-Meteo), 503 tant qu'il ne l'a jamais été. Les poids Σ T viennent de `weather_grid.json` version 2 (`champis-pipeline weather-grid`) ; avec une grille version 1 l'indice n'est pas calculé.
 - `GET /tiles` — `{configured, mode, generated, depts_by_hash, tiles:[{…, url}]}` ; `GET /tiles/{name}` — relais Range (mode `proxy` seulement).
 - `GET /species` — `scoring_version`, `species_hash`, `palette` (`shared/palette.json`) et chaque `species/<id>.json` tel quel : les clients n'embarquent aucune valeur.
-- `/web/` (statique, avec `SERVE_WEB`) — le site : `index.html` (redirige vers la carte), `carte.html`, `comprendre.html`, `soutenir.html` ; `/` redirige vers `/web/`.
+- `/` renvoie vers le site (`CHAMPIS_SITE_URL`) ; en développement avec `CHAMPIS_SERVE_WEB=1`, `/shared`, `/species` et `/web` sont servis aux mêmes chemins que le service statique.
 - `/shared/texts/` (statique, avec `SERVE_WEB`) — les articles du Guide (`index.json` + Markdown), les mêmes mots pour l'app (copiés à la compilation) et le site ; les fiches d'espèces sont le bloc `about` de `GET /species`.
 - `GET /weather?cell=<id>` ou `?lat=&lon=` (cellule la plus proche), `&species=<id>` répétable (défaut : toutes). Pour chaque jour de **J−3 à J+7** et chaque **classe d'altitude** de la cellule (centres 150, 450, 750… m) : `M`, `M_eff`, `phi` et `factors` (`temp`, `rain`, `trigger`, `soil_moisture`, `frost`, `water_balance`, `heat`, `memory`). Lot 2 de la refonte UX (1er nov. 2026) : chaque ligne porte aussi `trigger_days` (âge en jours de la pluie déclenchante retenue, `null` sans événement) et `summary`, deux à huit phrases courtes en français déduites des facteurs avec des seuils génériques (`champis_api/explain.py`) ; les clients les affichent telles quelles et ajoutent seuls la phrase de terrain depuis le libellé de palette de T. Plus `stale` (cache périmé servi faute d'Open-Meteo), `cell_elevation_m`, `scoring_version`, `species_hash`.
 - `GET /weather/bbox?min_lon&min_lat&max_lon&max_lat[&species][&day]` — même chose pour toutes les cellules de l'emprise (chaque `cell` avec `id`, `lat`, `lon`, `alt_classes`, `elevation_m`), sans `factors`, pour peindre la carte d'un coup. Servi depuis la **météo précalculée** à la dernière pré-chauffe (table `cell_weather`, remplie par la même passe que l'indice par département ; `computed_at` l'horodate) : aucun recalcul ni appel Open-Meteo, une emprise d'écran entière tient dans une réponse, jusqu'à 5 000 cellules (au-delà, 422 « zoomez » : ce n'est plus un écran). Une cellule que la pré-chauffe n'a pas est calculée à la demande, 40 par requête au plus, et rangée pour la suivante ; les autres sont listées dans `unavailable`, comme les cellules sans météo (Open-Meteo injoignable, rien en cache), avec `retry_after` quand Open-Meteo l'a indiqué, au lieu de faire échouer la réponse. Entre minuit et la pré-chauffe de 3 h, les lignes de la veille couvrent J−4 → J+6 : J+7 manque. Réponses JSON compressées (gzip) au-delà de 1 Kio.
@@ -125,7 +128,7 @@ Spec › Produit › Mesure minimale (6 nov. 2026) : des totaux par jour civil (
 
 | Compteur | Écrit par |
 | --- | --- |
-| `web_map_opens` | l'API, à chaque `GET /web/carte.html` servi (200 ou 304) ; rien d'autre de la requête n'est lu |
+| `web_map_opens` | l'API, à chaque `GET /tiles` venu du site (en-tête `Origin: https://champis.app`, `CHAMPIS_SITE_URL`) : la page de carte le fait une fois à l'ouverture ; rien d'autre de la requête n'est lu |
 | `observations_found`, `observations_not_found` | `Store.add_observations`, observations nouvelles seulement (un renvoi ne compte pas) ; l'effacement d'un appareil ne les retire pas : ce sont des totaux |
 | `devices_with_coins`, `coins` | la notification du matin (`notify_all`), relevé du jour |
 | `notify_sent`, `notify_failed` | la notification du matin, cumulés sur la journée |

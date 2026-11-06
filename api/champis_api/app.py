@@ -54,7 +54,9 @@ PARIS = ZoneInfo("Europe/Paris")
 # Chemins hors limitation de débit : relais des PMTiles (`/tiles/<nom>`, pas le manifeste `/tiles`)
 # et fichiers statiques du site. Lectures nombreuses, sans calcul ni appel externe.
 RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
-MAP_PAGE = "/web/carte.html"  # ses ouvertures sont comptées (mesure minimale, étape C2)
+# La page de carte du site appelle `GET /tiles` une fois à l'ouverture : c'est elle que la mesure
+# minimale compte (étape C2), reconnue à l'en-tête Origin du site ; l'app iOS n'en envoie pas.
+MAP_OPEN_PATH = "/tiles"
 SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
 LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
 
@@ -187,11 +189,14 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     # `/weather/bbox` sur une emprise large pèse plusieurs Mo en JSON très répétitif, dix fois
     # moins une fois compressé (décision du 2 nov. 2026).
     app.add_middleware(GZipMiddleware, minimum_size=1024)
+    # Le site vit sur champis.app, l'API sur api.champis.app (découpage du 6 nov. 2026) : les
+    # requêtes Range du lecteur PMTiles du navigateur doivent passer et lire leurs en-têtes.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origins),
         allow_methods=["GET", "POST", "PUT", "DELETE"],
-        allow_headers=["X-Champis-User", "Content-Type"],
+        allow_headers=["X-Champis-User", "Content-Type", "Range", "If-None-Match"],
+        expose_headers=["Content-Range", "Content-Length", "Accept-Ranges", "ETag"],
     )
     # Service public : seau à jetons par IP, écritures bien plus rares que lectures. Le relais de
     # tuiles et les fichiers du site en sont exemptés (étude du 4 nov. 2026) : un écran de carte
@@ -205,15 +210,19 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         exempt_prefixes=RATE_LIMIT_EXEMPT,
     )
 
+    site_origin = settings.site_url.rstrip("/")
+
     @app.middleware("http")
     async def count_map_opens(request, call_next):
         """Mesure minimale (étape C, lot C2) : une ouverture de la carte du site de plus, rien
-        d'autre ; ni adresse IP, ni en-tête, ni identifiant ne sont lus ou gardés."""
+        d'autre ; seul l'en-tête Origin est regardé (est-ce le site ?), ni adresse IP ni
+        identifiant ne sont lus ou gardés."""
         response = await call_next(request)
         if (
             request.method == "GET"
-            and request.url.path == MAP_PAGE
-            and response.status_code in (200, 304)
+            and request.url.path == MAP_OPEN_PATH
+            and request.headers.get("origin") == site_origin
+            and response.status_code == 200
         ):
             store = getattr(getattr(request.app.state, "champis", None), "store", None)
             if store is not None:
@@ -240,15 +249,20 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             "cache_published": st.cache.meta_get(META_CACHE_PUBLISHED),
         }
 
+    @app.get("/", include_in_schema=False)
+    async def root() -> RedirectResponse:
+        # en production, le site est ailleurs (champis-web) ; en développement, servi ici
+        return RedirectResponse(
+            "/web/" if settings.serve_web and settings.web_dir else settings.site_url
+        )
+
     if settings.serve_web:
-
-        @app.get("/", include_in_schema=False)
-        async def root() -> RedirectResponse:
-            return RedirectResponse("/web/")
-
-        # La page lit ../shared/palette.json et ../species/<id>.json : mêmes chemins qu'en local.
-        for name in ("web", "shared", "species"):
-            app.mount(f"/{name}", StaticFiles(directory=settings.repo_root / name, html=True))
+        # Développement : la page lit ../shared/palette.json et ../species/<id>.json, mêmes chemins
+        # que le service statique de production.
+        for name in ("shared", "species"):
+            app.mount(f"/{name}", StaticFiles(directory=settings.referential / name, html=True))
+        if settings.web_dir:
+            app.mount("/web", StaticFiles(directory=settings.web_dir / "web", html=True))
 
     return app
 

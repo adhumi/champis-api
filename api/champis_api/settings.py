@@ -6,7 +6,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from champis_pipeline.config import DATA_DIR, ROOT, load_env
+from champis_pipeline.config import DATA_DIR, load_env
+from champis_pipeline.species import REFERENTIAL
 from champis_pipeline.storage import S3Config
 
 load_env()  # .env à la racine du dépôt (poste de travail) ; Railway fournit les variables
@@ -45,9 +46,17 @@ class Settings:
     leader_retry_s: float = float(os.environ.get("CHAMPIS_LEADER_RETRY_S", "60"))
     # Pré-chauffer au démarrage (déploiement avec cache vide) ; attention au quota
     warm_on_start: bool = os.environ.get("CHAMPIS_WARM_ON_START", "") == "1"
-    # Servir la carte web statique (web/, shared/, species/) sous /web, /shared, /species
-    serve_web: bool = os.environ.get("CHAMPIS_SERVE_WEB", "1") == "1"
-    repo_root: Path = ROOT
+    # Le site est un service à part (adhumi/champis-web sur champis.app, découpage du 6 nov. 2026) ;
+    # en développement seulement, l'API peut servir /shared et /species du référentiel, et /web
+    # depuis une copie de champis-web (CHAMPIS_WEB_DIR).
+    serve_web: bool = os.environ.get("CHAMPIS_SERVE_WEB", "") == "1"
+    referential: Path = REFERENTIAL
+    web_dir: Path | None = (
+        Path(os.environ["CHAMPIS_WEB_DIR"]) if os.environ.get("CHAMPIS_WEB_DIR") else None
+    )
+    # Adresse du site : `GET /` y renvoie, et ses requêtes `GET /tiles` comptent les ouvertures de
+    # la carte (mesure minimale) par leur en-tête Origin.
+    site_url: str = os.environ.get("CHAMPIS_SITE_URL", "https://champis.app")
     # Clé API Open-Meteo (plan payant) : hôtes customer-*, quota dédié. Vide = gratuit.
     open_meteo_api_key: str = os.environ.get("CHAMPIS_OPEN_METEO_API_KEY", "")
     # Bucket des PMTiles (CHAMPIS_S3_ENDPOINT, CHAMPIS_S3_BUCKET, AWS_*) ; None = pas de /tiles

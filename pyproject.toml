@@ -1,7 +1,7 @@
 [project]
 name = "champis"
 version = "0.1.0"
-description = "Champis — cartes de cueillette de champignons (monorepo : pipeline terrain, API météo, site)"
+description = "Champis — pipeline terrain et API météo (le référentiel adhumi/champis est le sous-module champis/)"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
@@ -30,13 +30,14 @@ champis-api = { workspace = true }
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = ["champis"]  # le référentiel (sous-module) a son propre dépôt
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "W", "SIM", "RUF"]
 ignore = ["RUF001", "RUF002", "RUF003", "E501"]
 
 [tool.pytest.ini_options]
-testpaths = ["pipeline/tests", "api/tests", "web/tests"]
+testpaths = ["pipeline/tests", "api/tests"]
 addopts = "-q"
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"

@@ -126,26 +126,24 @@ def test_a_failing_store_never_breaks_what_it_counts():
 
 @pytest.mark.asyncio
 async def test_the_api_counts_map_opens_and_nothing_else(grid, client):
-    """Une ouverture de `/web/carte.html` (200 ou 304) de plus ; ni l'accueil, ni l'API, ni une
-    page absente. Aucune autre donnée de la requête n'est gardée."""
+    """Le site vit sur champis.app (découpage des dépôts, 6 nov. 2026) : une ouverture de la carte
+    est un `GET /tiles` venu du site, reconnu à son en-tête Origin. Ni l'app (pas d'Origin), ni un
+    autre site, ni une autre route ne comptent."""
     store = Store("sqlite://")
     app = create_app(state=State(grid=grid, client=client, cache=client.cache, store=store))
+    site = {"Origin": "https://champis.app"}
     async with (
         app.router.lifespan_context(app),
         httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
     ):
-        r = await c.get("/web/carte.html")
-        assert r.status_code == 200
-        etag = r.headers.get("etag")
-        if etag:
-            again = await c.get("/web/carte.html", headers={"If-None-Match": etag})
-            assert again.status_code in (200, 304)
-        await c.get("/web/index.html")
-        await c.get("/web/absente.html")
-        await c.get("/health")
-    expected = 2 if etag else 1
+        assert (await c.get("/tiles", headers=site)).status_code == 200
+        assert (await c.get("/tiles", headers=site)).headers["access-control-allow-origin"]
+        await c.get("/tiles")  # l'app iOS
+        await c.get("/tiles", headers={"Origin": "https://ailleurs.example"})
+        await c.get("/species", headers=site)
+        await c.get("/health", headers=site)
     day = counts.today()
-    assert store.counts_since(day)[day] == {"web_map_opens": expected}
+    assert store.counts_since(day)[day] == {"web_map_opens": 2}
     assert set(store.counts_since(date(2000, 1, 1))) == {day}
 
 

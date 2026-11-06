@@ -16,7 +16,9 @@
 import { bucket, defineRailway, github, postgres, preserve, project, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
-  const source = github("adhumi/champis", { branch: "main" }); // Dockerfile à la racine, détecté par Railway
+  // Découpage des dépôts (6 nov. 2026) : l'API et les crons viennent de champis-api, avec le
+  // référentiel en sous-module champis/ ; le site est le service statique de adhumi/champis-web.
+  const source = github("adhumi/champis-api", { branch: "main" }); // Dockerfile à la racine, détecté par Railway
 
   const db = postgres("Postgres");
   const storage = bucket("storage", { region: "ams" }); // PMTiles, amorçage météo, instantané du cache

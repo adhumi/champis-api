@@ -1,8 +1,19 @@
-# Champis
+# Champis — pipeline terrain et API météo
+
+Ce dépôt est `adhumi/champis-api` depuis le découpage des dépôts (spec › Produit › Étape C, lot C7, 6 nov. 2026) :
+
+| Dépôt | Contenu |
+| --- | --- |
+| `adhumi/champis` | le référentiel : fichiers d'espèces et `SCHEMA.md`, table BD Forêt → hôtes, palette, vecteurs de parité, textes du Guide ; ici en sous-module `champis/` |
+| `adhumi/champis-api` (ce dépôt) | le pipeline terrain (`pipeline/`) et l'API (`api/`), déployés sur Railway (API sur `api.champis.app`, crons de pré-chauffe et de notification) |
+| `adhumi/champis-web` | le site `champis.app`, service statique |
+| `adhumi/champis-ios` | l'app iOS, iPadOS et macOS |
+
+Premier clone : `git clone --recurse-submodules` (ou `git submodule update --init` après coup). `make referential` amène le sous-module à la dernière version du référentiel ; le commit qui le déplace se fait ici.
 
 Où et quand cueillir des champignons en France, à l'échelle de la parcelle forestière. Outil personnel, gratuit, construit sur de l'open data (IGN BD Forêt V2, Copernicus DEM, SoilGrids, Open-Meteo) et sur la littérature mycologique.
 
-Score d'un pixel de 25 m pour une espèce et un jour : `S = T × M × Φ` — potentiel terrain (statique, ce dépôt le calcule), indice météo (dynamique, API), fenêtre phénologique. Le modèle complet est dans `species/SCHEMA.md`.
+Score d'un pixel de 25 m pour une espèce et un jour : `S = T × M × Φ` — potentiel terrain (statique, ce dépôt le calcule), indice météo (dynamique, API), fenêtre phénologique. Le modèle complet est dans `champis/species/SCHEMA.md` (référentiel).
 
 ## Phase 1 — faire tourner le pipeline sur le Doubs
 
@@ -21,7 +32,7 @@ make dept DEPT=25                  # = uv run champis-pipeline all --dept 25
 1. **download** — BD Forêt V2 du Doubs (31 Mo, flux Géoplateforme IGN), pH SoilGrids (WCS ISRIC, découpe sur l'emprise), dalles Copernicus DEM 30 m (bucket public AWS). Tout va dans `data/raw/`, rien n'est retéléchargé s'il est présent.
 2. **grid** — rasters alignés 25 m Lambert-93 dans `data/grid/25/` : `host.tif` (essence dominante), `cover.tif`, `ph.tif`, `alt.tif`, `slope.tif`, `aspect.tif`.
 3. **terrain** — `data/T/<espèce>/25-<hash>.tif`, un par espèce (7 au départ). Quelques secondes par espèce.
-4. **tiles** — `data/tiles/T-<espèce>-<hash>-p1.0.0-d<hash>.pmtiles`, niveaux 6–15 (`d<hash>` = empreinte des départements *et* de la version du rendu `tiles.RENDER_VERSION` : un correctif du rendu donne un nouveau jeu sous un nouveau nom, l'ancien part avec `publish --prune` et aucun cache, relais, navigateur ou app, ne peut servir d'anciens octets ; décision du 5 nov. 2026), plus la couche `A-300m-d<hash>.pmtiles` (classe d'altitude du pixel, commune à toutes les espèces, lue par la carte pour appliquer gel et phénologie par pixel). Quelques minutes par espèce pour un département (z15 ≈ 7 000 tuiles). Avec `--per-dept`, un jeu par département (hash du département seul) est extrait du MBTiles de travail du jeu complet sans rien re-rendre : c'est ce que l'app télécharge pour le hors ligne (décision du 31 oct. 2026) ; `publish --per-dept` les téléverse et le manifeste marque ces entrées d'un champ `dept`. Avec `--groups`, un PMTiles par groupe d'affichage `G-<groupe>-<hash>-p1.0.0-d<hash>.pmtiles` (`cepes`, `girolles`, `lactaires`, `pieds_de_mouton`, `trompettes` ; `<hash>` = empreinte des hashes d'espèces dans l'ordre des canaux) est empilé depuis les MBTiles de travail des T, sans rien re-rendre : PNG RGBA, canal i = T × 254 de la i-ème espèce du groupe par ordre alphabétique, 255 = sans donnée pour ce canal, l'alpha est une donnée (pas une transparence) ; au plus quatre espèces par fichier, le 4e canal tout à 255 pour les girolles (décision du 4 nov. 2026, spec › Points ouverts › PMTiles par groupe : deux requêtes par tuile côté clients au lieu de cinq ; `shared/palette.json` › `group_tile_encoding`). `publish --groups` les téléverse ; leurs entrées du manifeste portent `kind: "G"`, `group` et `species` (ordre des canaux). `--jobs` vaut pour le niveau 15 des T comme pour l'empilement des G.
+4. **tiles** — `data/tiles/T-<espèce>-<hash>-p1.0.0-d<hash>.pmtiles`, niveaux 6–15 (`d<hash>` = empreinte des départements *et* de la version du rendu `tiles.RENDER_VERSION` : un correctif du rendu donne un nouveau jeu sous un nouveau nom, l'ancien part avec `publish --prune` et aucun cache, relais, navigateur ou app, ne peut servir d'anciens octets ; décision du 5 nov. 2026), plus la couche `A-300m-d<hash>.pmtiles` (classe d'altitude du pixel, commune à toutes les espèces, lue par la carte pour appliquer gel et phénologie par pixel). Quelques minutes par espèce pour un département (z15 ≈ 7 000 tuiles). Avec `--per-dept`, un jeu par département (hash du département seul) est extrait du MBTiles de travail du jeu complet sans rien re-rendre : c'est ce que l'app télécharge pour le hors ligne (décision du 31 oct. 2026) ; `publish --per-dept` les téléverse et le manifeste marque ces entrées d'un champ `dept`. Avec `--groups`, un PMTiles par groupe d'affichage `G-<groupe>-<hash>-p1.0.0-d<hash>.pmtiles` (`cepes`, `girolles`, `lactaires`, `pieds_de_mouton`, `trompettes` ; `<hash>` = empreinte des hashes d'espèces dans l'ordre des canaux) est empilé depuis les MBTiles de travail des T, sans rien re-rendre : PNG RGBA, canal i = T × 254 de la i-ème espèce du groupe par ordre alphabétique, 255 = sans donnée pour ce canal, l'alpha est une donnée (pas une transparence) ; au plus quatre espèces par fichier, le 4e canal tout à 255 pour les girolles (décision du 4 nov. 2026, spec › Points ouverts › PMTiles par groupe : deux requêtes par tuile côté clients au lieu de cinq ; `champis/shared/palette.json` › `group_tile_encoding`). `publish --groups` les téléverse ; leurs entrées du manifeste portent `kind: "G"`, `group` et `species` (ordre des canaux). `--jobs` vaut pour le niveau 15 des T comme pour l'empilement des G.
 5. **weather-grid** — `data/weather_grid.json` (version 2) : les cellules météo 5 km où T > 0, avec leurs classes d'altitude et, par département touché, classe d'altitude et espèce, la somme des T des pixels (poids de l'indice par département) ; c'est l'entrée de l'API.
 
 Plusieurs départements d'un coup : `uv run champis-pipeline batch --depts all --jobs 3` enchaîne download, grid et terrain en parallèle (un processus par département, ~2 Go chacun), garde l'état dans `data/batch_status.json` et reprend là où il s'est arrêté ; `tiles --depts …` et `weather-grid --depts …` prennent ensuite la liste.
@@ -32,7 +43,7 @@ Diagnostic de T : `uv run champis-pipeline explain --dept 25 --species boletus_e
 
 Contrôle GBIF (critère de phase 1, AUC > 0,7) : `uv run champis-pipeline check --dept 25` télécharge les occurrences GBIF du département (cache dans `data/raw/gbif/`) et écrit `reports/<espèce>-25.html` : AUC de T aux occurrences contre fond forestier, mois d'observation, quantiles pH pour recalibrer les espèces (skill `validation-gbif`).
 
-Pour regarder le résultat : `python3 -m http.server 8000` à la racine du dépôt, ouvrir <http://localhost:8000/web/> et y glisser les PMTiles (voir `web/README.md`). Sans serveur, [pmtiles.io](https://pmtiles.io) les affiche en gris brut : 0 = noir = T 0, 254 = blanc = T 1.
+Pour regarder le résultat : la carte du dépôt `adhumi/champis-web` en mode développement (`carte.html?dev=1`), où l'on glisse les PMTiles (voir son `web/README.md`). Sans serveur, [pmtiles.io](https://pmtiles.io) les affiche en gris brut : 0 = noir = T 0, 254 = blanc = T 1.
 
 ### Affichage et journaux
 
@@ -55,7 +66,7 @@ all --dept 25 · 7 espèce(s)
 
 ### Tests
 
-`make test` (ou `uv run pytest`) tourne sans réseau : fixtures synthétiques (département de 10 km × 10 km, faux Open-Meteo, faux bucket). La suite est écrite à partir de la spec et de `species/SCHEMA.md` ; chaque fichier de test cite la règle qu'il protège.
+`make test` (ou `uv run pytest`) tourne sans réseau : fixtures synthétiques (département de 10 km × 10 km, faux Open-Meteo, faux bucket). La suite est écrite à partir de la spec et de `champis/species/SCHEMA.md` ; chaque fichier de test cite la règle qu'il protège.
 
 | Fichiers | Ce qu'ils garantissent |
 | --- | --- |
@@ -67,9 +78,8 @@ all --dept 25 · 7 espèce(s)
 | `api/tests/test_scoring.py`, `test_vectors.py`, `test_spec_rules.py` | M, Φ, M_eff, trigger « meilleur événement », correction d'altitude, gel, chaleur, mémoire, persistance, groupes ; vecteurs de parité avec l'app |
 | `api/tests/test_weather_api.py`, `test_departements.py`, `test_observations.py`, `test_coins.py`, `test_ratelimit.py` | Contrats des endpoints, cache 12 h, pannes et quotas Open-Meteo, amorçage, indice par département, retour terrain, coins et notifications, limitation de débit |
 | `api/tests/test_app_lifespan.py`, `test_api_cli.py`, `test_doctor.py` | Démarrage réel de l'API en mode dégradé, planificateurs, commandes `champis-api` de bout en bout |
-| `web/tests/test_png_decoder.py` | Le décodeur PNG du site lit les tuiles du pipeline exactement |
 
-La CI exige une couverture d'au moins 90 % du pipeline et de l'API (`make check`, `make coverage` pour le détail). Ce qui n'est pas couvert et assumé : les appels réseau réels (Géoplateforme, ISRIC, AWS, Open-Meteo, APNs, CDS) et le code du site (`web/app.js`), vérifié à la main dans le navigateur.
+La CI exige une couverture d'au moins 90 % du pipeline et de l'API (`make check`, `make coverage` pour le détail). Ce qui n'est pas couvert et assumé : les appels réseau réels (Géoplateforme, ISRIC, AWS, Open-Meteo, APNs, CDS) ; le site a ses propres tests dans `adhumi/champis-web`.
 
 ## Phase 2 — l'API météo
 
