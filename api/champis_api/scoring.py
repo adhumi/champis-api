@@ -345,8 +345,24 @@ def group_score(scores: dict[str, float]) -> dict[str, Any]:
 
 
 def palette_class(value: float, palette: dict[str, Any]) -> dict[str, str]:
+    """Mot d'un score (règle 10) : premier seuil dont `min ≤ value`, sinon le dernier. Le `hex`
+    est la couleur de pastille de la classe, jamais celle d'un pixel (voir `palette_color`)."""
     for cls in palette["thresholds"]:
         if value >= cls["min"]:
             return {"label": cls["label"], "hex": cls["hex"]}
     last = palette["thresholds"][-1]
     return {"label": last["label"], "hex": last["hex"]}
+
+
+def palette_color(value: float, palette: dict[str, Any]) -> tuple[int, int, int, int]:
+    """Couleur RGBA d'un pixel de score `value` (échelle linéaire, décision du 6 nov. 2026) :
+    `rgb` = `scale.hex`, alpha = `floor(255 × (alpha_min + (alpha_max − alpha_min) × s) + 0.5)`
+    avec `s` borné à [0, 1]. `floor(x + 0.5)` et non `round` : la règle au demi de `round`
+    diffère entre Python, JavaScript et Swift, celle-ci est la même partout (skill scoring-parity).
+    """
+    scale = palette["scale"]
+    h = scale["hex"]
+    r, g, b = (int(h[i : i + 2], 16) for i in (1, 3, 5))
+    s = min(max(float(value), 0.0), 1.0)
+    alpha = scale["alpha_min"] + (scale["alpha_max"] - scale["alpha_min"]) * s
+    return (r, g, b, math.floor(255.0 * alpha + 0.5))

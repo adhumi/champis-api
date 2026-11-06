@@ -27,6 +27,7 @@ from .scoring import (
     DailySeries,
     group_score,
     palette_class,
+    palette_color,
     phenology_window,
     required_series_days,
     weather_index,
@@ -227,9 +228,16 @@ def group_vectors() -> list[dict[str, Any]]:
 
 
 def palette_vectors() -> list[dict[str, Any]]:
+    """Mots aux seuils exacts et ±ε, et couleur du pixel (échelle linéaire) aux bornes, aux
+    seuils et sur des demi-niveaux d'arrondi de l'alpha (0,5/255, 1,5/255…), où `round` et
+    `floor(x + 0.5)` divergent ; hors de [0, 1] pour vérifier la borne."""
     pal = load_palette()
     xs = [0.0, 0.1499, 0.15, 0.3499, 0.35, 0.5499, 0.55, 0.7499, 0.75, 1.0]
-    return [{"score": x, "expected": palette_class(x, pal)} for x in xs]
+    xs += [0.5 / 255, 1.5 / 255, 0.1, 0.25, 0.45, 0.5, 0.65, 0.875, 0.999, -0.1, 1.2]
+    return [
+        {"score": x, "expected": {**palette_class(x, pal), "rgba": list(palette_color(x, pal))}}
+        for x in xs
+    ]
 
 
 def build() -> dict[str, dict[str, Any]]:

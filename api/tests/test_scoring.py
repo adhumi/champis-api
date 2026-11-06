@@ -12,6 +12,7 @@ from champis_api.scoring import (
     frost_severity,
     group_score,
     palette_class,
+    palette_color,
     phenology_window,
     weather_index,
     weather_index_raw,
@@ -297,6 +298,25 @@ def test_group_max_and_tie_break():
 )
 def test_palette_thresholds(v, label):
     assert palette_class(v, load_palette())["label"] == label
+
+
+@pytest.mark.parametrize(
+    ("v", "alpha"),
+    [
+        (0.0, 0),
+        (0.5 / 255, 1),  # floor(x + 0.5) : 1, là où round (au pair) donnerait 0
+        (1.5 / 255, 2),
+        (0.5, 128),  # 127,5 → 128
+        (1.0, 255),
+        (-0.3, 0),  # borné à [0, 1]
+        (1.7, 255),
+    ],
+)
+def test_palette_color_is_the_scale_colour_with_alpha_as_score(v, alpha):
+    """Échelle linéaire (6 nov. 2026) : un seul violet, l'alpha est le score, arrondi floor(x + 0,5)."""
+    pal = load_palette()
+    h = pal["scale"]["hex"]
+    assert palette_color(v, pal) == (int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16), alpha)
 
 
 # ------------------------------------------------------------------ robustesse des séries

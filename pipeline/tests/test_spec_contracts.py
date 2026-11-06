@@ -39,7 +39,12 @@ def test_palette_matches_the_spec_thresholds():
     Règle 10 du modèle : ne pas en inventer d'autres ; la palette est la seule source des clients.
     """
     palette = load_palette()
-    assert palette["version"] == 1
+    assert palette["version"] == 2
+    # échelle linéaire (6 nov. 2026) : un seul violet dont l'alpha est le score
+    scale = palette["scale"]
+    assert set(scale) == {"hex", "alpha_min", "alpha_max"}
+    assert re.fullmatch(r"#[0-9A-F]{6}", scale["hex"]), scale
+    assert 0.0 <= scale["alpha_min"] < scale["alpha_max"] <= 1.0
     mins = [t["min"] for t in palette["thresholds"]]
     assert mins == [0.75, 0.55, 0.35, 0.15, 0.0]
     assert [t["label"] for t in palette["thresholds"]] == [

@@ -13,7 +13,7 @@ from champis_api.scoring import phenology_window
 from champis_api.weather_client import WeatherUnavailableError, soil_percentile
 from champis_api.weather_service import SeriesGapError, build_series, cell_weather
 from champis_pipeline.scoring import trapezoid
-from champis_pipeline.species import list_species, load_species
+from champis_pipeline.species import list_species, load_palette, load_species
 from conftest import NOW, TODAY, make_client
 from fixtures.open_meteo import Scenario
 
@@ -680,7 +680,7 @@ async def test_dev_mode_serves_the_referential_and_a_web_copy(grid, client, tmp_
         r = await c.get("/", follow_redirects=False)
         assert r.headers["location"] == "/web/"
         assert "<title>Champis" in (await c.get("/web/")).text
-        assert (await c.get("/shared/palette.json")).json()["version"] == 1
+        assert (await c.get("/shared/palette.json")).json() == load_palette()
         assert (await c.get("/species/boletus_edulis.json")).json()["id"] == "boletus_edulis"
 
 
