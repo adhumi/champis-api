@@ -10,7 +10,11 @@ import httpx
 import pytest
 from champis_api.cache import WeatherCache
 from champis_api.scoring import phenology_window
-from champis_api.weather_client import WeatherUnavailableError, soil_percentile
+from champis_api.weather_client import (
+    WeatherUnavailableError,
+    annual_quantiles,
+    soil_percentile,
+)
 from champis_api.weather_service import SeriesGapError, build_series, cell_weather
 from champis_pipeline.scoring import trapezoid
 from champis_pipeline.species import list_species, load_palette, load_species
@@ -254,13 +258,32 @@ async def test_bbox_too_large_is_422(api, monkeypatch):
 
 
 def test_soil_percentile():
-    clim = {"months": {"10": [0.05 + 0.04 * i for i in range(11)]}}
-    d = date(2026, 10, 17)
-    assert soil_percentile(0.01, clim, d) == 0.0
-    assert soil_percentile(0.99, clim, d) == 1.0
-    assert soil_percentile(0.25, clim, d) == pytest.approx(0.5)
-    assert soil_percentile(0.27, clim, d) == pytest.approx(0.55)
-    assert soil_percentile(None, clim, d) is None
+    """Percentile dans les quantiles de l'année entière (7 nov. 2026), interpolation linéaire."""
+    clim = {"months": {}, "year": [0.05 + 0.04 * i for i in range(11)]}
+    assert soil_percentile(0.01, clim) == 0.0
+    assert soil_percentile(0.99, clim) == 1.0
+    assert soil_percentile(0.25, clim) == pytest.approx(0.5)
+    assert soil_percentile(0.27, clim) == pytest.approx(0.55)
+    assert soil_percentile(None, clim) is None
+
+
+def test_soil_percentile_without_year_pools_the_months():
+    """Base amorcée avant la clé `year` : les quantiles annuels se déduisent des 12 × 11 mensuels.
+    Un novembre saturé (0,27 → 0,43) et un été sec (0,05 → 0,25) : un sol à 0,30 n'est plus « le
+    plus sec des novembres » (percentile 0 avec la climatologie du mois) mais au milieu de la plage
+    annuelle de la cellule."""
+    wet = [0.27 + 0.016 * i for i in range(11)]
+    dry = [0.05 + 0.02 * i for i in range(11)]
+    months = {str(m): (dry if 5 <= m <= 9 else wet) for m in range(1, 13)}
+    year = annual_quantiles(months)
+    assert len(year) == 11 and year[0] == pytest.approx(0.05) and year[-1] == pytest.approx(0.43)
+    assert year == sorted(year)
+    p = soil_percentile(0.30, {"months": months})
+    assert 0.4 < p < 0.7
+    assert soil_percentile(0.30, {"months": months, "year": year}) == pytest.approx(p)
+    # mois identiques entre eux → même percentile qu'avec un seul mois
+    same = {str(m): [0.05 + 0.04 * i for i in range(11)] for m in range(1, 13)}
+    assert soil_percentile(0.25, {"months": same}) == pytest.approx(0.5)
 
 
 @pytest.mark.asyncio
@@ -580,7 +603,7 @@ async def test_past_days_follows_the_history_gap(grid, scenario):
     client = make_client(scenario)  # les deux cellules amorcées jusqu'à hier
     report = await warm(grid, client)
     assert scenario.past_days == [1]  # un seul appel groupé, past_days=1
-    assert report.weight == pytest.approx(call_weight(2, 9, 9))  # 2 points, 1+8 jours, 6+3 vars
+    assert report.weight == pytest.approx(call_weight(2, 9, 7))  # 2 points, 1+8 jours, 7 variables
     assert report.weight / report.cells < 1
     # cellule froide dans le même lot → tout le lot à 92
     client2 = make_client(scenario, cache=cache, seeded=False)  # trou de 5 ; l'autre jamais amorcée

@@ -33,7 +33,7 @@ class Scenario:
         default_factory=const(0.25)
     )  # m³/m³, le médian de la climatologie ci-dessous → percentile 0,5
     elevation: float = 700.0
-    # climatologie : 11 quantiles identiques tous les mois, 0,05 → 0,45 par pas de 0,04
+    # climatologie : 11 quantiles identiques tous les mois (donc sur l'année), 0,05 → 0,45 par pas de 0,04
     clim_quantiles: list[float] = field(
         default_factory=lambda: [0.05 + 0.04 * i for i in range(11)]
     )
@@ -78,14 +78,10 @@ def _daily_body(sc: Scenario, days: list[date], null_before: date | None) -> dic
 def _forecast_body(sc: Scenario, today: date, past: int, ahead: int) -> dict:
     days = _days(today - timedelta(days=past), today + timedelta(days=ahead - 1))
     body = _daily_body(sc, days, sc.forecast_null_before)
-    hourly_time, soil_vals = [], []
-    for d in days:
-        v = None if sc.forecast_null_before and d < sc.forecast_null_before else sc.soil(d)
-        for h in range(24):
-            hourly_time.append(f"{d.isoformat()}T{h:02d}:00")
-            soil_vals.append(v)
-    layers = ["soil_moisture_0_to_1cm", "soil_moisture_1_to_3cm", "soil_moisture_3_to_9cm"]
-    body["hourly"] = {"time": hourly_time, **{k: list(soil_vals) for k in layers}}
+    body["daily"]["soil_moisture_0_to_7cm_mean"] = [
+        None if sc.forecast_null_before and d < sc.forecast_null_before else sc.soil(d)
+        for d in days
+    ]
     return body
 
 

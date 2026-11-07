@@ -8,9 +8,9 @@ ERA5-Land (hors Railway ; avec la clé sur `customer-archive-api`, plan Professi
 aussi la climatologie du sol (10 ans → 11 quantiles par mois). L'archive n'est donc jamais appelée
 en service.
 
-- `forecast` : `past_days=<1..92>&forecast_days=8` (J inclus → J+7), séries journalières + humidité
-  du sol (moyenne journalière pondérée des couches horaires 0–1, 1–3 et 3–9 cm, poids 1/2/6 ≈ 0–9 cm,
-  l'équivalent prévision du 0–7 cm ERA5-Land). Seau de 12 h.
+- `forecast` : `past_days=<1..92>&forecast_days=8` (J inclus → J+7), séries journalières, humidité du
+  sol comprise (`soil_moisture_0_to_7cm_mean`, journalier, la même grandeur que l'archive : décision du
+  7 nov. 2026, qui abandonne la moyenne pondérée des couches horaires 0–1 / 1–3 / 3–9 cm). Seau de 12 h.
 - `archive` et `soil_clim` : amorçage uniquement (`fetch_seed`).
 
 Quotas : Open-Meteo pondère chaque requête (points × jours/14 × variables/10, `call_weight`).
@@ -64,11 +64,7 @@ BATCH_CLIMATOLOGY = 10  # points par requête de climatologie (10 ans chacun : l
 MIN_REQUEST_INTERVAL_S = 0.25  # lissage : jamais de rafale vers Open-Meteo
 RETRY_MAX_WAIT_S = 10  # un seul réessai, et seulement si Open-Meteo demande une courte attente
 SOIL_DAILY = "soil_moisture_0_to_7cm_mean"
-SOIL_LAYER_WEIGHTS = {
-    "soil_moisture_0_to_1cm": 1,
-    "soil_moisture_1_to_3cm": 2,
-    "soil_moisture_3_to_9cm": 6,
-}
+SOIL_CLIM_YEAR = "year"  # clé des quantiles de l'année entière dans `soil_clim` (7 nov. 2026)
 
 DAILY_VARS = [
     "temperature_2m_mean",
@@ -78,6 +74,8 @@ DAILY_VARS = [
     "snowfall_sum",
     "et0_fao_evapotranspiration",
 ]
+# Prévision et archive demandent les mêmes variables journalières, humidité du sol 0–7 cm comprise
+SERIES_VARS = [*DAILY_VARS, SOIL_DAILY]
 
 
 class WeatherUnavailableError(Exception):
@@ -99,7 +97,7 @@ class FetchResult:
 class CellRaw:
     forecast: dict[str, Any]  # dates, t_mean, t_min, t_max, rain, snow, et0, soil (None possible)
     history: dict[str, dict[str, float]]  # jour → variables, jours passés accumulés + amorcés
-    soil_clim: dict[str, Any]  # {"months": {"1": [11 quantiles], …}}
+    soil_clim: dict[str, Any]  # {"months": {"1": [11 quantiles], …}, "year": [11 quantiles] | None}
     stale: bool
 
 
@@ -255,21 +253,20 @@ class OpenMeteoClient:
         }
         if kind == "forecast":
             params |= {
-                "daily": ",".join(DAILY_VARS),
-                "hourly": ",".join(SOIL_LAYER_WEIGHTS),
+                "daily": ",".join(SERIES_VARS),
                 "past_days": past_days,
                 "forecast_days": FORECAST_DAYS,
             }
-            url, norm = self.forecast_url, _normalize_forecast
-            days, n_vars = past_days + FORECAST_DAYS, len(DAILY_VARS) + len(SOIL_LAYER_WEIGHTS)
+            url, norm = self.forecast_url, _normalize_series
+            days, n_vars = past_days + FORECAST_DAYS, len(SERIES_VARS)
         elif kind == "archive":
             params |= {
-                "daily": ",".join([*DAILY_VARS, SOIL_DAILY]),
+                "daily": ",".join(SERIES_VARS),
                 "start_date": (today - timedelta(days=ARCHIVE_START_OFFSET)).isoformat(),
                 "end_date": (today - timedelta(days=1)).isoformat(),
             }
-            url, norm = self.archive_url, _normalize_archive
-            days, n_vars = ARCHIVE_START_OFFSET, len(DAILY_VARS) + 1
+            url, norm = self.archive_url, _normalize_series
+            days, n_vars = ARCHIVE_START_OFFSET, len(SERIES_VARS)
         else:
             params |= {
                 "daily": SOIL_DAILY,
@@ -313,33 +310,13 @@ class OpenMeteoClient:
 # ---------------------------------------------------------------------- normalisation
 
 
-def _normalize_forecast(body: dict[str, Any]) -> dict[str, Any]:
-    """Prévision : journalier + sol = moyenne journalière pondérée des couches horaires."""
-    h = body["hourly"]
-    w_total = sum(SOIL_LAYER_WEIGHTS.values())
-    soil_by_day: dict[str, list[float]] = {}
-    for i, ts in enumerate(h["time"]):
-        vals = [h[k][i] for k in SOIL_LAYER_WEIGHTS]
-        if any(v is None for v in vals):
-            continue
-        v = sum(SOIL_LAYER_WEIGHTS[k] * h[k][i] for k in SOIL_LAYER_WEIGHTS) / w_total
-        soil_by_day.setdefault(ts[:10], []).append(v)
+def _normalize_series(body: dict[str, Any]) -> dict[str, Any]:
+    """Prévision comme archive : tout en journalier, sol 0–7 cm moyen fourni tel quel (sur les jours
+    passés, la prévision renvoie la même valeur que l'archive : 72 jours de recouvrement vérifiés le
+    7 nov. 2026). Les `null` d'Open-Meteo sont conservés : `weather_service` décide quelle source
+    comble quoi."""
     d = body["daily"]
-    soil = [
-        (sum(soil_by_day[day]) / len(soil_by_day[day])) if soil_by_day.get(day) else None
-        for day in d["time"]
-    ]
-    return _daily(body, soil)
-
-
-def _normalize_archive(body: dict[str, Any]) -> dict[str, Any]:
-    """Archive ERA5-Land : tout en journalier, sol 0–7 cm moyen fourni tel quel."""
-    return _daily(body, body["daily"][SOIL_DAILY])
-
-
-def _daily(body: dict[str, Any], soil: list[float | None]) -> dict[str, Any]:
-    """Les `null` d'Open-Meteo sont conservés : `weather_service` décide quelle source comble quoi."""
-    d = body["daily"]
+    soil = d[SOIL_DAILY]
     return {
         "elevation": float(body["elevation"]),
         "dates": d["time"],
@@ -354,7 +331,9 @@ def _daily(body: dict[str, Any], soil: list[float | None]) -> dict[str, Any]:
 
 
 def _normalize_soil_climatology(body: dict[str, Any]) -> dict[str, Any]:
-    """11 quantiles (0, 10, … 100 %) de l'humidité 0–7 cm journalière par mois civil, sur 10 ans."""
+    """11 quantiles (0, 10, … 100 %) de l'humidité 0–7 cm journalière sur 10 ans : par mois civil
+    (`months`, conservés pour le diagnostic) et toutes dates confondues (`year`, ce que lit le
+    percentile depuis le 7 nov. 2026)."""
     d = body["daily"]
     by_month: dict[int, list[float]] = {m: [] for m in range(1, 13)}
     for ts, v in zip(d["time"], d[SOIL_DAILY], strict=True):
@@ -365,7 +344,10 @@ def _normalize_soil_climatology(body: dict[str, Any]) -> dict[str, Any]:
         if len(vals) < 28 * 5:  # moins de 5 mois sur 10 ans : climatologie inexploitable
             raise ValueError(f"climatologie du sol trop courte pour le mois {m}")
         months[str(m)] = [float(q) for q in np.quantile(vals, QUANTILES)]
-    return {"months": months}
+    year = [
+        float(q) for q in np.quantile([v for vals in by_month.values() for v in vals], QUANTILES)
+    ]
+    return {"months": months, SOIL_CLIM_YEAR: year}
 
 
 def call_weight(points: int, days: int, n_vars: int) -> float:
@@ -397,11 +379,23 @@ def _retry_after(e: Exception) -> int | None:
     return None
 
 
-def soil_percentile(value: float | None, clim: dict[str, Any], day: date) -> float | None:
-    """Percentile 0–1 de `value` dans la climatologie du mois de `day` (interpolation linéaire)."""
+def annual_quantiles(months: dict[str, list[float]]) -> list[float]:
+    """Quantiles de l'année approchés depuis les 12 × 11 quantiles mensuels (chaque décile d'un mois
+    compte pour un douzième de l'année) : le repli tant que la base d'amorçage publiée n'a pas la
+    clé `year` (recalculée par `champis-pipeline soil-clim`)."""
+    pooled = [v for m in sorted(months, key=int) for v in months[m]]
+    return [float(q) for q in np.quantile(pooled, QUANTILES)]
+
+
+def soil_percentile(value: float | None, clim: dict[str, Any]) -> float | None:
+    """Percentile 0–1 de `value` dans la climatologie de l'année entière de la cellule (interpolation
+    linéaire entre les 11 quantiles). Décision du 7 nov. 2026 : plus de découpage par mois civil, qui
+    faisait une marche au changement de mois et, de novembre à février, classait un sol proche de la
+    capacité au champ comme « le plus sec » parce que tous les hivers sont saturés ; le facteur mesure
+    l'eau du sol relativement à la plage propre de la cellule."""
     if value is None:
         return None
-    q = clim["months"][str(day.month)]
+    q = clim.get(SOIL_CLIM_YEAR) or annual_quantiles(clim["months"])
     if value <= q[0]:
         return 0.0
     if value >= q[-1]:

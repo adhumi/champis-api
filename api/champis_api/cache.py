@@ -8,7 +8,9 @@ climatologie du sol.
   (`source = seed`, jamais écrasé par un amorçage ultérieur mais remplacé par la prévision quand
   elle couvre la date). Décision du 17 oct. 2026 : « amorcer, puis accumuler », l'API ne parle
   plus qu'à la prévision.
-- `soil_clim` : 11 quantiles mensuels d'humidité du sol par cellule (amorçage), permanents.
+- `soil_clim` : 11 quantiles d'humidité du sol par cellule (amorçage), permanents : par mois (clés
+  `1`…`12`) et, depuis le 7 nov. 2026, de l'année entière (clé `year`, dans le même JSON ; absente
+  d'une base amorcée avant, l'API la dérive des mensuels).
 - `cell_weather` : les onze jours détaillés (`M`, `M_eff`, `phi` par classe d'altitude) de chaque
   (cellule, espèce), rangés par la pré-chauffe, servis par `/weather/bbox` (2 nov. 2026).
 - `cell_field` : dérivée de `cell_weather` dans la même transaction, une ligne par (espèce, jour,
@@ -216,17 +218,32 @@ class WeatherCache:
 
     # ------------------------------------------------------------------ climatologie du sol
 
-    def put_soil_clim(self, cell_id: str, months: dict[str, list[float]]) -> None:
+    def put_soil_clim(
+        self, cell_id: str, months: dict[str, list[float]], year: list[float] | None = None
+    ) -> None:
+        """`months` : 11 quantiles par mois civil ; `year` : les 11 quantiles de l'année entière,
+        rangés sous la clé `year` du même JSON (None pour une climatologie d'avant le 7 nov. 2026)."""
+        stored = {k: v for k, v in months.items() if k != "year"}
+        if year is not None:
+            stored["year"] = list(year)
         self.db.execute(
-            "INSERT OR REPLACE INTO soil_clim VALUES (?, ?)", (cell_id, json.dumps(months))
+            "INSERT OR REPLACE INTO soil_clim VALUES (?, ?)", (cell_id, json.dumps(stored))
         )
         self.db.commit()
 
     def soil_clim(self, cell_id: str) -> dict[str, Any] | None:
+        """`{"months": {"1": […], …}, "year": […] | None}` ; `year` manque dans une base amorcée
+        avant le 7 nov. 2026 : `soil_percentile` le dérive alors des mensuels."""
         row = self.db.execute(
             "SELECT months_json FROM soil_clim WHERE cell_id = ?", (cell_id,)
         ).fetchone()
-        return {"months": json.loads(row[0])} if row else None
+        if not row:
+            return None
+        stored = json.loads(row[0])
+        return {
+            "months": {k: v for k, v in stored.items() if k != "year"},
+            "year": stored.get("year"),
+        }
 
     def seeded_cells(self) -> int:
         """Cellules disposant d'une climatologie du sol, donc amorcées."""
