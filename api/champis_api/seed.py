@@ -104,7 +104,7 @@ async def seed(
                 batch = todo[i : i + BATCH_CLIMATOLOGY]
                 clims = await _patiently(client.fetch_climatology_batch, batch, today, sleep)
                 for cell, clim in zip(batch, clims, strict=True):
-                    db.put_soil_clim(cell.id, clim["months"])
+                    db.put_soil_clim(cell.id, clim["months"], clim.get("year"))
                 db.meta_set(META_GENERATED, today.isoformat())
                 progress("climatologie", i + len(batch), len(todo), client.weight)
         return seed_info(db, out, len(grid.cells))
@@ -195,7 +195,7 @@ def _import_json(cache: WeatherCache, path: Path) -> int:
         raise ValueError(f"{path} : version {data.get('version')!r} inconnue")
     for cid, c in data["cells"].items():
         cache.put_history(cid, c["history"], "seed")
-        cache.put_soil_clim(cid, c["soil_clim"])
+        cache.put_soil_clim(cid, c["soil_clim"], c["soil_clim"].get("year"))
     if data.get("generated"):
         cache.meta_set(META_GENERATED, data["generated"])
     return len(data["cells"])

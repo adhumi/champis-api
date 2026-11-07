@@ -82,9 +82,7 @@ def build_series(raw: CellRaw) -> DailySeries:
         if missing:
             raise SeriesGapError(f"`{OPEN_METEO_NAMES[var]}` manquant sur {_summary(missing)}")
         merged[var] = values
-    soil_pct = [
-        soil_percentile(v, raw.soil_clim, d) for v, d in zip(merged["soil"], dates, strict=True)
-    ]
+    soil_pct = [soil_percentile(v, raw.soil_clim) for v in merged["soil"]]
     return DailySeries(
         dates=dates,
         t_mean=[float(v) for v in merged["t_mean"]],

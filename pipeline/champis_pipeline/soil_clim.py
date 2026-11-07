@@ -7,9 +7,11 @@ Décision du 25 oct. 2026 (option a) : plutôt que 26 appels pondérés Open-Met
 donc le percentile calculé est le même que celui que `champis-api seed --climatology` obtiendrait.
 
 Étapes : une requête CDS par année (NetCDF, parfois dans un zip) dans `data/era5land/` ; quantiles
-0, 0,1 … 1 par mois et par pixel ; chaque cellule de la grille météo prend le pixel valide le plus
-proche (la mer est NaN : une cellule côtière cherche dans son voisinage) ; écriture dans
-`soil_clim` de `data/weather_seed.db` (schéma `weather_store`), `meta.seed_generated` = aujourd'hui.
+0, 0,1 … 1 par mois et par pixel, et sur l'année entière (clé `year`, ce que lit le percentile
+depuis le 7 nov. 2026 ; les mensuels restent pour le diagnostic) ; chaque cellule de la grille
+météo prend le pixel valide le plus proche (la mer est NaN : une cellule côtière cherche dans son
+voisinage) ; écriture dans `soil_clim` de `data/weather_seed.db` (schéma `weather_store`),
+`meta.seed_generated` = aujourd'hui.
 
 Identifiants CDS : `~/.cdsapirc` ou les variables `CDSAPI_URL` / `CDSAPI_KEY` (le `.env` convient).
 """
@@ -36,6 +38,8 @@ VARIABLE = "volumetric_soil_water_layer_1"
 AREA_FRANCE = [51.5, -5.5, 41.0, 10.0]  # nord, ouest, sud, est (Corse incluse)
 CLIMATOLOGY_YEARS = 10  # comme le client Open-Meteo : 10 années civiles complètes
 QUANTILES = [i / 10 for i in range(11)]
+YEAR_MONTH = 0  # coordonnée `month` des quantiles de l'année entière dans `climatology()`
+YEAR_KEY = "year"
 ERA5_DIR = DATA_DIR / "era5land"
 SEED_DB = DATA_DIR / "weather_seed.db"
 # Une cellule côtière (pixel ERA5-Land en mer = NaN) prend le pixel valide le plus proche à ≤ 0,5°
@@ -103,7 +107,8 @@ def _unpack(tmp: Path, nc: Path) -> None:
 
 
 def climatology(paths: list[Path]) -> xr.DataArray:
-    """Quantiles (month, quantile, lat, lon) de la moyenne journalière sur toutes les années."""
+    """Quantiles (month, quantile, lat, lon) de la moyenne journalière sur toutes les années ;
+    `month` = 1…12 par mois civil, `month` = 0 (`YEAR_MONTH`) toutes dates confondues."""
     parts = []
     for p in paths:
         with xr.open_dataset(p) as ds:
@@ -113,7 +118,8 @@ def climatology(paths: list[Path]) -> xr.DataArray:
             parts.append(da.load())
     da = xr.concat(parts, dim="time").sortby("time")
     q = da.groupby("time.month").quantile(QUANTILES, dim="time", skipna=False)
-    return q.transpose("month", "quantile", "lat", "lon")
+    year = da.quantile(QUANTILES, dim="time", skipna=False).expand_dims(month=[YEAR_MONTH])
+    return xr.concat([year, q], dim="month").transpose("month", "quantile", "lat", "lon")
 
 
 def _soil_var(ds: xr.Dataset) -> xr.DataArray:
@@ -134,13 +140,14 @@ def _dim(da: xr.DataArray, kind: str) -> str:
 def sample(
     clim: xr.DataArray, cells: dict[str, tuple[float, float]]
 ) -> tuple[dict[str, dict[str, list[float]]], list[str]]:
-    """Par cellule (lat, lon) : {"1": [11 quantiles], …, "12": […]} du pixel valide le plus proche,
-    et la liste des cellules sautées (aucun pixel valide à ≤ NEIGHBOURHOOD pixels : îlots).
+    """Par cellule (lat, lon) : {"1": [11 quantiles], …, "12": […], "year": […]} du pixel valide le
+    plus proche, et la liste des cellules sautées (aucun pixel valide à ≤ NEIGHBOURHOOD pixels : îlots).
 
     Lève si une cellule est hors de l'emprise téléchargée.
     """
     lats, lons = clim["lat"].values, clim["lon"].values
-    values = clim.values  # (12, 11, nlat, nlon)
+    values = clim.values  # (13, 11, nlat, nlon) : année entière puis 12 mois
+    keys = [YEAR_KEY if int(m) == YEAR_MONTH else str(int(m)) for m in clim["month"].values]
     valid = ~np.isnan(values[0, 0])
     out, skipped = {}, []
     for cid, (lat, lon) in cells.items():
@@ -160,7 +167,7 @@ def sample(
                 skipped.append(cid)
                 continue
             i, j = near
-        out[cid] = {str(m + 1): [float(v) for v in values[m, :, i, j]] for m in range(12)}
+        out[cid] = {k: [float(v) for v in values[m, :, i, j]] for m, k in enumerate(keys)}
     return out, skipped
 
 

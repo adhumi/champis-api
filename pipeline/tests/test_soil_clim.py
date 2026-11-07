@@ -64,10 +64,16 @@ def test_soil_clim_quantiles_sampling_and_seed_db(tmp_path):
     rows = dict(db.execute("SELECT cell_id, months_json FROM soil_clim"))
     assert set(rows) == {"c_in", "c_sea"}
     m_in = json.loads(rows["c_in"])
-    assert list(m_in) == [str(m) for m in range(1, 13)] and len(m_in["1"]) == 11
+    assert list(m_in) == ["year", *(str(m) for m in range(1, 13))] and len(m_in["1"]) == 11
     # valeur constante dans le mois → 11 quantiles égaux ; pixel (47.1, 6.3) : 1/100 + 47.1/1000
     assert m_in["1"] == pytest.approx([0.01 + 0.0471] * 11, abs=1e-6)
     assert m_in["10"] == pytest.approx([0.10 + 0.0471] * 11, abs=1e-6)
+    # année entière (7 nov. 2026) : du minimum de janvier au maximum de décembre, croissant
+    assert m_in["year"][0] == pytest.approx(0.01 + 0.0471, abs=1e-6)
+    assert m_in["year"][-1] == pytest.approx(0.12 + 0.0471, abs=1e-6)
+    # médiane des 730 jours : les 365e et 366e valeurs triées sont en juillet (0,07)
+    assert m_in["year"] == sorted(m_in["year"])
+    assert m_in["year"][5] == pytest.approx(0.07 + 0.0471, abs=1e-6)
     # cellule sur un pixel « mer » : pixel valide le plus proche (47.2, 6.3)
     assert json.loads(rows["c_sea"])["1"] == pytest.approx([0.01 + 0.0472] * 11, abs=1e-6)
     assert (
@@ -88,7 +94,7 @@ def test_soil_clim_rejects_a_cell_far_from_any_valid_pixel(tmp_path):
     lats, lons = [47.2, 47.1], [6.2, 6.3]
     _netcdf(tmp_path / "a.nc", 2025, lats, lons, sea_ij=(0, 0))
     clim = soil_clim.climatology([tmp_path / "a.nc"])
-    assert clim.shape == (12, 11, 2, 2)
+    assert clim.shape == (13, 11, 2, 2) and list(clim["month"].values[:2]) == [0, 1]
     with pytest.raises(ValueError, match="hors de l'emprise"):
         soil_clim.sample(clim, {"far": (45.0, 2.0)})
     sea = clim.where(False)  # tout le voisinage est en mer : la cellule est sautée, pas d'erreur
