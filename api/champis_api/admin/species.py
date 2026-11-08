@@ -7,6 +7,10 @@ L'état se déduit de l'empreinte du fichier espèce (`species_hash`) comparée 
 (référentiel), le manifeste du bucket (tuiles publiées, G du groupe, cartes HD) et l'inventaire du
 volume publié par le worker avec son battement (`workers.inventory`). La grille météo porte une
 empreinte unique pour toutes les espèces : `grid_current` est global.
+
+Une espèce est **complète** (demande d'Adrien du 8 nov. 2026) quand son fichier porte le bloc
+`about`, une photo choisie et sa planche `shared/illustrations/<id>.jpg` ; la fiche montre la
+planche et le prompt qui la produit (`admin/illustrations.py`).
 """
 
 from __future__ import annotations
@@ -29,6 +33,7 @@ from .. import counts, render
 from ..scoring import phenology_window
 from ..settings import Settings
 from ..store import Store
+from . import illustrations
 
 USAGE_DAYS = 30
 PHI_YEAR = 2026  # année non bissextile : 365 jours, les mêmes pour toutes les espèces
@@ -60,7 +65,28 @@ def file_view(sid: str) -> dict[str, Any]:
         }
         for step in PHI_ALTITUDE_STEPS_M
     ]
-    return {"id": sid, "hash": species_hash(sid), "file": spec, "phi": curves}
+    return {
+        "id": sid,
+        "hash": species_hash(sid),
+        "file": spec,
+        "phi": curves,
+        "illustration": illustrations.illustration_info(sid),
+    }
+
+
+def completeness(spec: dict[str, Any], sid: str) -> dict[str, Any]:
+    """Ce qui manque à la fiche : bloc `about`, photo choisie, planche. `complete` = rien ne manque."""
+    about = spec.get("about") or {}
+    items = {
+        "about": bool(about),
+        "photo": bool(about.get("photo")),
+        "illustration": illustrations.illustration_info(sid)["present"],
+    }
+    return {
+        **items,
+        "complete": all(items.values()),
+        "missing": [k for k, v in items.items() if not v],
+    }
 
 
 def _busy_jobs(store: Store | None) -> list[dict[str, Any]]:
@@ -175,6 +201,7 @@ def gather(
                 "hash": h,
                 "schema_version": spec.get("schema_version"),
                 "about": bool(spec.get("about")),
+                "completeness": completeness(spec, sid),
                 "state": state,
                 "published": {
                     "hash": france.get("hash") if france else None,

@@ -99,6 +99,12 @@ tr.clickable:hover td { background: rgba(99, 49, 121, 0.08); }
 .state.perimee { color: var(--warn); }
 .state.en_cours { color: var(--accent); }
 .state.jamais_publiee { color: var(--quiet); }
+.state.complete { color: var(--ok); }
+.state.incomplete { color: var(--warn); }
+.sheet .block.illustration img.thumb { grid-column: 3; grid-row: 1 / span 2; width: 64px; height: 64px; object-fit: cover; border-radius: 6px; border: 1px solid var(--rule); background: #fff; }
+.file-section .prompt pre { white-space: pre-wrap; overflow-wrap: anywhere; background: var(--card); border: 1px solid var(--rule); border-radius: 6px; padding: 8px 10px; margin: 2px 0 8px; user-select: all; }
+.file-section .prompt h5 { display: flex; align-items: center; gap: 8px; }
+button.small { padding: 1px 8px; font-size: 12px; }
 
 /* Fichier espèce, lecture structurée (lot BO5, 8 nov. 2026) */
 .sheet details.file { border-top: 1px solid var(--rule); margin-top: 6px; padding: 8px 0 4px; font-size: 13px; }

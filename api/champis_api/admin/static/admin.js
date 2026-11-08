@@ -392,13 +392,28 @@ async function loadSpecies() {
     setTimeout(loadSpecies, 800);
   };
   const share = (u) => (u.app_share == null && u.web_share == null) ? "·" : `${u.app_share == null ? "·" : u.app_share + " %"} app · ${u.web_share == null ? "·" : u.web_share + " %"} site`;
-  table($("species-table"), ["espèce", "groupe", "état", "usage 30 j (espèce et groupe)"], d.species.map((sp) => ({
-    cells: [el("b", { text: sp.name }), sp.group.name, el("span", { class: `state ${sp.state}`, text: STATES[sp.state] || sp.state }), share(sp.usage)],
+  table($("species-table"), ["espèce", "groupe", "état", "fiche", "usage 30 j (espèce et groupe)"], d.species.map((sp) => ({
+    cells: [el("b", { text: sp.name }), sp.group.name, el("span", { class: `state ${sp.state}`, text: STATES[sp.state] || sp.state }), completeness(sp.completeness), share(sp.usage)],
     onclick: () => { selectedSpecies = sp.id; renderSheet(d); },
   })));
   if (!selectedSpecies && d.species.length) selectedSpecies = d.species[0].id;
   renderSheet(d);
   if (d.species.some((sp) => sp.jobs.length)) timers.species = setTimeout(loadSpecies, 5000);
+}
+
+/* Fiche complète = bloc about, photo choisie et planche (demande d'Adrien du 8 nov. 2026). */
+const MISSING = { about: "fiche en mots", photo: "photo", illustration: "illustration" };
+function completeness(c) {
+  if (!c) return "";
+  if (c.complete) return el("span", { class: "state complete", text: "complète" });
+  return el("span", { class: "state incomplete", text: `manque : ${c.missing.map((k) => MISSING[k] || k).join(", ")}` });
+}
+
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const label = btn.textContent; btn.textContent = "copié"; setTimeout(() => { btn.textContent = label; }, 1500);
+  } catch (err) { alert(`copie impossible : ${err.message}`); }
 }
 
 function renderSheet(d) {
@@ -425,7 +440,15 @@ function renderSheet(d) {
   };
   const groupSpecies = sp.group.species.join(" ");
   const blocks = [];
-  blocks.push(block("ok", "Fichier", `species/${sp.id}.json · schéma ${sp.schema_version} · empreinte ${sp.hash} · about ${sp.about ? "présent" : "absent"}`, "voir", () => { window.open(`https://github.com/adhumi/champis/blob/main/species/${sp.id}.json`, "_blank"); }));
+  const c = sp.completeness || {};
+  blocks.push(block(c.complete ? "ok" : "warn", "Fichier", `species/${sp.id}.json · schéma ${sp.schema_version} · empreinte ${sp.hash} · about ${c.about ? "présent" : "absent"} · photo ${c.photo ? "choisie" : "absente"} · fiche ${c.complete ? "complète" : "incomplète"}`, "voir", () => { window.open(`https://github.com/adhumi/champis/blob/main/species/${sp.id}.json`, "_blank"); }));
+  const illu = el("div", { class: "block illustration" }, [
+    el("span", { class: `dot ${c.illustration ? "ok" : "warn"}` }),
+    el("b", { text: "Illustration" }),
+    el("span", { class: "meta", text: c.illustration ? `shared/illustrations/${sp.id}.jpg · requise pour une espèce complète · le prompt est dans le contenu du fichier, plus bas` : "absente : requise pour une espèce complète ; à générer d'après shared/illustrations/PROMPTS.md (prompt plus bas), puis à déposer dans le référentiel" }),
+  ]);
+  if (c.illustration) illu.append(el("img", { class: "thumb", src: `/admin/api/species/${sp.id}/illustration`, alt: `illustration de ${sp.name}`, loading: "lazy" }));
+  blocks.push(illu);
   const tDot = !w ? "" : w.t_current >= w.depts ? "ok" : "warn";
   blocks.push(block(tDot, "Terrain sur le worker", w ? `T à jour ${fmt.n(w.t_current)} / ${fmt.n(w.depts)} départements · ${fmt.n(w.t_stale)} périmés · dernier batch ${w.batch_last ? fmt.when(w.batch_last) : "jamais"}` : "volume inconnu : le worker n'a pas encore battu", "Recalculer le terrain", () => launch("batch", { depts: "all", species: sp.id, jobs: 2, clean_raw: true, force: false }), !w));
   const tilesDetail = pub && pub.hash ? `publié ${pub.hash}${pub.hash === sp.hash ? "" : " (périmé)"} · ${pub.depts} dép. · ${fmt.size(pub.bytes)} · ${pub.dept_sets} jeux par département · G ${sp.group.name} ${pub.group_current ? "à jour" : "à refaire"}` : "aucun jeu France publié";
@@ -550,6 +573,25 @@ function section(title, hint, children) {
   return el("section", { class: "file-section" }, [el("h4", {}, [title, hint ? el("span", { class: "meta", text: ` ${hint}` }) : null]), ...[].concat(children).filter(Boolean)]);
 }
 
+/* La planche et le prompt qui la produit (shared/illustrations/PROMPTS.md du référentiel) : style
+   et composition communs à toutes les espèces, sujet propre à celle-ci, paramètres Midjourney. */
+function illustrationSection(data) {
+  const ill = data.illustration || {};
+  const pr = ill.prompt;
+  const promptBlock = (title, text) => text
+    ? el("div", { class: "prompt" }, [el("h5", {}, [title, " ", (() => { const b = el("button", { class: "quiet small", text: "copier" }); b.addEventListener("click", () => copyText(text, b)); return b; })()]), el("pre", { text })])
+    : null;
+  const image = ill.present
+    ? el("figure", {}, [el("img", { src: `/admin/api/species/${data.id}/illustration`, alt: `illustration de ${data.id}`, loading: "lazy" }), el("figcaption", { class: "meta", text: `${ill.file} · ${fmt.size(ill.bytes)}` })])
+    : el("p", { class: "meta", text: "aucune planche dans le référentiel : l'espèce n'est pas complète tant qu'elle manque" });
+  return section("Illustration", "requise pour une espèce complète · aquarelle générée d'après le prompt ci-dessous, déposée en shared/illustrations/<id>.jpg", [
+    image,
+    pr ? promptBlock("Prompt complet (Midjourney, paramètres compris)", pr.midjourney) : el("p", { class: "meta", text: "aucun prompt pour cette espèce dans shared/illustrations/PROMPTS.md : y ajouter un bloc sujet" }),
+    pr ? promptBlock("Prompt sans paramètres (Gemini, avec l'image de style jointe)", pr.full) : null,
+    pr ? el("details", {}, [el("summary", { class: "meta", text: "les trois blocs séparés" }), promptBlock("Style (commun)", pr.style), promptBlock("Composition (commune)", pr.composition), promptBlock("Sujet (cette espèce)", pr.subject)]) : null,
+  ]);
+}
+
 function renderFile(data) {
   const f = data.file;
   const refs = { ...(f.references || {}), ...((f.about || {}).references || {}) };
@@ -635,6 +677,8 @@ function renderFile(data) {
   } else {
     out.append(section("Fiche en mots", null, el("p", { class: "meta", text: "bloc about absent" })));
   }
+
+  out.append(illustrationSection(data));
 
   const refRows = Object.entries(refs).sort(([x], [y]) => x.localeCompare(y));
   out.append(section("Références", `${refRows.length} sources`, el("table", { class: "refs-table" }, [el("tbody", {}, refRows.map(([k, v]) => el("tr", {}, [el("td", {}, el("code", { text: k })), el("td", { text: v })])))])));

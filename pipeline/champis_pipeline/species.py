@@ -20,6 +20,10 @@ REFERENTIAL = Path(os.environ.get("CHAMPIS_REFERENTIAL") or ROOT / "champis")
 SPECIES_DIR = REFERENTIAL / "species"
 MAPPING_FILE = REFERENTIAL / "mapping" / "bdforet_to_hosts.json"
 PALETTE_FILE = REFERENTIAL / "shared" / "palette.json"
+# Planches des espèces (spec › Produit › Décisions prises › Illustrations des espèces, 8 nov. 2026) :
+# une aquarelle <id>.jpg par espèce, générée d'après PROMPTS.md ; requise pour une espèce complète.
+ILLUSTRATIONS_DIR = REFERENTIAL / "shared" / "illustrations"
+PROMPTS_FILE = ILLUSTRATIONS_DIR / "PROMPTS.md"
 
 ASPECT_CLASSES = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "flat"]
 COVER_CLASSES = ["fermee", "ouverte", "sans_couvert", "plantation", "non_foret"]
@@ -56,6 +60,12 @@ def load_species(species_id: str) -> dict[str, Any]:
 
 def list_species() -> list[str]:
     return sorted(p.stem for p in SPECIES_DIR.glob("*.json"))
+
+
+def illustration_path(species_id: str) -> Path | None:
+    """La planche `shared/illustrations/<id>.jpg` du référentiel, ou None si elle manque."""
+    path = ILLUSTRATIONS_DIR / f"{species_id}.jpg"
+    return path if path.is_file() else None
 
 
 def fingerprint_bytes(raw: bytes) -> bytes:
