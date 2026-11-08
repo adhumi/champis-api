@@ -425,7 +425,7 @@ function renderSheet(d) {
   const busy = sp.jobs.length > 0;
   const pub = sp.published, w = sp.worker;
   const block = (dot, title, detail, label, action, disabled) => {
-    const b = el("div", { class: "block" }, [el("span", { class: `dot ${dot}` }), el("b", { text: title }), el("span", { class: "meta", text: detail })]);
+    const b = el("div", { class: "block" }, [el("span", { class: `dot ${dot}` }), el("b", { text: title }), el("span", { class: "meta" }, [detail])]);
     if (label) {
       const btn = el("button", { class: "quiet", text: label });
       btn.disabled = !!disabled || busy;
@@ -458,7 +458,9 @@ function renderSheet(d) {
   blocks.push(block(canPublish ? "ok" : "", "Publication", "les PMTiles du worker vers le bucket · d'abord « montrer seulement » et lire le journal · jamais --prune depuis une fiche", "Montrer seulement", () => launch("publish", { depts: "all", species: groupSpecies, per_dept: true, groups: true, prune: false, dry_run: true }), !canPublish));
   blocks.push(block(canPublish ? "ok" : "", "Publication réelle", `téléverse les tuiles du groupe ${sp.group.name} et réécrit le manifeste`, "Publier", async () => { if (confirm(`Publier les tuiles du groupe ${sp.group.name} dans le bucket ?`)) await launch("publish", { depts: "all", species: groupSpecies, per_dept: true, groups: true, prune: false, dry_run: false }); }, !canPublish));
   blocks.push(block(d.grid.current ? "ok" : "warn", "Grille météo", d.grid.current ? `à jour (empreinte ${d.grid.hash})` : `empreinte ${d.grid.hash || "absente"} ≠ ${d.grid.current_hash} : à refaire pour toutes les espèces, puis à committer`, "weather-grid", () => launch("weather-grid", { depts: "all", to_bucket: true }), !w));
-  const mapDetail = sp.maps.length ? sp.maps.map((m) => `z${m.zoom} (${fmt.size(m.bytes)}${m.current ? "" : ", ancien jeu"})`).join(" · ") : "aucune carte";
+  const mapDetail = sp.maps.length
+    ? el("span", {}, sp.maps.flatMap((m, i) => [i ? " · " : "", mapLink(sp.id, m)]))
+    : "aucune carte";
   blocks.push(block(sp.maps.some((m) => m.current) ? "ok" : "", "Carte HD", mapDetail, "Générer", () => launch("render", { species: sp.id, zoom: $("species-zoom").value, force: false }), !pub || !pub.hash));
   const jobs = sp.jobs.length
     ? el("p", { class: "meta" }, ["tâche en cours : ", ...sp.jobs.map((j) => el("a", { href: "#jobs", text: `${KINDS[j.kind] ? KINDS[j.kind].label : j.kind} (${j.status}${j.step_name ? ", " + j.step_name : ""})` }))])
@@ -470,6 +472,22 @@ function renderSheet(d) {
     jobs,
     fileDetails(sp),
   ]));
+}
+
+/* Une carte HD présente dans le bucket : « z9 · 12 Mo · ouvrir ». L'URL signée dure une heure ;
+   au clic, la page en redemande une fraîche plutôt que d'ouvrir un lien périmé. */
+function mapLink(speciesId, m) {
+  const a = el("a", { href: m.url || "#", target: "_blank", rel: "noopener", text: "ouvrir" });
+  a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const w = window.open("", "_blank");
+    try {
+      const d = await api("/admin/api/species");
+      const fresh = (d.species.find((s) => s.id === speciesId) || { maps: [] }).maps.find((x) => x.key === m.key);
+      if (fresh && fresh.url) w.location = fresh.url; else { w.close(); alert("carte introuvable : elle a peut-être été remplacée"); }
+    } catch (err) { w.close(); alert(err.message); }
+  });
+  return el("span", { class: "map" }, [`z${m.zoom} · ${fmt.size(m.bytes)}${m.current ? "" : " (ancien jeu)"} · `, a]);
 }
 
 // ------------------------------------------------------------------ fichier espèce, lecture structurée
