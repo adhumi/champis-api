@@ -5,7 +5,7 @@
 const $ = (id) => document.getElementById(id);
 const HEADERS = { "X-Champis-Admin": "1" };
 const KINDS = {};
-let timers = { health: null, jobs: null, job: null };
+let timers = { health: null, jobs: null, job: null, tools: null };
 
 async function api(path, options = {}) {
   const r = await fetch(path, { credentials: "same-origin", ...options, headers: { ...HEADERS, ...(options.headers || {}) } });
@@ -68,7 +68,7 @@ function showTab(name) {
   document.querySelectorAll("#tabs button[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((s) => (s.hidden = s.id !== name));
   location.hash = name;
-  ({ health: loadHealth, usage: loadUsage, jobs: loadJobs })[name]();
+  ({ health: loadHealth, usage: loadUsage, jobs: loadJobs, tools: loadTools, renders: loadRenders })[name]();
 }
 
 // ------------------------------------------------------------------ utilitaires d'affichage
@@ -151,6 +151,13 @@ async function loadHealth() {
       ["amorçage publié", b.seed ? `${fmt.when(b.seed.published)} · ${fmt.n(b.seed.history_cells)} cellules` : "aucun"],
     ]));
   }
+  if (h.workers && h.workers.length) cards.push(card("Service d'exécution", h.workers.flatMap((w) => [
+    [w.name, el("span", {}, [w.silent_min != null && w.silent_min > 2 ? status("manque") : status("ok"), ` battement ${fmt.ago(w.heartbeat_at)}`])],
+    ["volume", w.disk_free_mb != null ? `${fmt.size(w.disk_free_mb * 1e6)} libres sur ${fmt.size(w.disk_total_mb * 1e6)}` : "—"],
+    ["tâche en cours", w.current_job ? el("a", { href: "#jobs", text: w.current_job.slice(0, 8) }) : "aucune"],
+    ["version", w.build || "—"],
+  ])));
+  else cards.push(card("Service d'exécution", [["état", "aucun battement : le service champis-jobs n'a pas encore tourné"]]));
   const days = Object.entries(h.traffic);
   cards.push(card("Trafic (7 jours)", days.length
     ? days.map(([d, v]) => [d, `${fmt.n(v.http_429 || 0)} × 429 · ${fmt.n(v.http_5xx || 0)} × 5xx`]) : [["relevé", "rien"]]));
@@ -273,8 +280,102 @@ async function showJob(id) {
   ].filter(Boolean).join(" · ");
   $("job-events").replaceChildren(...d.events.map((e) => el("li", { class: e.level }, [el("span", { class: "at", text: new Date(e.at).toLocaleTimeString("fr-FR") }), e.text])));
   const log = $("job-log"); log.hidden = !d.log_url; if (d.log_url) log.href = d.log_url;
+  const cancel = $("job-cancel");
+  cancel.hidden = !(j.status === "running" || j.status === "queued") || j.cancel_requested;
+  cancel.onclick = async () => {
+    if (!confirm("Annuler cette tâche ? Les étapes faites restent faites ; relancer reprendra là où ça s'est arrêté.")) return;
+    try { await api(`/admin/api/jobs/${id}/cancel`, { method: "POST" }); } catch (err) { alert(err.message); }
+    showJob(id);
+  };
   $("job-detail").scrollIntoView({ behavior: "smooth", block: "start" });
   if (j.status === "running" || j.status === "queued") timers.job = setTimeout(() => showJob(id), 3000);
 }
 
 enter();
+
+// ------------------------------------------------------------------ outils
+
+async function loadTools() {
+  clearTimeout(timers.tools);
+  let t;
+  try { t = await api("/admin/api/tools"); } catch (err) { $("tools-list").replaceChildren(el("p", { class: "error", text: err.message })); return; }
+  Object.assign(KINDS, Object.fromEntries(t.tools.map((x) => [x.kind, { label: x.label }])));
+  const workers = $("tools-workers");
+  workers.replaceChildren(...(t.workers.length ? t.workers.map((w) => {
+    const silent = (Date.now() - new Date(w.heartbeat_at)) / 60000;
+    return el("li", { class: silent > 2 ? "warn" : "ok" }, `Service ${w.name} : battement ${fmt.ago(w.heartbeat_at)}${w.disk_free_mb != null ? `, ${fmt.size(w.disk_free_mb * 1e6)} libres` : ""}${w.current_job ? `, tâche en cours ${w.current_job.slice(0, 8)}` : ", libre"}`);
+  }) : [el("li", { class: "warn", text: "Aucun service d'exécution n'a encore battu : une tâche lancée attendra qu'il démarre." })]));
+  const queue = $("tools-queue");
+  queue.replaceChildren();
+  if (t.queue.length) {
+    const tbl = el("table", { class: "queue" });
+    table(tbl, ["file", "sorte", "origine", "état", "depuis", "dernier mot"], t.queue.map((j) => ({
+      cells: [j.id.slice(0, 8), KINDS[j.kind] ? KINDS[j.kind].label : j.kind, j.origin, status(j.status), fmt.ago(j.started_at || j.created_at), j.message || (j.step_name ? `[${j.step_index}/${j.step_total}] ${j.step_name}` : "")],
+      onclick: () => { showTab("jobs"); showJob(j.id); },
+    })));
+    queue.append(tbl);
+  }
+  $("tools-list").replaceChildren(...t.tools.map((tool) => toolCard(tool, t.queue)));
+  if (t.queue.length) timers.tools = setTimeout(loadTools, 5000);
+}
+
+function toolCard(tool, queue) {
+  const busy = queue.find((j) => j.kind === tool.kind);
+  const form = el("form");
+  for (const f of tool.fields) {
+    let input;
+    if (f.kind === "bool") { input = el("input", { type: "checkbox", name: f.name }); input.checked = !!f.default; }
+    else if (f.kind === "number") { input = el("input", { type: "number", name: f.name, step: "any", value: f.default }); if (f.min != null) input.min = f.min; if (f.max != null) input.max = f.max; }
+    else { input = el("select", { name: f.name }); for (const c of f.choices || []) input.append(el("option", { value: c, text: c })); input.value = String(f.default); }
+    form.append(el("label", {}, [el("span", { text: f.label }), input]));
+  }
+  const button = el("button", { type: "submit", text: busy ? `déjà ${busy.status}` : "Lancer" });
+  if (busy && tool.exclusive) button.disabled = true;
+  const result = el("span", { class: "meta" });
+  form.append(el("div", { class: "row" }, [button, result]));
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const args = {};
+    for (const f of tool.fields) {
+      const input = form.elements[f.name];
+      args[f.name] = f.kind === "bool" ? input.checked : input.value;
+    }
+    button.disabled = true;
+    try {
+      const r = await api("/admin/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: tool.kind, args }) });
+      result.textContent = `en file (${r.id.slice(0, 8)})`;
+      result.className = "meta ok";
+      setTimeout(loadTools, 800);
+    } catch (err) { result.textContent = err.message; result.className = "error"; button.disabled = false; }
+  });
+  return el("div", { class: "card tool" }, [
+    el("h3", { text: tool.label }),
+    el("p", { class: "meta", text: `${tool.duration} · ${tool.needs}${tool.exclusive ? " · une seule à la fois" : ""}` }),
+    form,
+  ]);
+}
+
+// ------------------------------------------------------------------ cartes HD
+
+async function loadRenders() {
+  let r;
+  try { r = await api("/admin/api/renders"); } catch (err) { table($("renders-table"), ["erreur"], [{ cells: [err.message] }]); return; }
+  const zoomSelect = $("renders-zoom");
+  if (!zoomSelect.options.length) for (const z of r.zooms) zoomSelect.append(el("option", { value: z, text: `${z} (${z === 9 ? "≈ A3" : "≈ A1"})` }));
+  $("renders-meta").textContent = r.generated ? `jeu de tuiles du ${fmt.when(r.generated)}` : "aucun manifeste de tuiles";
+  const launch = async (species, button) => {
+    button.disabled = true;
+    try {
+      await api("/admin/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "render", args: { species, zoom: zoomSelect.value, force: false } }) });
+      button.textContent = "en file";
+    } catch (err) { alert(err.message); button.disabled = false; }
+  };
+  $("renders-all").onclick = (e) => launch("all", e.target);
+  table($("renders-table"), ["espèce", "T publié", "cartes présentes", "générer"], r.species.map((sp) => {
+    const files = sp.files.length ? el("span", {}, sp.files.flatMap((f, i) => [i ? " · " : "", el("a", { href: f.url, text: `z${f.zoom} (${fmt.size(f.bytes)}${f.current ? "" : ", ancien jeu"})` })])) : "aucune";
+    const button = el("button", { class: "quiet", text: "Générer" });
+    if (!sp.published) button.disabled = true;
+    button.addEventListener("click", () => launch(sp.species, button));
+    return { cells: [el("span", {}, [el("b", { text: sp.name }), ` (${sp.latin})`]), sp.published ? status("ok") : el("span", { class: "meta", text: "pas de tuiles" }), files, button] };
+  }));
+}

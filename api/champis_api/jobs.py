@@ -41,6 +41,8 @@ KINDS: dict[str, str] = {
     "seed": "amorçage météo",
     "publish-seed": "publication de l'amorçage",
     "publish-cache": "publication du cache",
+    "render": "carte HD",
+    "soil-clim": "climatologie du sol",
 }
 
 # ce que les crons Railway sont censés faire : au-delà, la page Santé alerte

@@ -14,8 +14,8 @@
     <button data-tab="health" class="active">Santé</button>
     <button data-tab="usage">Usage</button>
     <button data-tab="jobs">Tâches</button>
-    <button disabled title="Lot BO3 : service d'exécution">Outils</button>
-    <button disabled title="Lot BO3 : service d'exécution">Cartes</button>
+    <button data-tab="tools">Outils</button>
+    <button data-tab="renders">Cartes</button>
     <span class="spacer"></span>
     <button id="logout" class="quiet">Se déconnecter</button>
   </nav>
@@ -63,9 +63,26 @@
       <p id="job-status" class="meta"></p>
       <div class="progress"><div id="job-bar"></div></div>
       <p id="job-progress" class="meta"></p>
+      <p><button id="job-cancel" class="quiet" hidden>Annuler cette tâche</button></p>
       <ol id="job-events" class="events"></ol>
       <p><a id="job-log" href="#" hidden>Journal complet</a></p>
     </article>
+  </section>
+  <section id="tools" class="tab" hidden>
+    <p class="meta">Chaque outil est une commande <code>champis-api</code> ou <code>champis-pipeline</code> aux options bornées, lancée par le service d'exécution <code>champis-jobs</code> sur son volume, une tâche à la fois. Le suivi se fait dans l'onglet Tâches.</p>
+    <ul id="tools-workers" class="alerts"></ul>
+    <div id="tools-queue"></div>
+    <div id="tools-list" class="grid"></div>
+  </section>
+
+  <section id="renders" class="tab" hidden>
+    <p class="meta">Carte HD de la France du potentiel toute saison (T) de chaque espèce, rendue depuis les PMTiles publiés : violet dont l'intensité est T sur fond blanc, limites des départements, cartouche. Niveau 9 ≈ 5 600 × 5 600 px (un A3 à 300 dpi), niveau 10 ≈ 11 300 × 11 300 px (un A1). Une carte se rend une fois par jeu publié.</p>
+    <div class="row">
+      <label>Niveau <select id="renders-zoom"></select></label>
+      <button id="renders-all">Générer toutes les espèces</button>
+      <span id="renders-meta" class="meta"></span>
+    </div>
+    <table id="renders-table"></table>
   </section>
 </main>
 <script src="/admin/static/admin.js"></script>

@@ -4,7 +4,11 @@
 - `POST /admin/login` (`{"key": …}`) pose le cookie, 5 essais par minute et par IP ;
   `POST /admin/logout` le retire ;
 - `GET /admin/api/me`, `/health`, `/usage?days=90`, `/jobs?limit=50&kind=`, `/jobs/<id>` :
-  ce que la page affiche, derrière le cookie ou `Authorization: Bearer <clé>`.
+  ce que la page affiche, derrière le cookie ou `Authorization: Bearer <clé>` ;
+- lot BO3 : `GET /admin/api/tools` (catalogue, état du service d'exécution, file), `POST
+  /admin/api/jobs` (`{"kind", "args"}` → tâche `queued`, que `champis-jobs` prend), `POST
+  /admin/api/jobs/<id>/cancel`, `GET /admin/api/renders` (cartes HD présentes dans le bucket, URL
+  présignées d'une heure).
 
 Tout répond 404 sans `CHAMPIS_ADMIN_KEY`. `X-Robots-Tag: noindex` partout.
 """
@@ -21,7 +25,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from .. import counts
+from .. import counts, jobs, render, tools
 from ..ratelimit import TokenBuckets, client_ip
 from . import auth, health
 
@@ -190,9 +194,103 @@ async def api_job(job_id: str, request: Request, _: auth.Authenticated) -> JSONR
 
 
 def _kinds() -> dict[str, Any]:
-    from .. import jobs
-
     return {
         k: {"label": v, "expected_every_h": jobs.EXPECTED_EVERY_H.get(k)}
         for k, v in jobs.KINDS.items()
     }
+
+
+# ------------------------------------------------------------------ lot BO3 : lancer, annuler, cartes
+
+
+class Launch(BaseModel):
+    kind: str
+    args: dict[str, Any] = {}
+
+
+def _queue(store) -> list[dict[str, Any]]:
+    return store.jobs_with_status(("queued", "running"))
+
+
+@router.get("/api/tools")
+async def api_tools(request: Request, _: auth.Authenticated) -> JSONResponse:
+    store = _store(request)
+    workers_, queue = await asyncio.to_thread(lambda: (store.list_workers(), _queue(store)))
+    return JSONResponse(
+        {"tools": tools.describe(), "workers": workers_, "queue": queue}, headers=ROBOTS
+    )
+
+
+@router.post("/api/jobs", status_code=201)
+async def api_launch(body: Launch, request: Request, _: auth.Action) -> JSONResponse:
+    store = _store(request)
+    try:
+        args = tools.validate(body.kind, body.args)
+    except tools.ToolError as e:
+        raise HTTPException(422, str(e)) from e
+    tool = tools.TOOLS[body.kind]
+    if tool.exclusive:
+        busy = [j for j in await asyncio.to_thread(_queue, store) if j["kind"] == body.kind]
+        if busy:
+            raise HTTPException(
+                409, f"{tool.label} : une tâche est déjà {busy[0]['status']} ({busy[0]['id']})"
+            )
+    job_id = await asyncio.to_thread(store.create_job, body.kind, args, "admin", datetime.now(UTC))
+    log.info("backoffice : %s mis en file (%s)", body.kind, job_id)
+    return JSONResponse(
+        {"id": job_id, "kind": body.kind, "args": args}, status_code=201, headers=ROBOTS
+    )
+
+
+@router.post("/api/jobs/{job_id}/cancel")
+async def api_cancel(job_id: str, request: Request, _: auth.Action) -> JSONResponse:
+    store = _store(request)
+    state = await asyncio.to_thread(store.request_cancel, job_id, datetime.now(UTC))
+    if state is None:
+        raise HTTPException(409, "tâche inconnue ou déjà terminée")
+    return JSONResponse({"id": job_id, "status": state}, headers=ROBOTS)
+
+
+@router.get("/api/renders")
+async def api_renders(request: Request, _: auth.Authenticated) -> JSONResponse:
+    """Par espèce : nom, empreinte publiée, et les cartes présentes par niveau (URL d'une heure)."""
+    from champis_pipeline.species import list_species, load_species
+    from champis_pipeline.storage import MANIFEST_KEY
+
+    bucket = _state(request).bucket
+    if bucket is None:
+        raise HTTPException(503, "bucket non configuré")
+
+    def gather():
+        manifest = bucket.get_json(MANIFEST_KEY) or {}
+        present = render.list_renders(bucket)
+        out = []
+        for sid in list_species():
+            names = load_species(sid).get("names", {})
+            entry = render.france_entry(manifest, sid)
+            files = [
+                {
+                    **info,
+                    "current": bool(entry) and info["hash"] == entry["hash"],
+                    "url": bucket.presign(info["key"], 3600),
+                }
+                for info in present
+                if info["species"] == sid
+            ]
+            out.append(
+                {
+                    "species": sid,
+                    "name": names.get("fr", sid),
+                    "latin": names.get("la", ""),
+                    "published": entry is not None,
+                    "hash": entry["hash"] if entry else None,
+                    "files": files,
+                }
+            )
+        return {
+            "generated": manifest.get("generated"),
+            "zooms": list(tools.RENDER_ZOOMS),
+            "species": out,
+        }
+
+    return JSONResponse(await asyncio.to_thread(gather), headers=ROBOTS)

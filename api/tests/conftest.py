@@ -203,3 +203,6 @@ class MemoryBucket:
 
     def presign(self, key, expires_s):
         return f"https://bucket.test/{key}"
+
+    def get_range(self, key, offset, length):
+        return self.objects[key][offset : offset + length]

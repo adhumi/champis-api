@@ -343,7 +343,9 @@ _current: Console | None = None
 def get() -> Console:
     """La console du processus ; une console nue (stderr, sans journal) si `setup` n'a pas été appelé."""
     global _current
-    if _current is None:
+    # une console dont le flux est fermé (fin d'un `run` sous pytest, flux capturé rendu) ne peut
+    # plus rien écrire : on repart d'une console nue
+    if _current is None or getattr(_current.stream, "closed", False):
         _current = Console()
     return _current
 

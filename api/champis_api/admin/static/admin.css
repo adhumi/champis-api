@@ -74,3 +74,9 @@ tr.clickable:hover td { background: rgba(99, 49, 121, 0.08); }
 .bars .bar { height: 10px; background: var(--rule); border-radius: 5px; overflow: hidden; }
 .bars .bar div { height: 100%; background: var(--accent); }
 .bars .pct { font-variant-numeric: tabular-nums; color: var(--quiet); }
+.tool form { display: grid; gap: 6px; margin-top: 8px; font-size: 13px; }
+.tool label { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tool input[type=number], .tool select { width: 9em; }
+.tool .row { justify-content: space-between; }
+.tool .ok { color: var(--ok); }
+.queue { margin: 8px 0 16px; }

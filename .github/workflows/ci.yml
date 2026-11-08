@@ -61,7 +61,7 @@ jobs:
         run: uv run python champis/species/validate.py
 
   # Railway ne récupère pas les sous-modules (build depuis un instantané sans .git) : la CI, qui a le
-  # référentiel, déploie l'API et les deux crons avec `railway up` après des tests verts sur main, ou
+  # référentiel, déploie l'API, les deux crons et le service d'exécution avec `railway up` après des tests verts sur main, ou
   # à la main (workflow_dispatch). RAILWAY_TOKEN : jeton de projet Railway (environnement production).
   deploy:
     needs: python
@@ -81,6 +81,8 @@ jobs:
           - service: champis-warm
             mode: --detach
           - service: champis-notify
+            mode: --detach
+          - service: champis-jobs
             mode: --detach
     steps:
       - uses: actions/checkout@v4
