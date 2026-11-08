@@ -101,6 +101,8 @@ export default defineRailway(() => {
     env: {
       ...bucketEnv,
       DATABASE_URL: db.env.DATABASE_URL,
+      // le pipeline (brut, rasters, T, tuiles, journaux) écrit sur le volume, pas dans le conteneur
+      CHAMPIS_DATA_DIR: "/data",
       CDSAPI_URL: preserve(),
       CDSAPI_KEY: preserve(),
     },

@@ -25,6 +25,7 @@ import time
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from champis_pipeline import console
 
@@ -38,6 +39,46 @@ POLL_S = 5.0
 HEARTBEAT_S = 30.0
 GRACE_S = 30.0
 EXIT_CANCELLED = 130
+
+
+def inventory() -> dict[str, Any]:
+    """Ce qu'il y a sur le volume, en noms seulement (lot BO5) : par espèce, les T à jour et
+    périmés ; les PMTiles présents ; l'état du batch. Quelques ko, publiés avec le battement :
+    l'API n'a pas le volume et c'est d'ici que la fiche d'une espèce sait où elle en est."""
+    from champis_pipeline import batch, config
+    from champis_pipeline.species import list_species, species_hash
+
+    t: dict[str, dict[str, int]] = {}
+    for sid in list_species():
+        folder = config.T_DIR / sid
+        current = stale = 0
+        if folder.is_dir():
+            h = species_hash(sid)
+            for f in folder.glob("*.tif"):
+                if f.stem.endswith(f"-{h}"):
+                    current += 1
+                else:
+                    stale += 1
+        t[sid] = {"current": current, "stale": stale}
+    tiles = (
+        sorted(p.name for p in config.TILES_DIR.glob("*.pmtiles"))
+        if config.TILES_DIR.is_dir()
+        else []
+    )
+    status = batch.load_status()
+    finished = [v.get("finished", "") for v in status.values() if v.get("finished")]
+    return {
+        "at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "data_dir": str(config.DATA_DIR),
+        "depts": len(batch.DEPTS_ALL),
+        "t": t,
+        "tiles": tiles,
+        "batch": {
+            "ok": sum(1 for v in status.values() if v.get("ok")),
+            "failed": sum(1 for v in status.values() if v.get("ok") is False),
+            "last": max(finished) if finished else None,
+        },
+    }
 
 
 def disk_mb(path: Path) -> tuple[int | None, int | None]:
@@ -79,6 +120,11 @@ class Worker:
     def heartbeat(self, current_job: str | None) -> None:
         free, total = disk_mb(self.settings.cache_db.parent)
         try:
+            inv = inventory()
+        except Exception:  # un inventaire qui échoue ne prive pas du battement
+            log.exception("worker : inventaire du volume impossible")
+            inv = None
+        try:
             self.store.worker_heartbeat(
                 self.name,
                 datetime.now(UTC),
@@ -87,6 +133,7 @@ class Worker:
                 total,
                 self.settings.build,
                 self.started,
+                inventory=inv,
             )
         except Exception:
             log.exception("worker : battement non enregistré")
