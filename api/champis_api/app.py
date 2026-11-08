@@ -25,7 +25,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
-from champis_pipeline.species import list_species
+from champis_pipeline.species import list_species, species_groups
 from champis_pipeline.storage import Bucket, BucketLike
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -221,12 +221,36 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     def _store():
         return getattr(getattr(app.state, "champis", None), "store", None)
 
+    # appareils actifs (lot BO2) : par worker, les empreintes déjà écrites aujourd'hui
+    tracker = counts.DeviceDayTracker()
+    groups = species_groups()  # cible d'une requête météo : groupe ou espèce
+
+    def _measure(store: Store, request, status: int) -> None:
+        """Dans un fil, après la réponse : ce que la mesure minimale retient de la requête."""
+        day = counts.today()
+        user = counts.valid_user_id(request.headers.get("x-champis-user"))
+        if user and settings.measure_secret:
+            hashed = counts.device_hash(settings.measure_secret, user)
+            if tracker.first_today(day, hashed):
+                try:
+                    store.mark_device_day(day, hashed)
+                except Exception:
+                    log.exception("mesure : appareil actif non enregistré")
+        if request.method == "GET" and status == 200 and request.url.path in counts.LAYER_PATHS:
+            client = (
+                "app" if user else "web" if request.headers.get("origin") == site_origin else None
+            )
+            if client:
+                for target in counts.layer_targets(request.query_params.getlist("species"), groups):
+                    counts.bump_quietly(store, counts.layer_counter(client, target), day=day)
+
     @app.middleware("http")
     async def count_requests(request, call_next):
         """Mesure minimale (étape C, lot C2) : une ouverture de la carte du site de plus, rien
         d'autre ; seul l'en-tête Origin est regardé (est-ce le site ?), ni adresse IP ni
         identifiant ne sont lus ou gardés. Depuis le backoffice (lot BO1) : les réponses 429 et
-        5xx du jour, en nombre seulement, pour la page Santé."""
+        5xx du jour, en nombre seulement, pour la page Santé. Lot BO2 : l'appareil de l'app réduit
+        à une empreinte par jour, et la cible (espèce ou groupe) de chaque requête météo."""
         try:
             response = await call_next(request)
         except Exception:
@@ -248,6 +272,8 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             await asyncio.to_thread(counts.bump_quietly, store, "http_429")
         elif response.status_code >= 500:
             await asyncio.to_thread(counts.bump_quietly, store, "http_5xx")
+        if request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS:
+            await asyncio.to_thread(_measure, store, request, response.status_code)
         return response
 
     app.include_router(species.router)

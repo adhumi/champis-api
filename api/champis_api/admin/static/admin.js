@@ -178,10 +178,51 @@ function sparkline(days, values) {
   return svg;
 }
 
+function renderDevices(u) {
+  const d = u.devices;
+  const kpi = (v, label) => el("div", {}, [el("strong", { text: fmt.n(v) }), el("span", { text: label })]);
+  const cards = [];
+  if (!d.enabled) cards.push(el("div", { class: "card" }, [el("h3", { text: "Appareils actifs" }),
+    el("p", { class: "meta", text: "Secret CHAMPIS_MEASURE_SECRET absent : les appareils ne sont pas comptés." })]));
+  cards.push(el("div", { class: "card" }, [
+    el("h3", { text: "Actifs (ont parlé à l'API)" }),
+    el("div", { class: "kpis" }, [kpi(d.today, "aujourd'hui"), kpi(d.yesterday, "hier"), kpi(d.week, "7 jours"), kpi(d.month, "30 jours"), kpi(d.unique, "13 mois"), kpi(d.with_coins, "avec coins")]),
+    el("p", { class: "meta", text: "Appareils distincts par jour sur 90 jours ; un appareil hors ligne ne compte pas." }),
+    sparkline(u.days, d.daily),
+  ]));
+  $("usage-devices").replaceChildren(...cards);
+}
+
+function renderLayers(u) {
+  const cards = [];
+  for (const [client, label] of [["app", "App"], ["web", "Site"]]) {
+    for (const [window_, title] of [["7d", "7 jours"], ["30d", "30 jours"]]) {
+      const shares = (u.layers[window_] || {})[client] || {};
+      const total = Object.values(shares).reduce((s, n) => s + n, 0);
+      const rows = Object.entries(shares).sort((a, b) => b[1] - a[1]);
+      const bars = el("div", { class: "bars" });
+      for (const [target, n] of rows) {
+        const pct = total ? (100 * n) / total : 0;
+        bars.append(el("span", { text: target }), el("div", { class: "bar" }, [el("div", { style: `width:${pct.toFixed(1)}%` })]),
+          el("span", { class: "pct", text: `${pct.toFixed(0)} % · ${fmt.n(n)}` }));
+      }
+      cards.push(el("div", { class: "card" }, [
+        el("h3", { text: `${label} · ${title}` }),
+        el("p", { class: "meta", text: total ? `${fmt.n(total)} requêtes météo` : "rien de relevé" }),
+        bars,
+      ]));
+    }
+  }
+  $("usage-layers").replaceChildren(...cards);
+}
+
 async function loadUsage() {
   let u;
   try { u = await api("/admin/api/usage?days=90"); } catch (err) { $("usage-charts").replaceChildren(el("p", { class: "error", text: err.message })); return; }
-  const names = Object.keys(u.labels).concat(Object.keys(u.counters).filter((n) => !(n in u.labels)).sort());
+  renderDevices(u);
+  renderLayers(u);
+  const names = Object.keys(u.labels).concat(
+    Object.keys(u.counters).filter((n) => !(n in u.labels) && !n.startsWith("layer_")).sort());
   $("usage-charts").replaceChildren(...names.map((name) => {
     const values = u.counters[name] || {}; const days = u.days;
     const total = days.reduce((s, d) => s + (values[d] || 0), 0);

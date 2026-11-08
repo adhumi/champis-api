@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import (
@@ -98,6 +98,16 @@ daily_counts = Table(
     Column("day", Date, primary_key=True),
     Column("name", String(48), primary_key=True),
     Column("value", Integer, nullable=False),
+)
+
+# Appareils actifs (spec › Backoffice › Usage, tranché le 8 nov. 2026, `counts.py`) : une ligne
+# par appareil de l'app et par jour, l'appareil réduit à une empreinte HMAC (secret serveur),
+# jamais l'identifiant lui-même ; non recoupable avec les coins ni les observations. 400 jours.
+device_days = Table(
+    "device_days",
+    metadata,
+    Column("day", Date, primary_key=True),
+    Column("device_hash", String(32), primary_key=True),
 )
 
 # Journal des tâches (spec › Backoffice, 7 nov. 2026, `jobs.py`) : une ligne par exécution d'une
@@ -383,8 +393,47 @@ class Store:
         with self.engine.connect() as conn:
             return {
                 t.name: int(conn.execute(select(func.count()).select_from(t)).scalar_one())
-                for t in (observations, coins, devices, daily_counts, jobs, job_events)
+                for t in (observations, coins, devices, daily_counts, device_days, jobs, job_events)
             }
+
+    # ------------------------------------------------------------------ appareils actifs
+
+    def mark_device_day(self, day: date, device_hash: str) -> bool:
+        """Un appareil vu ce jour-là ; vrai s'il ne l'avait pas encore été (plusieurs workers
+        peuvent le voir en même temps)."""
+        with self.engine.begin() as conn:
+            try:
+                with conn.begin_nested():
+                    conn.execute(insert(device_days).values(day=day, device_hash=device_hash))
+            except IntegrityError:
+                return False
+        return True
+
+    def active_devices(self, end: date, days: int) -> int:
+        """Appareils distincts vus sur les `days` jours qui se terminent à `end` inclus."""
+        since = end - timedelta(days=days - 1)
+        with self.engine.connect() as conn:
+            return int(
+                conn.execute(
+                    select(func.count(func.distinct(device_days.c.device_hash))).where(
+                        device_days.c.day >= since, device_days.c.day <= end
+                    )
+                ).scalar_one()
+            )
+
+    def daily_active_devices(self, since: date) -> dict[date, int]:
+        """Appareils distincts par jour depuis `since`."""
+        with self.engine.connect() as conn:
+            res = conn.execute(
+                select(device_days.c.day, func.count())
+                .where(device_days.c.day >= since)
+                .group_by(device_days.c.day)
+            )
+            return {r[0]: int(r[1]) for r in res}
+
+    def purge_device_days(self, before: date) -> int:
+        with self.engine.begin() as conn:
+            return conn.execute(delete(device_days).where(device_days.c.day < before)).rowcount
 
     # ------------------------------------------------------------------ journal des tâches
 
