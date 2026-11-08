@@ -79,6 +79,7 @@ all --dept 25 · 7 espèce(s)
 | `api/tests/test_weather_api.py`, `test_departements.py`, `test_observations.py`, `test_coins.py`, `test_ratelimit.py` | Contrats des endpoints, cache 12 h, pannes et quotas Open-Meteo, amorçage, indice par département, retour terrain, coins et notifications, limitation de débit |
 | `api/tests/test_app_lifespan.py`, `test_api_cli.py`, `test_doctor.py` | Démarrage réel de l'API en mode dégradé, planificateurs, commandes `champis-api` de bout en bout |
 | `api/tests/test_admin.py`, `test_jobs.py` | Backoffice `/admin` : fermé sans clé, cookie signé, Bearer, origine et essais limités, pages Santé, Usage et Tâches ; journal des tâches, puits de la console, inscription des commandes, compteurs 429 et 5xx |
+| `api/tests/test_measure.py`, `test_worker.py`, `test_render.py` | Appareils actifs par empreinte et parts d'espèces ; catalogue d'outils, service d'exécution (file, battement, annulation, sortes exclusives), routes de lancement ; carte HD rendue depuis des PMTiles synthétiques lus par plages |
 
 La CI exige une couverture d'au moins 90 % du pipeline et de l'API (`make check`, `make coverage` pour le détail). Ce qui n'est pas couvert et assumé : les appels réseau réels (Géoplateforme, ISRIC, AWS, Open-Meteo, APNs, CDS) ; le site a ses propres tests dans `adhumi/champis-web`.
 
@@ -90,13 +91,14 @@ uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/b
 
 ## Déploiement
 
-Railway, trois services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python) :
+Railway, quatre services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python) :
 
 | Service (`.railway/railway.ts`) | Commande | Rôle |
 | --- | --- | --- |
 | `champis` (API) | `uvicorn` (CMD du `Dockerfile`) | FastAPI, plusieurs workers uvicorn (`CHAMPIS_WORKERS`, 2), volume sur `/data` (cache météo SQLite), relais de tuiles avec cache disque des plages sur le volume (`CHAMPIS_TILE_CACHE_MB`), backoffice privé `/admin` (`CHAMPIS_ADMIN_KEY` ; `api/README.md` › Backoffice) |
 | `champis-warm` (cron) | `champis-api warm --pull --publish` | À 2 h et 14 h UTC (3 h et 15 h Paris en hiver, une heure plus tard en été) : pré-chauffe Open-Meteo, indice par département, météo précalculée, puis instantané du cache déposé dans le bucket |
 | `champis-notify` (cron) | `champis-api notify --pull` | À 6 h UTC (7 h Paris en hiver) : notification « mes coins » |
+| `champis-jobs` (worker) | `champis-api worker` | Service d'exécution du backoffice (spec › Backoffice, lot BO3) : prend les tâches mises en file depuis `/admin` (pré-chauffe à la demande, notification, publications, amorçage, climatologie, cartes HD), une à la fois, sur son propre volume de 100 Go |
 
 Le bucket Railway porte les PMTiles (`champis-pipeline publish`, `GET /tiles`), l'amorçage météo (`champis-api seed` puis `publish-seed`, une fois par grille) et l'instantané du cache publié par le cron (`weather/weather_cache.db`), que l'API importe au démarrage puis toutes les `CHAMPIS_CACHE_POLL_MINUTES` (10). L'API n'a plus de tâche de fond : `CHAMPIS_WARM_HOURS` et `CHAMPIS_NOTIFY_HOURS` restent vides (repli sans cron : `3,15` et `7`, la passe bloque alors un worker ≈ 36 min). Postgres Railway pour les observations et les coins, clé Open-Meteo (plan Standard), clé APNs. Création des services cron, variables, migration et limites (un volume ne se monte que sur un service) : `api/README.md` › Déploiement Railway. `make doctor` dit si la pré-chauffe est intégrée ou déléguée, et la date du dernier cache publié.
 

@@ -139,6 +139,19 @@ jobs = Table(
     Column("cancel_requested", Boolean, nullable=False, default=False),
 )
 
+# Service d'exécution (lot BO3) : un battement par worker, pour la page Santé.
+workers = Table(
+    "workers",
+    metadata,
+    Column("name", String(80), primary_key=True),
+    Column("started_at", DateTime(timezone=True), nullable=False),
+    Column("heartbeat_at", DateTime(timezone=True), nullable=False),
+    Column("current_job", String(36)),
+    Column("disk_free", Integer),  # Mo
+    Column("disk_total", Integer),  # Mo
+    Column("build", String(80)),
+)
+
 job_events = Table(
     "job_events",
     metadata,
@@ -393,7 +406,16 @@ class Store:
         with self.engine.connect() as conn:
             return {
                 t.name: int(conn.execute(select(func.count()).select_from(t)).scalar_one())
-                for t in (observations, coins, devices, daily_counts, device_days, jobs, job_events)
+                for t in (
+                    observations,
+                    coins,
+                    devices,
+                    daily_counts,
+                    device_days,
+                    jobs,
+                    job_events,
+                    workers,
+                )
             }
 
     # ------------------------------------------------------------------ appareils actifs
@@ -520,6 +542,89 @@ class Store:
                 if r.kind not in out:
                     out[r.kind] = self._job(r)
         return out
+
+    def jobs_with_status(self, statuses: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Les tâches dans l'un de ces états, les plus anciennes d'abord (file du worker)."""
+        q = select(jobs).where(jobs.c.status.in_(statuses)).order_by(jobs.c.created_at.asc())
+        with self.engine.connect() as conn:
+            return [self._job(r) for r in conn.execute(q)]
+
+    def claim_job(self, job_id: str, worker: str, now: datetime) -> bool:
+        """Le worker prend une tâche `queued` ; vrai s'il l'a eue (un seul worker la prend)."""
+        ts = now.astimezone(UTC)
+        with self.engine.begin() as conn:
+            n = conn.execute(
+                update(jobs)
+                .where(jobs.c.id == job_id, jobs.c.status == "queued")
+                .values(status="running", started_at=ts, heartbeat_at=ts, worker=worker)
+            ).rowcount
+        return n == 1
+
+    def request_cancel(self, job_id: str, now: datetime) -> str | None:
+        """Annule une tâche : `queued` → `cancelled` tout de suite ; `running` → le worker arrête
+        le sous-processus. Renvoie le nouvel état, None si la tâche n'existe pas ou est finie."""
+        ts = now.astimezone(UTC)
+        with self.engine.begin() as conn:
+            row = conn.execute(select(jobs.c.status).where(jobs.c.id == job_id)).first()
+            if row is None:
+                return None
+            if row[0] == "queued":
+                conn.execute(
+                    update(jobs)
+                    .where(jobs.c.id == job_id)
+                    .values(status="cancelled", finished_at=ts, cancel_requested=True)
+                )
+                return "cancelled"
+            if row[0] == "running":
+                conn.execute(update(jobs).where(jobs.c.id == job_id).values(cancel_requested=True))
+                return "running"
+        return None
+
+    # ------------------------------------------------------------------ service d'exécution
+
+    def worker_heartbeat(
+        self,
+        name: str,
+        now: datetime,
+        current_job: str | None,
+        disk_free_mb: int | None,
+        disk_total_mb: int | None,
+        build: str = "",
+        started_at: datetime | None = None,
+    ) -> None:
+        ts = now.astimezone(UTC)
+        values = {
+            "heartbeat_at": ts,
+            "current_job": current_job,
+            "disk_free": disk_free_mb,
+            "disk_total": disk_total_mb,
+            "build": build[:80],
+        }
+        with self.engine.begin() as conn:
+            if conn.execute(
+                update(workers).where(workers.c.name == name).values(**values)
+            ).rowcount:
+                return
+            conn.execute(
+                insert(workers).values(
+                    name=name, started_at=(started_at or now).astimezone(UTC), **values
+                )
+            )
+
+    def list_workers(self) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            return [
+                {
+                    "name": r.name,
+                    "started_at": _iso(r.started_at),
+                    "heartbeat_at": _iso(r.heartbeat_at),
+                    "current_job": r.current_job,
+                    "disk_free_mb": r.disk_free,
+                    "disk_total_mb": r.disk_total,
+                    "build": r.build,
+                }
+                for r in conn.execute(select(workers).order_by(workers.c.heartbeat_at.desc()))
+            ]
 
     def events_of(self, job_id: str, limit: int = 500) -> list[dict[str, Any]]:
         """Dans l'ordre, les `limit` derniers."""

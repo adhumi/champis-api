@@ -1,5 +1,5 @@
-// Infrastructure as Code Railway : les trois services du projet « champis » (spec › Backend ›
-// déploiement, décision du 4 nov. 2026). Config as Code (railway.toml) est déprécié et n'est plus lu
+// Infrastructure as Code Railway : les quatre services du projet « champis » (spec › Backend ›
+// déploiement, décision du 4 nov. 2026 ; service d'exécution du backoffice, 8 nov. 2026). Config as Code (railway.toml) est déprécié et n'est plus lu
 // après le 1er décembre 2026 ; les services cron créés après le 28 août 2026 ne le lisent déjà plus.
 //
 // Appliqué par la CLI depuis un poste (jamais lu par Railway au déploiement) :
@@ -24,6 +24,9 @@ export default defineRailway(() => {
   const db = postgres("Postgres");
   const storage = bucket("storage", { region: "ams" }); // PMTiles, amorçage météo, instantané du cache
   const data = volume("champis-volume", { region: "europe-west4-drams3a", sizeMB: 50000 });
+  // Service d'exécution du backoffice (spec › Backoffice › Tâches, tranché le 8 nov. 2026 : 100 Go
+  // dès le départ) : cache météo du worker, cartes HD, puis le pipeline terrain (lot BO4).
+  const jobsData = volume("champis-jobs-volume", { region: "europe-west4-drams3a", sizeMB: 100000 });
 
   // Identifiants du bucket et clés : posés une fois sur l'API (« Connect Service to Bucket »),
   // référencés par les crons ; `preserve()` garde les valeurs déjà dans Railway, jamais dans le dépôt.
@@ -87,5 +90,21 @@ export default defineRailway(() => {
     },
   });
 
-  return project("champis", { resources: [api, warm, notify, db, storage, data] });
+  // Service d'exécution `champis-jobs` (lot BO3) : sert la file des tâches du backoffice, une à la
+  // fois, en sous-processus ; même image, son propre volume, pas de port. Il tourne en permanence
+  // (il interroge Postgres : le mode Serverless ne l'endormirait pas). CDSAPI_* pour soil-clim.
+  const jobs = service("champis-jobs", {
+    start: "uv run champis-api worker",
+    deploy: { restartPolicyType: "on_failure", restartPolicyMaxRetries: 5 },
+    replicas: { "europe-west4-drams3a": 1 },
+    volumeMounts: { "/data": jobsData },
+    env: {
+      ...bucketEnv,
+      DATABASE_URL: db.env.DATABASE_URL,
+      CDSAPI_URL: preserve(),
+      CDSAPI_KEY: preserve(),
+    },
+  });
+
+  return project("champis", { resources: [api, warm, notify, jobs, db, storage, data, jobsData] });
 });

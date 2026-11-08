@@ -78,6 +78,7 @@ class BucketLike(Protocol):
     def download(self, key: str, path: Path) -> None: ...
     def get_json(self, key: str) -> Any | None: ...
     def presign(self, key: str, expires_s: int) -> str: ...
+    def get_range(self, key: str, offset: int, length: int) -> bytes: ...
 
 
 class Bucket:
@@ -132,6 +133,14 @@ class Bucket:
         return self._s3.generate_presigned_url(
             "get_object", Params={"Bucket": self.name, "Key": key}, ExpiresIn=expires_s
         )
+
+    def get_range(self, key: str, offset: int, length: int) -> bytes:
+        """`length` octets à partir de `offset` : ce que le lecteur PMTiles demande (en-tête,
+        répertoires, une tuile), sans télécharger le fichier (rendu HD du backoffice)."""
+        r = self._s3.get_object(
+            Bucket=self.name, Key=key, Range=f"bytes={offset}-{offset + length - 1}"
+        )
+        return r["Body"].read()
 
 
 def parse_tile_name(name: str) -> dict[str, Any] | None:

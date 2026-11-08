@@ -122,6 +122,31 @@ def jobs_section(
     return out
 
 
+WORKER_MAX_SILENCE_MIN = 2.0
+
+
+def workers_section(
+    store: Store | None, alerts: list[dict[str, str]], now: datetime
+) -> list[dict[str, Any]]:
+    """Le service d'exécution champis-jobs (lot BO3) : dernier battement, disque, tâche en cours."""
+    if store is None:
+        return []
+    try:
+        rows = store.list_workers()
+    except Exception:
+        return []
+    for w in rows:
+        age = jobs.age_hours(w["heartbeat_at"], now)
+        w["silent_min"] = round(age * 60, 1) if age is not None else None
+        if age is not None and age * 60 > WORKER_MAX_SILENCE_MIN:
+            _alert(
+                alerts, "warn", f"service d'exécution {w['name']} muet depuis {age * 60:.0f} min"
+            )
+        if w.get("disk_free_mb") is not None and w["disk_free_mb"] < 5000:
+            _alert(alerts, "error", f"moins de 5 Go libres sur le volume de {w['name']}")
+    return rows
+
+
 def manifest_summary(manifest: dict[str, Any]) -> dict[str, Any]:
     """Les jeux publiés : par empreinte de départements, le nombre de fichiers par sorte."""
     sets: dict[str, dict[str, Any]] = {}
@@ -212,6 +237,7 @@ def gather(
         "tile_cache": tile_cache_section(state, settings),
         "database": database_section(store, alerts),
         "jobs": jobs_section(store, alerts, now),
+        "workers": workers_section(store, alerts, now),
         "bucket": bucket_section(state.bucket, alerts),
         "traffic": traffic_section(store, alerts, counts.today()),
     }

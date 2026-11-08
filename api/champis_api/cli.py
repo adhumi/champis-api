@@ -8,7 +8,10 @@ dépose le cache local dans le bucket (migration d'une API qui pré-chauffait el
 l'historique depuis l'archive gratuite (hors Railway, une fois par grille ; la climatologie vient
 de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — dépôt dans le bucket ;
 `champis-api doctor [--offline]` — l'environnement est-il prêt ; `champis-api stats [--days 14]` —
-mesure minimale, les compteurs agrégés par jour (étape C, lot C2).
+mesure minimale, les compteurs agrégés par jour (étape C, lot C2) ; `champis-api render
+[--species …] [--zoom 9] [--force]` — carte HD de la France par espèce dans le bucket (backoffice,
+lot BO3) ; `champis-api worker [--once]` — le service d'exécution `champis-jobs`, qui sert la file
+des tâches du backoffice.
 
 Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/). Journal
 des tâches (spec › Backoffice, lot BO1) : quand `DATABASE_URL` est fournie, chaque commande qui
@@ -248,6 +251,56 @@ async def _notify(pull: bool) -> int:
     return 0 if r.failed == 0 else 1
 
 
+def _render(species: list[str] | None, zoom: int, force: bool) -> int:
+    """Carte HD de la France du potentiel toute saison (spec › Backoffice › Carte HD) : une étape
+    par espèce, les tuiles lues dans le bucket par plages, le PNG déposé sous `renders/`."""
+    from . import render
+
+    c = console.get()
+    settings = Settings()
+    bucket = _bucket(settings, "render")
+    wanted = [s for s in (species or []) if s != "all"] or list_species()
+    unknown = [s for s in wanted if s not in list_species()]
+    if unknown:
+        raise SystemExit(f"espèce inconnue : {', '.join(unknown)}")
+    steps = c.steps(1 + len(wanted), f"render · {len(wanted)} espèce(s) · niveau {zoom}")
+    with steps.step("limites des départements (site)") as step:
+        boundaries = render.fetch_boundaries(settings.site_url)
+        step.note(f"{len(boundaries)} départements")
+    manifest = bucket.get_json(render.MANIFEST_KEY) or {}
+    missing = 0
+    for sid in wanted:
+        with steps.step(f"carte {sid}") as step:
+            try:
+                info = render.render(
+                    bucket,
+                    sid,
+                    zoom,
+                    settings.cache_db.parent / "renders",
+                    boundaries,
+                    force=force,
+                    manifest=manifest,
+                    progress=lambda done, total: step.progress(done, total, "tuiles"),
+                )
+            except LookupError as e:
+                missing += 1
+                step.skip(str(e))
+                continue
+            if info["skipped"]:
+                step.skip(f"{info['key']} déjà dans le bucket ({console.size(info['bytes'])})")
+            else:
+                step.note(
+                    f"{info['key']} · {info['width']} × {info['height']} px · "
+                    f"{console.size(info['bytes'])} · {info['tiles']} tuiles"
+                )
+    c.summary(
+        "cartes à jour"
+        if not missing
+        else f"{missing} espèce(s) sans tuiles publiées, pas de carte"
+    )
+    return 0 if not missing else 1
+
+
 def _publish_seed(path: Path) -> int:
     from champis_pipeline.storage import Bucket, S3Config
 
@@ -320,6 +373,20 @@ def build_parser() -> argparse.ArgumentParser:
         help="dépose un instantané du cache météo local dans le bucket (migration vers le cron)",
     )
     p = sub.add_parser(
+        "render",
+        help="carte HD de la France du potentiel toute saison (PNG dans le bucket, backoffice)",
+    )
+    p.add_argument("--species", action="append", help="id d'espèce (répétable) ; défaut : toutes")
+    p.add_argument("--zoom", type=int, default=9, choices=(9, 10), help="niveau de tuiles rendu")
+    p.add_argument("--force", action="store_true", help="refaire même si la carte existe")
+    p = sub.add_parser(
+        "worker", help="service d'exécution : sert la file des tâches du backoffice (champis-jobs)"
+    )
+    p.add_argument("--once", action="store_true", help="traite au plus une tâche puis s'arrête")
+    p.add_argument(
+        "--poll", type=float, default=5.0, help="secondes entre deux lectures de la file"
+    )
+    p = sub.add_parser(
         "stats", help="mesure minimale : les compteurs agrégés par jour (Adrien seul)"
     )
     p.add_argument("--days", type=int, default=14, help="nombre de jours, aujourd'hui compris")
@@ -368,6 +435,12 @@ def _dispatch(args) -> int:
         return asyncio.run(_seed(args.out, args.interval, args.climatology))
     if args.cmd == "publish-seed":
         return _publish_seed(args.seed)
+    if args.cmd == "render":
+        return _render(args.species, args.zoom, args.force)
+    if args.cmd == "worker":
+        from . import worker
+
+        return worker.main(Settings(), once=args.once, poll_s=args.poll)
     return asyncio.run(_warm(args.interval, args.pull, args.publish))
 
 
