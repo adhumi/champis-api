@@ -261,7 +261,11 @@ async def api_species(request: Request, _: auth.Authenticated) -> JSONResponse:
     settings = request.app.state.settings
 
     def gather():
-        workers_ = st.store.list_workers() if st.store is not None else []
+        try:
+            workers_ = st.store.list_workers() if st.store is not None else []
+        except Exception:  # base injoignable : la fiche se passe de l'inventaire du volume
+            log.exception("admin : service d'exécution illisible")
+            workers_ = []
         return species_view.gather(settings, st.bucket, st.store, workers_)
 
     return JSONResponse(await asyncio.to_thread(gather), headers=ROBOTS)

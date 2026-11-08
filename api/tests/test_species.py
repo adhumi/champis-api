@@ -255,6 +255,10 @@ def test_data_dir_follows_the_environment(tmp_path: Path):
     assert r.stdout.split() == [str(tmp_path), str(tmp_path / "T")]
 
 
+def _raise():
+    raise RuntimeError("column workers.inventory does not exist")
+
+
 @pytest.mark.asyncio
 async def test_species_route(grid, client, store):
     bucket = MemoryBucket()
@@ -272,10 +276,70 @@ async def test_species_route(grid, client, store):
     ):
         assert (await c.get("/admin/api/species")).status_code == 401
         r = await c.get("/admin/api/species", headers=BEARER)
+        # une base qui refuse (colonne absente, Postgres injoignable) ne fait pas tomber l'onglet
+        store.list_workers = _raise
+        r_degraded = await c.get("/admin/api/species", headers=BEARER)
     assert r.status_code == 200
+    assert r_degraded.status_code == 200
+    assert next(s for s in r_degraded.json()["species"] if s["id"] == CEPE)["worker"] is None
     d = r.json()
     assert len(d["species"]) == len(species_groups()["cepes"]) + sum(
         len(v) for g, v in species_groups().items() if g != "cepes"
     )
     cepe = next(s for s in d["species"] if s["id"] == CEPE)
     assert cepe["state"] == "a_jour" and cepe["worker"]["t_current"] == 96
+
+
+def test_store_adds_a_column_missing_from_an_existing_table(tmp_path):
+    """Constaté le 8 nov. 2026 au déploiement du lot BO5 : `workers` existait depuis le lot BO3 sans
+    `inventory`, `create_all` ne l'ajoute pas, le battement du worker échouait à chaque tour."""
+    import sqlite3
+
+    from champis_api.store import Store
+
+    db = tmp_path / "old.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE workers (name VARCHAR(80) PRIMARY KEY, started_at DATETIME NOT NULL,"
+            " heartbeat_at DATETIME NOT NULL, current_job VARCHAR(36), disk_free INTEGER,"
+            " disk_total INTEGER, build VARCHAR(80))"
+        )
+        conn.execute(
+            "INSERT INTO workers VALUES ('w-old', '2026-11-08 18:20:39', '2026-11-08 19:33:00',"
+            " NULL, 90000, 100000, 'abc')"
+        )
+    store = Store(f"sqlite:///{db}")
+    now = datetime(2026, 11, 8, 19, 40, tzinfo=UTC)
+    store.worker_heartbeat("w-new", now, None, 95000, 100000, "def", now, inventory={"t": 1})
+    rows = {w["name"]: w for w in store.list_workers()}
+    assert rows["w-new"]["inventory"] == {"t": 1}
+    assert rows["w-old"]["inventory"] is None and rows["w-old"]["disk_free_mb"] == 90000
+    Store(f"sqlite:///{db}")  # une seconde ouverture ne retente pas l'ajout
+
+
+def test_a_column_added_meanwhile_by_another_process_is_not_an_error(tmp_path, monkeypatch):
+    """L'API (deux workers uvicorn) et le service d'exécution ouvrent la base en même temps."""
+    import sqlite3
+
+    from champis_api import store as store_module
+
+    db = tmp_path / "race.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute(
+            "CREATE TABLE workers (name VARCHAR(80) PRIMARY KEY, started_at DATETIME NOT NULL,"
+            " heartbeat_at DATETIME NOT NULL, current_job VARCHAR(36), disk_free INTEGER,"
+            " disk_total INTEGER, build VARCHAR(80))"
+        )
+    real_text = store_module.text
+
+    def racing_text(sql):
+        if "ADD COLUMN" in sql:  # l'autre processus passe juste avant nous
+            with sqlite3.connect(db) as conn:
+                conn.execute(sql)
+        return real_text(sql)
+
+    monkeypatch.setattr(store_module, "text", racing_text)
+    s = store_module.Store(f"sqlite:///{db}")
+    now = datetime(2026, 11, 8, 19, 40, tzinfo=UTC)
+    s.worker_heartbeat("w", now, None, 1, 2, "b", now, inventory={"ok": True})
+    assert s.list_workers()[0]["inventory"] == {"ok": True}

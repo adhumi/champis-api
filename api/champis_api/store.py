@@ -31,7 +31,9 @@ from sqlalchemy import (
     delete,
     func,
     insert,
+    inspect,
     select,
+    text,
     update,
 )
 from sqlalchemy.engine import Connection, Engine
@@ -207,6 +209,29 @@ class Store:
                 kwargs["poolclass"] = StaticPool
         self.engine: Engine = create_engine(url, **kwargs)
         metadata.create_all(self.engine)
+        self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """`create_all` ne touche pas une table qui existe : une colonne ajoutée au schéma (comme
+        `workers.inventory`, lot BO5) est créée ici par `ALTER TABLE … ADD COLUMN`, nullable, sans
+        valeur par défaut. Les colonnes retirées ou changées ne sont pas gérées (aucune à ce jour).
+        L'API et le worker ouvrent la base en même temps : un ajout qui échoue parce qu'un autre
+        processus vient de le faire est sans conséquence."""
+        for table in metadata.sorted_tables:
+            present = {c["name"] for c in inspect(self.engine).get_columns(table.name)}
+            for col in table.columns:
+                if col.name in present:
+                    continue
+                ctype = col.type.compile(dialect=self.engine.dialect)
+                try:
+                    with self.engine.begin() as conn:
+                        conn.execute(
+                            text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {ctype}')
+                        )
+                except Exception:
+                    now = {c["name"] for c in inspect(self.engine).get_columns(table.name)}
+                    if col.name not in now:
+                        raise
 
     @property
     def dialect(self) -> str:
