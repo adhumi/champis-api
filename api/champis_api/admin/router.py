@@ -9,7 +9,9 @@
   /admin/api/jobs` (`{"kind", "args"}` → tâche `queued`, que `champis-jobs` prend), `POST
   /admin/api/jobs/<id>/cancel`, `GET /admin/api/renders` (cartes HD présentes dans le bucket, URL
   présignées d'une heure) ; lot BO4 : `GET /admin/api/artifacts` (sorties du pipeline à committer) ;
-  lot BO5 : `GET /admin/api/species` (état de chaque espèce à chaque étape).
+  lot BO5 : `GET /admin/api/species` (état de chaque espèce à chaque étape), `GET
+  /admin/api/species/<id>` (fichier structuré, Φ, planche et son prompt), `GET
+  /admin/api/species/<id>/illustration` (la planche, requise pour une espèce complète).
 
 Tout répond 404 sans `CHAMPIS_ADMIN_KEY`. `X-Robots-Tag: noindex` partout.
 """
@@ -281,6 +283,17 @@ async def api_species_file(sid: str, request: Request, _: auth.Authenticated) ->
     if sid not in list_species():
         raise HTTPException(404, "espèce inconnue")
     return JSONResponse(await asyncio.to_thread(species_view.file_view, sid), headers=ROBOTS)
+
+
+@router.get("/api/species/{sid}/illustration")
+async def api_species_illustration(sid: str, _: auth.Authenticated) -> FileResponse:
+    """La planche `shared/illustrations/<id>.jpg` du référentiel (requise pour une espèce complète)."""
+    from champis_pipeline.species import illustration_path, list_species
+
+    path = illustration_path(sid) if sid in list_species() else None
+    if path is None:
+        raise HTTPException(404, "pas d'illustration pour cette espèce")
+    return FileResponse(path, media_type="image/jpeg", headers=ROBOTS)
 
 
 @router.get("/api/artifacts")

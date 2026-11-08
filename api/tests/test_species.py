@@ -13,6 +13,7 @@ from pathlib import Path
 import httpx
 import pytest
 from champis_api import tools, worker
+from champis_api.admin import illustrations
 from champis_api.admin import species as view
 from champis_api.app import State, create_app
 from champis_api.settings import Settings
@@ -279,6 +280,11 @@ async def test_species_route(grid, client, store):
         r_file = await c.get(f"/admin/api/species/{CEPE}", headers=BEARER)
         assert (await c.get("/admin/api/species/inconnue", headers=BEARER)).status_code == 404
         assert (await c.get("/admin/api/species/..%2Fmapping", headers=BEARER)).status_code == 404
+        r_img = await c.get(f"/admin/api/species/{CEPE}/illustration", headers=BEARER)
+        assert (await c.get(f"/admin/api/species/{CEPE}/illustration")).status_code == 401
+        assert (
+            await c.get("/admin/api/species/inconnue/illustration", headers=BEARER)
+        ).status_code == 404
         # une base qui refuse (colonne absente, Postgres injoignable) ne fait pas tomber l'onglet
         store.list_workers = _raise
         r_degraded = await c.get("/admin/api/species", headers=BEARER)
@@ -295,6 +301,16 @@ async def test_species_route(grid, client, store):
     body = r_file.json()
     assert body["id"] == CEPE and body["hash"] == cepe["hash"]
     assert body["file"]["names"]["la"] == cepe["latin"] and "terrain" in body["file"]
+    # la planche et son prompt (requis pour une espèce complète, 8 nov. 2026)
+    assert cepe["completeness"]["illustration"] is True
+    assert cepe["completeness"]["complete"] is True and cepe["completeness"]["missing"] == []
+    assert (
+        body["illustration"]["present"]
+        and body["illustration"]["file"] == f"shared/illustrations/{CEPE}.jpg"
+    )
+    assert "Boletus edulis" in body["illustration"]["prompt"]["subject"]
+    assert r_img.status_code == 200 and r_img.headers["content-type"] == "image/jpeg"
+    assert r_img.content[:2] == b"\xff\xd8" and len(r_img.content) == body["illustration"]["bytes"]
 
 
 def test_file_view_carries_the_file_and_the_phi_curve_of_the_api():
@@ -376,3 +392,81 @@ def test_a_column_added_meanwhile_by_another_process_is_not_an_error(tmp_path, m
     now = datetime(2026, 11, 8, 19, 40, tzinfo=UTC)
     s.worker_heartbeat("w", now, None, 1, 2, "b", now, inventory={"ok": True})
     assert s.list_workers()[0]["inventory"] == {"ok": True}
+
+
+PROMPTS_SAMPLE = """# Prompts
+
+**Style** :
+
+> Botanical watercolor,
+> soft washes.
+
+**Composition** :
+
+> Two mushrooms on moss.
+
+## Sujets
+
+### boletus_edulis — Cèpe de Bordeaux
+
+> Porcini mushrooms (Boletus edulis): brown cap,
+> white reticulation.
+
+### cantharellus_cibarius — Girolle
+
+> Golden chanterelles.
+
+## Exemple
+
+```
+Botanical watercolor … --ar 1:1 --style raw --sref <URL>
+```
+"""
+
+
+def test_prompts_are_read_from_the_referential_file():
+    """Le prompt d'une espèce = style + composition + sujet, les citations de PROMPTS.md repliées
+    en paragraphes ; les paramètres Midjourney viennent de l'exemple ; une espèce sans bloc sujet
+    n'a pas de prompt."""
+    p = illustrations.parse_prompts(PROMPTS_SAMPLE)
+    assert p.style == "Botanical watercolor, soft washes."
+    assert p.composition == "Two mushrooms on moss."
+    assert p.subjects == {
+        CEPE: "Porcini mushrooms (Boletus edulis): brown cap, white reticulation.",
+        GIROLLE: "Golden chanterelles.",
+    }
+    assert p.parameters == "--ar 1:1 --style raw --sref <URL>"
+    cepe = p.for_species(CEPE)
+    assert cepe["full"] == (
+        "Botanical watercolor, soft washes. Two mushrooms on moss. "
+        "Porcini mushrooms (Boletus edulis): brown cap, white reticulation."
+    )
+    assert cepe["midjourney"] == cepe["full"] + " --ar 1:1 --style raw --sref <URL>"
+    assert p.for_species("hydnum_repandum") is None
+    # le fichier du référentiel : un sujet par espèce, le style et la composition non vides
+    real = illustrations.load_prompts()
+    assert real is not None and real.style and real.composition and real.parameters
+    assert set(real.subjects) == set(view.list_species())
+
+
+def test_completeness_requires_about_photo_and_illustration(tmp_path: Path, monkeypatch):
+    """Une espèce est complète avec le bloc about, une photo choisie et sa planche ; chaque manque
+    est nommé. Sans fichier de prompts, la fiche dit simplement qu'il n'y en a pas."""
+    spec = {"about": {"photo": {"url": "x"}}}
+    assert view.completeness(spec, CEPE) == {
+        "about": True,
+        "photo": True,
+        "illustration": True,
+        "complete": True,
+        "missing": [],
+    }
+    monkeypatch.setattr("champis_pipeline.species.ILLUSTRATIONS_DIR", tmp_path, raising=True)
+    assert view.completeness({"about": {"photo": None}}, CEPE)["missing"] == [
+        "photo",
+        "illustration",
+    ]
+    assert view.completeness({}, CEPE)["missing"] == ["about", "photo", "illustration"]
+    assert view.completeness({}, CEPE)["complete"] is False
+    assert illustrations.load_prompts(tmp_path / "absent.md") is None
+    info = illustrations.illustration_info(CEPE)
+    assert info["present"] is False and info["file"] is None and info["bytes"] == 0
