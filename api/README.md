@@ -20,6 +20,7 @@ Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, 
 Trois services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python : la pré-chauffe bloquait la boucle d'événements du seul processus uvicorn ≈ 36 min deux fois par jour ; site, relais de tuiles et `/weather/bbox` ne répondaient plus). Ils sont décrits dans **`.railway/railway.ts`** (Infrastructure as Code Railway : services, commandes, crons **en UTC**, volume, bucket, Postgres, variables) et appliqués depuis un poste avec la CLI ; Railway ne lit pas ce fichier au déploiement. `railway.toml` (Config as Code, déprécié, plus lu après le 1er décembre 2026) ne décrit plus que l'API en attendant la première application de `railway.ts`.
 
 ```bash
+node --version               # 22.6 au moins : la CLI évalue railway.ts avec --experimental-strip-types (nvm : `nvm alias default 22`)
 npm install railway          # à la racine, une fois : la CLI évalue .railway/railway.ts avec ce paquet
 railway login && railway link  # projet champis, environnement production
 railway config migrate         # première fois : traduit railway.toml, vide « Config file path » du service champis (--apply)
@@ -27,7 +28,7 @@ railway config plan            # montre les changements, sans rien appliquer
 railway config apply           # applique après confirmation ; destructions marquées
 ```
 
-La première application crée les deux services cron, pose leurs variables par référence à celles de l'API (`${{champis.AWS_ACCESS_KEY_ID}}`…) et prend la main sur le service `champis` ; les valeurs secrètes (`preserve()`) restent dans Railway, jamais dans le dépôt. Si `plan` refuse parce que le service est encore géré par `railway.toml`, c'est l'étape `migrate` qui manque. Noms de champs à confirmer au premier `railway config pull` (la doc de référence ne documente pas `deploy.cronSchedule` ni `restartPolicyType` pour un `service`, seulement pour `fn`) : corriger `railway.ts` d'après ce que `pull` génère, puis `plan` doit annoncer « already up to date ».
+`railway.ts` décrit **tout** le projet Railway, service du site compris (`champis-web`, créé et déployé par la CI de `adhumi/champis-web`) : une ressource du projet absente du fichier est détruite par `apply`. Avant d'appliquer, lire le plan : il ne doit annoncer aucune destruction. La première application crée les deux services cron, pose leurs variables par référence à celles de l'API (`${{champis.AWS_ACCESS_KEY_ID}}`…) et prend la main sur le service `champis` ; les valeurs secrètes (`preserve()`) restent dans Railway, jamais dans le dépôt. Si `plan` refuse parce que le service est encore géré par `railway.toml`, c'est l'étape `migrate` qui manque. Noms de champs à confirmer au premier `railway config pull` (la doc de référence ne documente pas `deploy.cronSchedule` ni `restartPolicyType` pour un `service`, seulement pour `fn`) : corriger `railway.ts` d'après ce que `pull` génère, puis `plan` doit annoncer « already up to date ».
 
 **L'API** (`service("champis")`) :
 

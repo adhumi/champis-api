@@ -1,4 +1,4 @@
-// Infrastructure as Code Railway : les quatre services du projet « champis » (spec › Backend ›
+// Infrastructure as Code Railway : les cinq services du projet « champis » (spec › Backend ›
 // déploiement, décision du 4 nov. 2026 ; service d'exécution du backoffice, 8 nov. 2026). Config as Code (railway.toml) est déprécié et n'est plus lu
 // après le 1er décembre 2026 ; les services cron créés après le 28 août 2026 ne le lisent déjà plus.
 //
@@ -106,5 +106,18 @@ export default defineRailway(() => {
     },
   });
 
-  return project("champis", { resources: [api, warm, notify, jobs, db, storage, data, jobsData] });
+  // Le site (adhumi/champis-web, service statique Caddy sur champis.app) vit dans le même projet
+  // Railway : il est décrit ici pour que l'IaC ne le prenne pas pour une ressource en trop (un
+  // `railway config apply` sans cette entrée le détruirait). Déployé par la CI de champis-web ;
+  // aucune variable ; port 8080, santé sur /health.
+  const web = service("champis-web", {
+    healthcheck: "/health",
+    healthcheckTimeout: 60,
+    deploy: { restartPolicyType: "on_failure", restartPolicyMaxRetries: 5 },
+    replicas: { "europe-west4-drams3a": 1 },
+  });
+
+  return project("champis", {
+    resources: [api, warm, notify, jobs, web, db, storage, data, jobsData],
+  });
 });

@@ -29,12 +29,15 @@ import mercantile
 import numpy as np
 from champis_pipeline.species import load_palette, load_species
 from champis_pipeline.storage import MANIFEST_KEY, TILES_PREFIX, BucketLike
-from champis_pipeline.tiles import NODATA, _unpng
 from PIL import Image, ImageDraw, ImageFont
 from pmtiles.reader import Reader
 
 from .scoring import palette_color
 
+# Mêmes constantes que `champis_pipeline.tiles`, recopiées : ce module tourne dans l'API, dont
+# l'image n'a pas les bibliothèques système de rasterio (importer `tiles` ferait tomber l'API au
+# démarrage, constaté le 8 nov. 2026) ; `test_render.py` vérifie qu'elles restent égales.
+NODATA = 255
 RENDERS_PREFIX = "renders/"
 FRANCE_BOUNDS = (-5.4, 41.2, 9.8, 51.2)  # lon/lat, France métropolitaine (Corse comprise)
 TILE = 256
@@ -78,6 +81,12 @@ def france_entry(manifest: dict[str, Any], species_id: str) -> dict[str, Any] | 
         if best is None or n > best[0]:
             best = (n, t)
     return best[1] if best else None
+
+
+def unpng(data: bytes) -> np.ndarray:
+    """PNG LA du pipeline → tableau uint8 avec NODATA là où alpha = 0 (inverse de `tiles._png`)."""
+    la = np.asarray(Image.open(io.BytesIO(data)).convert("LA"))
+    return np.where(la[..., 1] == 0, NODATA, la[..., 0]).astype(np.uint8)
 
 
 class RangeSource:
@@ -135,7 +144,7 @@ def read_canvas(
         for i, x in enumerate(xs):
             data = reader.get(zoom, x, y)
             if data:
-                canvas[j * TILE : (j + 1) * TILE, i * TILE : (i + 1) * TILE] = _unpng(data)
+                canvas[j * TILE : (j + 1) * TILE, i * TILE : (i + 1) * TILE] = unpng(data)
                 found += 1
             done += 1
             if progress and (done % 16 == 0 or done == total):

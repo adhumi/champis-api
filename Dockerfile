@@ -4,6 +4,10 @@
 # `startCommand` change ; la pré-chauffe n'est plus dans l'API (décision du 4 nov. 2026).
 FROM python:3.12-slim-bookworm
 
+# rasterio (pipeline : climatologie du sol et, lot BO4, terrain et tuiles sur le service
+# champis-jobs) embarque son GDAL mais pas libexpat ; l'API, elle, n'importe jamais rasterio.
+RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 && rm -rf /var/lib/apt/lists/*
+
 COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /bin/
 
 WORKDIR /app
