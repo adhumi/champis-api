@@ -271,6 +271,18 @@ async def api_species(request: Request, _: auth.Authenticated) -> JSONResponse:
     return JSONResponse(await asyncio.to_thread(gather), headers=ROBOTS)
 
 
+@router.get("/api/species/{sid}")
+async def api_species_file(sid: str, request: Request, _: auth.Authenticated) -> JSONResponse:
+    """Le fichier d'une espèce, structuré dans la fiche, et sa fenêtre Φ calculée par l'API."""
+    from champis_pipeline.species import list_species
+
+    from . import species as species_view
+
+    if sid not in list_species():
+        raise HTTPException(404, "espèce inconnue")
+    return JSONResponse(await asyncio.to_thread(species_view.file_view, sid), headers=ROBOTS)
+
+
 @router.get("/api/artifacts")
 async def api_artifacts(request: Request, _: auth.Authenticated) -> JSONResponse:
     """Les sorties du pipeline à committer (lot BO4 : `weather_grid.json`), avec leur URL d'une heure."""

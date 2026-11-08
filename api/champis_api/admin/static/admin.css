@@ -99,3 +99,39 @@ tr.clickable:hover td { background: rgba(99, 49, 121, 0.08); }
 .state.perimee { color: var(--warn); }
 .state.en_cours { color: var(--accent); }
 .state.jamais_publiee { color: var(--quiet); }
+
+/* Fichier espèce, lecture structurée (lot BO5, 8 nov. 2026) */
+.sheet details.file { border-top: 1px solid var(--rule); margin-top: 6px; padding: 8px 0 4px; font-size: 13px; }
+.bars.wide { grid-template-columns: auto 1fr auto auto 1fr auto; column-gap: 10px; }
+.bars.wide > :nth-child(6n + 4) { margin-left: 14px; }
+.sheet details.file > summary { cursor: pointer; color: var(--accent); font-weight: 600; list-style: none; }
+.sheet details.file > summary::before { content: "▸ "; }
+.sheet details.file[open] > summary::before { content: "▾ "; }
+.file-body { display: grid; gap: 14px; margin-top: 8px; }
+.file-section { border: 1px solid var(--rule); border-radius: 6px; padding: 10px 12px; }
+.file-section h4 { margin: 0 0 8px; font-size: 14px; }
+.file-section h5 { margin: 10px 0 4px; font-size: 13px; color: var(--quiet); font-weight: 600; }
+.pairs { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.pairs dt { color: var(--quiet); }
+.pairs dd { margin: 0; overflow-wrap: anywhere; }
+.refs { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.refs abbr { font-size: 11px; padding: 0 6px; border-radius: 8px; background: rgba(99, 49, 121, 0.1); color: var(--accent); text-decoration: none; cursor: help; }
+.trapwrap { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.trap { width: 160px; height: 26px; }
+.trap polygon { fill: rgba(99, 49, 121, 0.35); stroke: var(--accent); stroke-width: 1; }
+.trap .axis, .phi .axis { stroke: var(--quiet); stroke-width: 1; }
+.phi { width: 100%; max-width: 560px; height: auto; display: block; }
+.phi .grid { stroke: var(--rule); stroke-width: 1; }
+.phi text { font-size: 10px; fill: var(--quiet); }
+.phi .line { fill: none; stroke-width: 2; }
+.phi .line0, .legend.line0 { stroke: var(--accent); color: var(--accent); }
+.phi .line1, .legend.line1 { stroke: var(--warn); color: var(--warn); }
+.phi .line1 { stroke-dasharray: 4 3; }
+.legend { margin-right: 14px; font-weight: 600; }
+.params { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.params .param { display: inline-flex; align-items: center; gap: 6px; }
+.params .k { color: var(--quiet); }
+.factors td:first-child { white-space: nowrap; }
+.file-section figure { margin: 4px 0; }
+.file-section figure img { max-width: 240px; max-height: 180px; border-radius: 6px; display: block; }
+.file-section pre { font-size: 12px; overflow: auto; }
