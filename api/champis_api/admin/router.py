@@ -8,7 +8,8 @@
 - lot BO3 : `GET /admin/api/tools` (catalogue, état du service d'exécution, file), `POST
   /admin/api/jobs` (`{"kind", "args"}` → tâche `queued`, que `champis-jobs` prend), `POST
   /admin/api/jobs/<id>/cancel`, `GET /admin/api/renders` (cartes HD présentes dans le bucket, URL
-  présignées d'une heure) ; lot BO4 : `GET /admin/api/artifacts` (sorties du pipeline à committer).
+  présignées d'une heure) ; lot BO4 : `GET /admin/api/artifacts` (sorties du pipeline à committer) ;
+  lot BO5 : `GET /admin/api/species` (état de chaque espèce à chaque étape).
 
 Tout répond 404 sans `CHAMPIS_ADMIN_KEY`. `X-Robots-Tag: noindex` partout.
 """
@@ -249,6 +250,21 @@ async def api_cancel(job_id: str, request: Request, _: auth.Action) -> JSONRespo
     if state is None:
         raise HTTPException(409, "tâche inconnue ou déjà terminée")
     return JSONResponse({"id": job_id, "status": state}, headers=ROBOTS)
+
+
+@router.get("/api/species")
+async def api_species(request: Request, _: auth.Authenticated) -> JSONResponse:
+    """Onglet Espèces (lot BO5) : l'état de chaque espèce à chaque étape, et d'où la relancer."""
+    from . import species as species_view
+
+    st = _state(request)
+    settings = request.app.state.settings
+
+    def gather():
+        workers_ = st.store.list_workers() if st.store is not None else []
+        return species_view.gather(settings, st.bucket, st.store, workers_)
+
+    return JSONResponse(await asyncio.to_thread(gather), headers=ROBOTS)
 
 
 @router.get("/api/artifacts")

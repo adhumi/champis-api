@@ -5,7 +5,8 @@
 const $ = (id) => document.getElementById(id);
 const HEADERS = { "X-Champis-Admin": "1" };
 const KINDS = {};
-let timers = { health: null, jobs: null, job: null, tools: null };
+let timers = { health: null, jobs: null, job: null, tools: null, species: null };
+let selectedSpecies = null;
 
 async function api(path, options = {}) {
   const r = await fetch(path, { credentials: "same-origin", ...options, headers: { ...HEADERS, ...(options.headers || {}) } });
@@ -68,7 +69,7 @@ function showTab(name) {
   document.querySelectorAll("#tabs button[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
   document.querySelectorAll(".tab").forEach((s) => (s.hidden = s.id !== name));
   location.hash = name;
-  ({ health: loadHealth, usage: loadUsage, jobs: loadJobs, tools: loadTools, renders: loadRenders })[name]();
+  ({ health: loadHealth, usage: loadUsage, jobs: loadJobs, tools: loadTools, species: loadSpecies })[name]();
 }
 
 // ------------------------------------------------------------------ utilitaires d'affichage
@@ -366,27 +367,83 @@ function toolCard(tool, queue) {
   ]);
 }
 
-// ------------------------------------------------------------------ cartes HD
+// ------------------------------------------------------------------ espèces (lot BO5)
 
-async function loadRenders() {
-  let r;
-  try { r = await api("/admin/api/renders"); } catch (err) { table($("renders-table"), ["erreur"], [{ cells: [err.message] }]); return; }
-  const zoomSelect = $("renders-zoom");
-  if (!zoomSelect.options.length) for (const z of r.zooms) zoomSelect.append(el("option", { value: z, text: `${z} (${z === 9 ? "≈ A3" : "≈ A1"})` }));
-  $("renders-meta").textContent = r.generated ? `jeu de tuiles du ${fmt.when(r.generated)}` : "aucun manifeste de tuiles";
-  const launch = async (species, button) => {
-    button.disabled = true;
-    try {
-      await api("/admin/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: "render", args: { species, zoom: zoomSelect.value, force: false } }) });
-      button.textContent = "en file";
-    } catch (err) { alert(err.message); button.disabled = false; }
+const STATES = { a_jour: "à jour", perimee: "périmée", jamais_publiee: "jamais publiée", en_cours: "en cours" };
+
+async function launch(kind, args) {
+  return api("/admin/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind, args }) });
+}
+
+async function loadSpecies() {
+  clearTimeout(timers.species);
+  let d;
+  try { d = await api("/admin/api/species"); } catch (err) { table($("species-table"), ["erreur"], [{ cells: [err.message] }]); return; }
+  const zoomSelect = $("species-zoom");
+  if (!zoomSelect.options.length) for (const z of [9, 10]) zoomSelect.append(el("option", { value: z, text: `${z} (${z === 9 ? "≈ A3" : "≈ A1"})` }));
+  $("species-meta").textContent = [
+    d.manifest_generated ? `jeu publié du ${fmt.when(d.manifest_generated)}` : "aucun jeu publié",
+    d.inventory_at ? `volume du worker relevé ${fmt.ago(d.inventory_at)}` : "worker muet : état du volume inconnu",
+    d.grid.current ? "grille météo à jour" : "grille météo à refaire",
+  ].join(" · ");
+  $("species-render-all").onclick = async (e) => {
+    e.target.disabled = true;
+    try { await launch("render", { species: "all", zoom: zoomSelect.value, force: false }); } catch (err) { alert(err.message); }
+    setTimeout(loadSpecies, 800);
   };
-  $("renders-all").onclick = (e) => launch("all", e.target);
-  table($("renders-table"), ["espèce", "T publié", "cartes présentes", "générer"], r.species.map((sp) => {
-    const files = sp.files.length ? el("span", {}, sp.files.flatMap((f, i) => [i ? " · " : "", el("a", { href: f.url, text: `z${f.zoom} (${fmt.size(f.bytes)}${f.current ? "" : ", ancien jeu"})` })])) : "aucune";
-    const button = el("button", { class: "quiet", text: "Générer" });
-    if (!sp.published) button.disabled = true;
-    button.addEventListener("click", () => launch(sp.species, button));
-    return { cells: [el("span", {}, [el("b", { text: sp.name }), ` (${sp.latin})`]), sp.published ? status("ok") : el("span", { class: "meta", text: "pas de tuiles" }), files, button] };
-  }));
+  const share = (u) => (u.app_share == null && u.web_share == null) ? "·" : `${u.app_share == null ? "·" : u.app_share + " %"} app · ${u.web_share == null ? "·" : u.web_share + " %"} site`;
+  table($("species-table"), ["espèce", "groupe", "état", "usage 30 j (espèce et groupe)"], d.species.map((sp) => ({
+    cells: [el("b", { text: sp.name }), sp.group.name, el("span", { class: `state ${sp.state}`, text: STATES[sp.state] || sp.state }), share(sp.usage)],
+    onclick: () => { selectedSpecies = sp.id; renderSheet(d); },
+  })));
+  if (!selectedSpecies && d.species.length) selectedSpecies = d.species[0].id;
+  renderSheet(d);
+  if (d.species.some((sp) => sp.jobs.length)) timers.species = setTimeout(loadSpecies, 5000);
+}
+
+function renderSheet(d) {
+  const sp = d.species.find((x) => x.id === selectedSpecies);
+  const sheet = $("species-sheet");
+  document.querySelectorAll("#species-table tbody tr").forEach((tr, i) => tr.classList.toggle("selected", d.species[i] && d.species[i].id === selectedSpecies));
+  if (!sp) { sheet.hidden = true; return; }
+  sheet.hidden = false;
+  const busy = sp.jobs.length > 0;
+  const pub = sp.published, w = sp.worker;
+  const block = (dot, title, detail, label, action, disabled) => {
+    const b = el("div", { class: "block" }, [el("span", { class: `dot ${dot}` }), el("b", { text: title }), el("span", { class: "meta", text: detail })]);
+    if (label) {
+      const btn = el("button", { class: "quiet", text: label });
+      btn.disabled = !!disabled || busy;
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try { await action(); } catch (err) { alert(err.message); }
+        setTimeout(loadSpecies, 800);
+      });
+      b.append(btn);
+    }
+    return b;
+  };
+  const groupSpecies = sp.group.species.join(" ");
+  const blocks = [];
+  blocks.push(block("ok", "Fichier", `species/${sp.id}.json · schéma ${sp.schema_version} · empreinte ${sp.hash} · about ${sp.about ? "présent" : "absent"}`, "voir", () => { window.open(`https://github.com/adhumi/champis/blob/main/species/${sp.id}.json`, "_blank"); }));
+  const tDot = !w ? "" : w.t_current >= w.depts ? "ok" : "warn";
+  blocks.push(block(tDot, "Terrain sur le worker", w ? `T à jour ${fmt.n(w.t_current)} / ${fmt.n(w.depts)} départements · ${fmt.n(w.t_stale)} périmés · dernier batch ${w.batch_last ? fmt.when(w.batch_last) : "jamais"}` : "volume inconnu : le worker n'a pas encore battu", "Recalculer le terrain", () => launch("batch", { depts: "all", species: sp.id, jobs: 2, clean_raw: true, force: false }), !w));
+  const tilesDetail = pub && pub.hash ? `publié ${pub.hash}${pub.hash === sp.hash ? "" : " (périmé)"} · ${pub.depts} dép. · ${fmt.size(pub.bytes)} · ${pub.dept_sets} jeux par département · G ${sp.group.name} ${pub.group_current ? "à jour" : "à refaire"}` : "aucun jeu France publié";
+  const tilesDot = !pub || !pub.hash ? "" : pub.hash === sp.hash && pub.group_current ? "ok" : "warn";
+  blocks.push(block(tilesDot, "Tuiles", `${tilesDetail}${w ? ` · sur le worker : ${w.tiles_current} à jour, ${w.tiles_stale} périmés` : ""}`, "Construire les tuiles", () => launch("tiles", { depts: "all", species: groupSpecies, jobs: 2, per_dept: true, groups: true, force: false }), !w || !w.t_current));
+  const canPublish = !!(w && w.tiles_current);
+  blocks.push(block(canPublish ? "ok" : "", "Publication", "les PMTiles du worker vers le bucket · d'abord « montrer seulement » et lire le journal · jamais --prune depuis une fiche", "Montrer seulement", () => launch("publish", { depts: "all", species: groupSpecies, per_dept: true, groups: true, prune: false, dry_run: true }), !canPublish));
+  blocks.push(block(canPublish ? "ok" : "", "Publication réelle", `téléverse les tuiles du groupe ${sp.group.name} et réécrit le manifeste`, "Publier", async () => { if (confirm(`Publier les tuiles du groupe ${sp.group.name} dans le bucket ?`)) await launch("publish", { depts: "all", species: groupSpecies, per_dept: true, groups: true, prune: false, dry_run: false }); }, !canPublish));
+  blocks.push(block(d.grid.current ? "ok" : "warn", "Grille météo", d.grid.current ? `à jour (empreinte ${d.grid.hash})` : `empreinte ${d.grid.hash || "absente"} ≠ ${d.grid.current_hash} : à refaire pour toutes les espèces, puis à committer`, "weather-grid", () => launch("weather-grid", { depts: "all", to_bucket: true }), !w));
+  const mapDetail = sp.maps.length ? sp.maps.map((m) => `z${m.zoom} (${fmt.size(m.bytes)}${m.current ? "" : ", ancien jeu"})`).join(" · ") : "aucune carte";
+  blocks.push(block(sp.maps.some((m) => m.current) ? "ok" : "", "Carte HD", mapDetail, "Générer", () => launch("render", { species: sp.id, zoom: $("species-zoom").value, force: false }), !pub || !pub.hash));
+  const jobs = sp.jobs.length
+    ? el("p", { class: "meta" }, ["tâche en cours : ", ...sp.jobs.map((j) => el("a", { href: "#jobs", text: `${KINDS[j.kind] ? KINDS[j.kind].label : j.kind} (${j.status}${j.step_name ? ", " + j.step_name : ""})` }))])
+    : el("p", { class: "meta", text: "aucune tâche en cours pour cette espèce" });
+  sheet.replaceChildren(el("div", { class: "sheet" }, [
+    el("h2", {}, [sp.name, " ", el("span", { class: "meta", text: `· ${sp.latin} · groupe ${sp.group.name}` })]),
+    el("p", {}, [el("span", { class: `state ${sp.state}`, text: STATES[sp.state] || sp.state }), el("span", { class: "meta", text: `${sp.usage.app_share == null ? "" : ` · ${sp.usage.app_share} % des requêtes de l'app`}${sp.usage.web_share == null ? "" : ` · ${sp.usage.web_share} % du site`}` })]),
+    ...blocks,
+    jobs,
+  ]));
 }

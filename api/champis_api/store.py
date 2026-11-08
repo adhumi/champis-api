@@ -150,6 +150,8 @@ workers = Table(
     Column("disk_free", Integer),  # Mo
     Column("disk_total", Integer),  # Mo
     Column("build", String(80)),
+    # lot BO5 : inventaire du volume (noms des T et PMTiles présents, état du batch), JSON
+    Column("inventory", Text),
 )
 
 job_events = Table(
@@ -591,15 +593,18 @@ class Store:
         disk_total_mb: int | None,
         build: str = "",
         started_at: datetime | None = None,
+        inventory: dict[str, Any] | None = None,
     ) -> None:
         ts = now.astimezone(UTC)
-        values = {
+        values: dict[str, Any] = {
             "heartbeat_at": ts,
             "current_job": current_job,
             "disk_free": disk_free_mb,
             "disk_total": disk_total_mb,
             "build": build[:80],
         }
+        if inventory is not None:
+            values["inventory"] = json.dumps(inventory, ensure_ascii=False)
         with self.engine.begin() as conn:
             if conn.execute(
                 update(workers).where(workers.c.name == name).values(**values)
@@ -622,6 +627,7 @@ class Store:
                     "disk_free_mb": r.disk_free,
                     "disk_total_mb": r.disk_total,
                     "build": r.build,
+                    "inventory": json.loads(r.inventory) if r.inventory else None,
                 }
                 for r in conn.execute(select(workers).order_by(workers.c.heartbeat_at.desc()))
             ]

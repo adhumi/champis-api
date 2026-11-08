@@ -14,8 +14,8 @@
     <button data-tab="health" class="active">Santé</button>
     <button data-tab="usage">Usage</button>
     <button data-tab="jobs">Tâches</button>
+    <button data-tab="species">Espèces</button>
     <button data-tab="tools">Outils</button>
-    <button data-tab="renders">Cartes</button>
     <span class="spacer"></span>
     <button id="logout" class="quiet">Se déconnecter</button>
   </nav>
@@ -78,14 +78,18 @@
     <table id="tools-artifacts"></table>
   </section>
 
-  <section id="renders" class="tab" hidden>
-    <p class="meta">Carte HD de la France du potentiel toute saison (T) de chaque espèce, rendue depuis les PMTiles publiés : violet dont l'intensité est T sur fond blanc, limites des départements, cartouche. Niveau 9 ≈ 5 600 × 5 600 px (un A3 à 300 dpi), niveau 10 ≈ 11 300 × 11 300 px (un A1). Une carte se rend une fois par jeu publié.</p>
+  <section id="species" class="tab" hidden>
+    <p class="meta">Chaque espèce et où elle en est : l'empreinte de son fichier comparée au jeu de tuiles publié, au volume du worker et à la grille météo. La fiche porte le bouton de l'étape à relancer, une étape à la fois.</p>
     <div class="row">
-      <label>Niveau <select id="renders-zoom"></select></label>
-      <button id="renders-all">Générer toutes les espèces</button>
-      <span id="renders-meta" class="meta"></span>
+      <span id="species-meta" class="meta"></span>
+      <span class="spacer"></span>
+      <label>Carte HD, niveau <select id="species-zoom"></select></label>
+      <button id="species-render-all" class="quiet">Générer toutes les cartes</button>
     </div>
-    <table id="renders-table"></table>
+    <div class="split">
+      <table id="species-table"></table>
+      <article id="species-sheet" hidden></article>
+    </div>
   </section>
 </main>
 <script src="/admin/static/admin.js"></script>

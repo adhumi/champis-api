@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 from .species import ROOT
 
-DATA_DIR = ROOT / "data"
+# `CHAMPIS_DATA_DIR` : le dossier des données du pipeline (brut, rasters, T, tuiles, journaux,
+# amorçage) ; défaut `data/` à la racine du dépôt. Sur le service d'exécution champis-jobs, c'est
+# le volume `/data` (spec › Backoffice, lot BO5, 8 nov. 2026) : sans cette variable, le pipeline
+# écrirait dans le conteneur, perdu au redéploiement.
+DATA_DIR = Path(os.environ.get("CHAMPIS_DATA_DIR") or ROOT / "data")
 ENV_FILE = ROOT / ".env"
 
 

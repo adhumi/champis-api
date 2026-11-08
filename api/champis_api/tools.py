@@ -26,7 +26,7 @@ PIPELINE = "pipeline"  # module : `champis-api pipeline <sorte> …` (journal de
 @dataclass(frozen=True)
 class Field:
     name: str
-    kind: str  # bool | number | choice | depts (codes séparés par des espaces, ou `all`)
+    kind: str  # bool | number | choice | depts (codes ou `all`) | species (ids, vide = toutes)
     label: str
     default: Any = None
     choices: tuple[str, ...] | None = None
@@ -141,6 +141,9 @@ TOOLS: dict[str, Tool] = {
         "≈ 2 Go de RAM par processus, ≈ 5 Go d'entrées brutes par département (effacées à la fin de chacun)",
         (
             Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field(
+                "species", "species", "espèces (ids séparés par des espaces ; vide = toutes)", ""
+            ),
             Field("jobs", "number", "départements en parallèle", 2, minimum=1, maximum=4),
             Field(
                 "clean_raw",
@@ -160,6 +163,12 @@ TOOLS: dict[str, Tool] = {
         "les T de tous les départements sur le volume ; niveau 15 en parallèle",
         (
             Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field(
+                "species",
+                "species",
+                "espèces (ids ; vide = toutes ; un G demande tout son groupe)",
+                "",
+            ),
             Field("jobs", "number", "processus pour le niveau 15", 2, minimum=1, maximum=8),
             Field("per_dept", "bool", "aussi un jeu par département (hors ligne de l'app)", True),
             Field("groups", "bool", "aussi un PMTiles G par groupe", True),
@@ -175,6 +184,7 @@ TOOLS: dict[str, Tool] = {
         "bucket ; les PMTiles dans data/tiles du worker",
         (
             Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field("species", "species", "espèces (ids ; vide = toutes)", ""),
             Field("per_dept", "bool", "publier aussi les jeux par département", True),
             Field("groups", "bool", "publier aussi les G", True),
             Field("prune", "bool", "effacer du bucket les autres jeux de départements", False),
@@ -269,6 +279,12 @@ def validate(kind: str, args: dict[str, Any] | None) -> dict[str, str]:
             except SystemExit as e:
                 raise ToolError(f"{f.name} : {e}") from e
             out[f.name] = ALL if tokens == [ALL] else " ".join(parsed)
+        elif f.kind == "species":
+            ids = [t for t in str(value or "").replace(",", " ").split() if t]
+            unknown = [t for t in ids if t not in list_species()]
+            if unknown:
+                raise ToolError(f"{f.name} : espèce inconnue {', '.join(unknown)}")
+            out[f.name] = " ".join(dict.fromkeys(ids))
         elif f.kind == "number":
             try:
                 number = float(value)
@@ -302,6 +318,9 @@ def command(kind: str, args: dict[str, Any] | None) -> list[str]:
                 argv.append(f.option())
         elif f.kind == "depts":
             argv += [f.option(), *value.split()]
+        elif f.kind == "species":
+            for sid in value.split():  # `--species` se répète (action append)
+                argv += [f.option(), sid]
         elif (
             f.kind == "number" and value.replace(".", "", 1).isdigit() and float(value).is_integer()
         ):
