@@ -43,6 +43,8 @@ export default defineRailway(() => {
       // Backoffice /admin (spec › Backoffice, 8 nov. 2026) : la clé unique, posée une fois dans
       // Railway (`openssl rand -base64 32`), jamais dans le dépôt
       CHAMPIS_ADMIN_KEY: preserve(),
+      // Appareils actifs (lot BO2) : secret du HMAC des empreintes par jour, posé une fois
+      CHAMPIS_MEASURE_SECRET: preserve(),
       CHAMPIS_TILES_MODE: "proxy",
       DATABASE_URL: db.env.DATABASE_URL,
       // CHAMPIS_WARM_HOURS et CHAMPIS_NOTIFY_HOURS restent vides (valeur de l'image) : les crons

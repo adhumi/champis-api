@@ -121,6 +121,7 @@ async def api_usage(request: Request, _: auth.Authenticated, days: int = 90) -> 
     end = counts.today()
     span = [end - timedelta(days=k) for k in range(days)]
     data = await asyncio.to_thread(store.counts_since, span[-1])
+    devices = await asyncio.to_thread(_devices, store, end, span[-1], request.app.state.settings)
     by_name: dict[str, dict[str, int]] = {}
     for day, values in data.items():
         for name, value in values.items():
@@ -134,9 +135,32 @@ async def api_usage(request: Request, _: auth.Authenticated, days: int = 90) -> 
                 "header": list(counts.header()),
                 "rows": counts.rows(data, span[: min(days, 14)]),
             },
+            "devices": devices,
+            # part de chaque espèce et groupe (lot BO2) : app et site, 7 et 30 jours
+            "layers": {
+                "7d": counts.layer_shares(data, end, 7),
+                "30d": counts.layer_shares(data, end, 30),
+            },
         },
         headers=ROBOTS,
     )
+
+
+def _devices(store, end, since, settings) -> dict[str, Any]:
+    """Appareils de l'app (lot BO2) : actifs du jour, de la semaine, du mois, uniques sur 13 mois,
+    la série par jour ; `enabled` dit si le secret est posé (sinon rien n'est compté)."""
+    with_coins, _ = store.coin_totals()
+    daily = store.daily_active_devices(since)
+    return {
+        "enabled": bool(settings.measure_secret),
+        "today": store.active_devices(end, 1),
+        "yesterday": store.active_devices(end - timedelta(days=1), 1),
+        "week": store.active_devices(end, 7),
+        "month": store.active_devices(end, 30),
+        "unique": store.active_devices(end, counts.KEEP_DAYS),
+        "with_coins": with_coins,
+        "daily": {d.isoformat(): n for d, n in sorted(daily.items())},
+    }
 
 
 @router.get("/api/jobs")

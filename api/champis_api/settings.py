@@ -92,6 +92,10 @@ class Settings:
     # Backoffice (spec › Backoffice, 7 nov. 2026) : la clé unique qui ouvre `/admin` ; vide =
     # le backoffice n'existe pas (404). Au moins 32 caractères aléatoires, variable secrète Railway.
     admin_key: str = os.environ.get("CHAMPIS_ADMIN_KEY", "")
+    # Mesure minimale, appareils actifs (spec › Backoffice › Usage, tranché le 8 nov. 2026) :
+    # secret du HMAC qui remplace l'identifiant de l'app par une empreinte par jour ; vide = on ne
+    # compte pas les appareils. Le changer remet l'historique à zéro.
+    measure_secret: str = os.environ.get("CHAMPIS_MEASURE_SECRET", "")
     # Empreinte du déploiement écrite par la CI avant `railway up` (sha et date) ; absente en
     # développement
     build_file: Path = Path(os.environ.get("CHAMPIS_BUILD_FILE", "BUILD"))
