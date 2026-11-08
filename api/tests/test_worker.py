@@ -195,6 +195,72 @@ def test_worker_cancels_a_running_job_and_a_queued_one(tmp_path: Path):
     store.close()
 
 
+def test_worker_closes_the_jobs_of_a_worker_that_no_longer_beats(tmp_path: Path):
+    """Constaté le 8 nov. 2026 : un déploiement a remplacé le conteneur pendant `tiles`, la tâche
+    restait « en cours » sans personne derrière. L'ancien worker ne bat plus : ses tâches sont
+    closes en échec ; celles d'un worker qui bat et les passes des crons (sans worker) non."""
+    settings = _settings(tmp_path)
+    store = Store(settings.database_url)
+    now = datetime.now(UTC)
+    orphan = store.create_job("tiles", {"depts": "all"}, "admin", now - timedelta(minutes=20))
+    store.claim_job(orphan, "w-dead", now - timedelta(minutes=20))
+    store.worker_heartbeat("w-dead", now - timedelta(minutes=10), orphan, 90000, 100000)
+    alive = store.create_job("render", {}, "admin", now - timedelta(minutes=5))
+    store.claim_job(alive, "w-other", now - timedelta(minutes=5))
+    store.worker_heartbeat("w-other", now - timedelta(seconds=20), alive, 90000, 100000)
+    cron = store.create_job("warm", {}, "cron", now - timedelta(minutes=5), status="running")
+    w = worker.Worker(
+        settings, store, name="w-new", command=_fake_command("pass"), sleep=lambda s: None
+    )
+    assert w.run(once=True) == 0  # rien en file : la boucle rend la main après le nettoyage
+    job = store.job(orphan)
+    assert job["status"] == "failed" and job["exit_code"] == worker.EXIT_INTERRUPTED
+    assert "à relancer" in job["summary"]
+    assert any(
+        e["level"] == "error" and "arrêté pendant" in e["text"] for e in store.events_of(orphan)
+    )
+    assert store.job(alive)["status"] == "running" and store.job(cron)["status"] == "running"
+    store.close()
+
+
+def test_worker_stop_interrupts_the_running_job_and_says_so(tmp_path: Path):
+    """SIGTERM de Railway à un déploiement : le sous-processus s'arrête et la tâche est close en
+    échec avec le mot pour la relancer, au lieu de rester « en cours »."""
+    settings = _settings(tmp_path)
+    store = Store(settings.database_url)
+    jid = store.create_job("render", {}, "admin", NOW)
+    script = "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(60)"
+    w = worker.Worker(settings, store, command=_fake_command(script), sleep=lambda s: None)
+    polls = {"n": 0}
+
+    def sleep(_):
+        polls["n"] += 1
+        if polls["n"] == 2:
+            w.stop = True  # le signal d'arrêt du service
+
+    w.sleep = sleep
+    w.clock = lambda c=[0.0]: (c.__setitem__(0, c[0] + 3.0), c[0])[
+        1
+    ]  # 3 s par tour : SIGKILL au 3e
+    code = w.run(once=True)
+    assert code != 0
+    job = store.job(jid)
+    assert job["status"] == "failed" and job["exit_code"] == worker.EXIT_INTERRUPTED
+    assert "à relancer" in job["summary"]
+    store.close()
+
+
+def test_a_heartbeat_forgets_workers_replaced_long_ago(tmp_path: Path):
+    settings = _settings(tmp_path)
+    store = Store(settings.database_url)
+    now = datetime.now(UTC)
+    store.worker_heartbeat("w-replaced", now - timedelta(hours=2), None, 1, 2)
+    store.worker_heartbeat("w-recent", now - timedelta(minutes=10), None, 1, 2)
+    store.worker_heartbeat("w-live", now, None, 1, 2)
+    assert [w["name"] for w in store.list_workers()] == ["w-live", "w-recent"]
+    store.close()
+
+
 def test_worker_waits_while_an_exclusive_kind_runs_elsewhere(tmp_path: Path):
     settings = _settings(tmp_path)
     store = Store(settings.database_url)
@@ -356,6 +422,15 @@ async def test_health_warns_about_a_silent_worker(grid, client, store):
     texts = [a["text"] for a in h["alerts"]]
     assert any("muet depuis 30 min" in t for t in texts)
     assert any("moins de 5 Go libres sur le volume" in t for t in texts)
+    # un conteneur remplacé (plus ancien, muet) ne déclenche pas d'alerte : seul le plus récent compte
+    store.worker_heartbeat("champis-jobs-new", datetime.now(UTC), None, 90000, 100000)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        h = (await c.get("/admin/api/health", headers=BEARER)).json()
+    assert not any("muet" in a["text"] for a in h["alerts"])
+    assert [w["current"] for w in h["workers"]] == [True, False]
 
 
 @pytest.mark.asyncio

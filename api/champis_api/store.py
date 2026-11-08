@@ -142,6 +142,7 @@ jobs = Table(
 )
 
 # Service d'exécution (lot BO3) : un battement par worker, pour la page Santé.
+WORKER_FORGET = timedelta(hours=1)  # un worker muet depuis autant est un conteneur remplacé
 workers = Table(
     "workers",
     metadata,
@@ -631,6 +632,12 @@ class Store:
         if inventory is not None:
             values["inventory"] = json.dumps(inventory, ensure_ascii=False)
         with self.engine.begin() as conn:
+            # un conteneur remplacé par un déploiement ne bat plus jamais : sa ligne s'oublie
+            conn.execute(
+                delete(workers).where(
+                    workers.c.name != name, workers.c.heartbeat_at < ts - WORKER_FORGET
+                )
+            )
             if conn.execute(
                 update(workers).where(workers.c.name == name).values(**values)
             ).rowcount:
