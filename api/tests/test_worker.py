@@ -36,7 +36,12 @@ def test_tools_validate_and_build_commands():
     assert argv[:5] == [sys.executable, "-m", "champis_api.cli", "-q", "warm"]
     assert argv[5:] == ["--pull", "--interval", "3"]
     assert tools.command("publish-cache", None)[3:] == ["-q", "publish-cache"]
-    assert tools.command("soil-clim", {})[2] == "champis_pipeline.cli"
+    assert tools.command("soil-clim", {})[2:6] == [
+        sys.executable and "champis_api.cli",
+        "-q",
+        "pipeline",
+        "soil-clim",
+    ]
     assert tools.command("render", {"species": "boletus_edulis", "zoom": "10", "force": True})[
         5:
     ] == [
@@ -58,11 +63,41 @@ def test_tools_validate_and_build_commands():
     ):
         with pytest.raises(tools.ToolError, match=message):
             tools.validate(kind, args)
+    # lot BO4 : les étapes du pipeline passent par `champis-api pipeline <étape>` et prennent
+    # une liste de départements validée
+    argv = tools.command("batch", {"depts": "25, 39 1", "jobs": "2", "clean_raw": True})
+    assert argv[2:6] == ["champis_api.cli", "-q", "pipeline", "batch"]
+    assert argv[6:] == ["--depts", "25", "39", "01", "--jobs", "2", "--clean-raw"]
+    assert tools.command("tiles", {})[6:] == [
+        "--depts",
+        "all",
+        "--jobs",
+        "2",
+        "--per-dept",
+        "--groups",
+    ]
+    assert tools.command("publish", {})[6:] == [
+        "--depts",
+        "all",
+        "--per-dept",
+        "--groups",
+        "--dry-run",
+    ]
+    assert tools.command("weather-grid", {"depts": "all"})[6:] == ["--depts", "all", "--to-bucket"]
+    assert tools.command("soil-clim", {})[2:6] == ["champis_api.cli", "-q", "pipeline", "soil-clim"]
+    assert tools.validate("status", {"depts": "2a"})["depts"] == "2A"
+    with pytest.raises(tools.ToolError, match="département inconnu"):
+        tools.validate("batch", {"depts": "25 99"})
+    with pytest.raises(tools.ToolError, match="au moins un département"):
+        tools.validate("batch", {"depts": "  "})
+    with pytest.raises(tools.ToolError, match="au plus 4"):
+        tools.validate("batch", {"jobs": 9})
     described = {t["kind"]: t for t in tools.describe()}
     assert set(described) == set(tools.TOOLS)
     species_field = next(f for f in described["render"]["fields"] if f["name"] == "species")
     assert species_field["choices"][0] == "all" and "boletus_edulis" in species_field["choices"]
     assert described["warm"]["exclusive"] and not described["render"]["exclusive"]
+    assert described["batch"]["min_free_gb"] == 10.0 and described["publish"]["confirm"]
 
 
 # ------------------------------------------------------------------ worker
@@ -176,6 +211,48 @@ def test_worker_waits_while_an_exclusive_kind_runs_elsewhere(tmp_path: Path):
     store.close()
 
 
+def test_worker_refuses_a_heavy_tool_on_a_full_volume(tmp_path: Path, monkeypatch):
+    settings = _settings(tmp_path)
+    store = Store(settings.database_url)
+    jid = store.create_job("batch", {"depts": "all"}, "admin", NOW)
+    monkeypatch.setattr(worker, "disk_mb", lambda path: (2000, 100000))  # 2 Go libres
+    w = worker.Worker(settings, store, command=_fake_command("pass"), sleep=lambda s: None)
+    assert w.run(once=True) == 3
+    job = store.job(jid)
+    assert (
+        job["status"] == "failed"
+        and "volume trop plein : 2.0 Go libres, 10 Go requis" in job["summary"]
+    )
+    # un outil léger passe quand même
+    light = store.create_job("status", {}, "admin", NOW)
+    assert w.run(once=True) == 0 and store.job(light)["status"] == "ok"
+    store.close()
+
+
+def test_pipeline_step_runs_in_the_api_cli_and_registers(tmp_path: Path, monkeypatch, capsys):
+    """`champis-api pipeline status --depts 25 --no-bucket` : l'étape tourne sur la console de
+    champis-api, donc inscrite dans le journal des tâches sous sa propre sorte."""
+    from champis_api import cli
+    from champis_pipeline import config
+
+    for name in ("T_DIR", "GRID_DIR", "RAW_DIR", "TILES_DIR"):
+        monkeypatch.setattr(config, name, tmp_path / name.lower())
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    assert cli.main(["-q", "pipeline", "status", "--depts", "25", "--no-bucket"]) == 0
+    out, err = capsys.readouterr()
+    assert "dept" in out and "25" in out  # le tableau, sur stdout
+    assert "[1/1] jeu complet · 1 département(s)" in err and "bucket non configuré" in err
+    store = Store(settings.database_url)
+    (job,) = store.list_jobs()
+    assert job["kind"] == "status" and job["status"] == "ok"
+    assert job["args"] == {"step": "status", "args": "--depts 25 --no-bucket"}
+    assert any(e["text"].startswith("[1/1] jeu complet") for e in store.events_of(job["id"]))
+    store.close()
+    with pytest.raises(SystemExit):
+        cli.main(["pipeline", "download", "--dept", "25"])  # pas dans la passerelle
+
+
 def test_worker_main_requires_a_database(tmp_path: Path):
     with pytest.raises(SystemExit, match="DATABASE_URL"):
         worker.main(Settings(database_url="", s3=None, apns_key=""), once=True)
@@ -236,8 +313,33 @@ async def test_backoffice_queues_refuses_and_cancels(grid, client, store):
         # santé : le service d'exécution est là
         h = (await c.get("/admin/api/health", headers=BEARER)).json()
         assert h["workers"][0]["name"] == "champis-jobs" and h["workers"][0]["silent_min"] < 2
-        # cartes : sans bucket, 503
+        # cartes et sorties : sans bucket, 503
         assert (await c.get("/admin/api/renders", headers=BEARER)).status_code == 503
+        assert (await c.get("/admin/api/artifacts", headers=BEARER)).status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_artifacts_are_listed_with_their_sheet(grid, client, store):
+    bucket = MemoryBucket()
+    bucket.objects["artifacts/weather_grid.json"] = b"{}"
+    bucket.json["artifacts/weather_grid.json.meta.json"] = {
+        "name": "weather_grid.json",
+        "key": "artifacts/weather_grid.json",
+        "generated": "2026-11-08T18:00:00+00:00",
+        "bytes": 2,
+        "sha256": "ab" * 32,
+        "command": "weather-grid --depts all",
+        "depts": ["25"],
+    }
+    app = _app(grid, client, store, bucket=bucket)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        a = (await c.get("/admin/api/artifacts", headers=BEARER)).json()["artifacts"]
+    assert len(a) == 1 and a[0]["name"] == "weather_grid.json"
+    assert a[0]["url"] == "https://bucket.test/artifacts/weather_grid.json"
+    assert a[0]["command"] == "weather-grid --depts all" and a[0]["depts"] == ["25"]
 
 
 @pytest.mark.asyncio

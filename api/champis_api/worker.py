@@ -129,6 +129,16 @@ class Worker:
             self.store.add_event(job["id"], "error", str(e), datetime.now(UTC))
             self.store.finish_job(job["id"], "failed", 2, datetime.now(UTC))
             return 2
+        tool = tools.TOOLS.get(job["kind"])
+        free, _ = disk_mb(self.settings.cache_db.parent)
+        if tool and tool.min_free_gb and free is not None and free < tool.min_free_gb * 1000:
+            text = (
+                f"volume trop plein : {free / 1000:.1f} Go libres, {tool.min_free_gb:g} Go requis "
+                "pour cet outil (effacer des entrées brutes ou agrandir le volume)"
+            )
+            self.store.add_event(job["id"], "error", text, datetime.now(UTC))
+            self.store.finish_job(job["id"], "failed", 3, datetime.now(UTC), text)
+            return 3
         env = {**os.environ, "CHAMPIS_JOB_ID": job["id"], "CHAMPIS_JOB_ORIGIN": job["origin"]}
         self.store.add_event(
             job["id"], "info", f"{self.name} : {' '.join(argv[3:])}", datetime.now(UTC)

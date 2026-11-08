@@ -195,7 +195,9 @@ class MemoryBucket:
         Path(path).write_bytes(self.objects[key])
 
     def list(self, prefix):
-        return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)}
+        return {k: len(v) for k, v in self.objects.items() if k.startswith(prefix)} | {
+            k: 1 for k in self.json if k.startswith(prefix)
+        }
 
     def delete(self, keys):
         for k in keys:

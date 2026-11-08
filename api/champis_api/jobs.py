@@ -43,7 +43,17 @@ KINDS: dict[str, str] = {
     "publish-cache": "publication du cache",
     "render": "carte HD",
     "soil-clim": "climatologie du sol",
+    # lot BO4 : le pipeline terrain sur le service d'exécution (`champis-api pipeline <étape>`)
+    "batch": "pipeline terrain (download, grid, terrain)",
+    "tiles": "tuiles PMTiles",
+    "publish": "publication des tuiles",
+    "weather-grid": "grille météo",
+    "status": "état des départements",
 }
+
+# ce que `champis-api pipeline <étape>` accepte : les commandes longues ou qui écrivent ; les
+# diagnostics d'un seul département (summary, explain, check) restent sur un poste
+PIPELINE_KINDS = ("batch", "tiles", "publish", "weather-grid", "status", "soil-clim")
 
 # ce que les crons Railway sont censés faire : au-delà, la page Santé alerte
 EXPECTED_EVERY_H: dict[str, float] = {"warm": 14.0, "notify": 26.0}

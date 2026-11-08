@@ -8,7 +8,7 @@ Découpage des dépôts (spec › Produit › Étape C, lot C7, 6 nov. 2026) : `
 
 ```
 champis/      sous-module adhumi/champis : species/ (+ SCHEMA.md, validate.py), mapping/, shared/ (palette, vecteurs, textes)
-pipeline/     champis_pipeline : download → grid → terrain → tiles   (skill geo-pipeline)
+pipeline/     champis_pipeline : download → grid → terrain → tiles ; artifacts.py (sorties à committer, déposées dans le bucket par le worker)   (skill geo-pipeline)
 api/          champis_api : FastAPI, scoring M/Φ, vecteurs, mesure minimale, backoffice /admin (admin/, jobs.py, tools.py, worker.py, render.py)   (skill open-meteo)
 data/         téléchargements et rasters, jamais commités (sauf weather_grid.json et weather_seed.json)
 ```

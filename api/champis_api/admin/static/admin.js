@@ -316,7 +316,16 @@ async function loadTools() {
     queue.append(tbl);
   }
   $("tools-list").replaceChildren(...t.tools.map((tool) => toolCard(tool, t.queue)));
+  loadArtifacts();
   if (t.queue.length) timers.tools = setTimeout(loadTools, 5000);
+}
+
+async function loadArtifacts() {
+  let a;
+  try { a = await api("/admin/api/artifacts"); } catch (err) { table($("tools-artifacts"), ["sorties"], [{ cells: [err.message] }]); return; }
+  table($("tools-artifacts"), ["fichier", "produit le", "taille", "commande", "sha256"], a.artifacts.length
+    ? a.artifacts.map((f) => ({ cells: [el("a", { href: f.url, text: f.name }), fmt.when(f.generated), fmt.size(f.bytes), f.command || "", (f.sha256 || "").slice(0, 12)] }))
+    : [{ cells: ["aucune", "", "", "", ""] }]);
 }
 
 function toolCard(tool, queue) {
@@ -325,6 +334,7 @@ function toolCard(tool, queue) {
   for (const f of tool.fields) {
     let input;
     if (f.kind === "bool") { input = el("input", { type: "checkbox", name: f.name }); input.checked = !!f.default; }
+    else if (f.kind === "depts") { input = el("input", { type: "text", name: f.name, value: f.default, placeholder: "all, ou 25 39 70", size: "18" }); }
     else if (f.kind === "number") { input = el("input", { type: "number", name: f.name, step: "any", value: f.default }); if (f.min != null) input.min = f.min; if (f.max != null) input.max = f.max; }
     else { input = el("select", { name: f.name }); for (const c of f.choices || []) input.append(el("option", { value: c, text: c })); input.value = String(f.default); }
     form.append(el("label", {}, [el("span", { text: f.label }), input]));
@@ -340,6 +350,7 @@ function toolCard(tool, queue) {
       const input = form.elements[f.name];
       args[f.name] = f.kind === "bool" ? input.checked : input.value;
     }
+    if (tool.confirm && (tool.kind !== "publish" || (args.prune && !args.dry_run)) && !confirm(tool.confirm)) return;
     button.disabled = true;
     try {
       const r = await api("/admin/api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind: tool.kind, args }) });
@@ -350,7 +361,7 @@ function toolCard(tool, queue) {
   });
   return el("div", { class: "card tool" }, [
     el("h3", { text: tool.label }),
-    el("p", { class: "meta", text: `${tool.duration} · ${tool.needs}${tool.exclusive ? " · une seule à la fois" : ""}` }),
+    el("p", { class: "meta", text: `${tool.duration} · ${tool.needs}${tool.exclusive ? " · une seule à la fois" : ""}${tool.min_free_gb ? ` · ${tool.min_free_gb} Go libres requis` : ""}` }),
     form,
   ]);
 }
