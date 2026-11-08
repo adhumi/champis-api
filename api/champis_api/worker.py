@@ -9,6 +9,12 @@ est annulée, une tâche `running` reçoit SIGTERM puis SIGKILL après `grace_s`
 (pré-chauffe, notification, amorçage) attend qu'aucune autre tâche de la même sorte ne tourne,
 cron compris : le cron s'inscrit aussi dans `jobs`.
 
+Un déploiement remplace le conteneur pendant une tâche (constaté le 8 nov. 2026) : à l'arrêt
+(SIGTERM), le worker arrête son sous-processus et clôt la tâche en échec avec le mot pour la
+relancer ; au démarrage puis à chaque battement, il clôt de même les tâches `running` d'un worker
+qui ne bat plus depuis `ORPHAN_AFTER_S` (l'ancien conteneur, tué sans délai). Les étapes du
+pipeline étant idempotentes, relancer reprend où ça s'est arrêté.
+
 Même image Docker que l'API, son propre volume (un volume ne se monte que sur un service),
 variables du bucket, `DATABASE_URL`, clé Open-Meteo, compte CDS ; pas de port.
 """
@@ -29,7 +35,7 @@ from typing import Any
 
 from champis_pipeline import console
 
-from . import tools
+from . import jobs, tools
 from .settings import Settings
 from .store import Store
 
@@ -39,6 +45,13 @@ POLL_S = 5.0
 HEARTBEAT_S = 30.0
 GRACE_S = 30.0
 EXIT_CANCELLED = 130
+EXIT_INTERRUPTED = 143  # SIGTERM : le service s'est arrêté pendant la tâche
+ORPHAN_AFTER_S = 120.0  # un worker muet depuis autant est tenu pour mort
+STOP_GRACE_S = 5.0  # à l'arrêt du service, délai avant SIGKILL du sous-processus
+INTERRUPTED_TEXT = (
+    "service d'exécution arrêté pendant la tâche (déploiement ou redémarrage) : à relancer, "
+    "les étapes reprennent où elles se sont arrêtées"
+)
 
 
 def inventory() -> dict[str, Any]:
@@ -138,6 +151,33 @@ class Worker:
         except Exception:
             log.exception("worker : battement non enregistré")
 
+    # ------------------------------------------------------------------ orphelines
+
+    def reap_orphans(self) -> int:
+        """Les tâches `running` prises par un worker qui ne bat plus (son conteneur a été remplacé
+        par un déploiement pendant la tâche, constaté le 8 nov. 2026) sont closes en échec, avec le
+        mot pour les relancer ; sinon la fiche et la page Tâches les montrent en cours sans fin.
+        Les passes des crons (`worker` vide) et les tâches des workers qui battent ne bougent pas."""
+        now = datetime.now(UTC)
+        try:
+            beats = {w["name"]: w["heartbeat_at"] for w in self.store.list_workers()}
+            running = self.store.jobs_with_status(("running",))
+        except Exception:
+            log.exception("worker : orphelines illisibles")
+            return 0
+        n = 0
+        for job in running:
+            name = job.get("worker")
+            if not name or name == self.name:
+                continue
+            age = jobs.age_hours(beats.get(name), now)
+            if age is not None and age * 3600 < ORPHAN_AFTER_S:
+                continue
+            self.store.add_event(job["id"], "error", INTERRUPTED_TEXT, now)
+            self.store.finish_job(job["id"], "failed", EXIT_INTERRUPTED, now, INTERRUPTED_TEXT)
+            n += 1
+        return n
+
     # ------------------------------------------------------------------ file
 
     def next_job(self) -> dict | None:
@@ -194,6 +234,7 @@ class Worker:
         self.heartbeat(job["id"])
         last_beat = self.clock()
         cancelled_at: float | None = None
+        interrupted_at: float | None = None
         while True:
             code = proc.poll()
             if code is not None:
@@ -202,6 +243,15 @@ class Worker:
             if now_s - last_beat >= self.heartbeat_s:
                 self.heartbeat(job["id"])
                 last_beat = now_s
+            if self.stop and interrupted_at is None and cancelled_at is None:
+                # arrêt du service (SIGTERM de Railway à un déploiement) : la tâche s'arrête avec
+                # lui et le dit, au lieu de rester « en cours » sans personne derrière
+                self.store.add_event(job["id"], "error", INTERRUPTED_TEXT, datetime.now(UTC))
+                proc.send_signal(signal.SIGTERM)
+                interrupted_at = now_s
+            elif interrupted_at is not None and now_s - interrupted_at >= STOP_GRACE_S:
+                proc.kill()
+                interrupted_at = -1e9  # une seule fois
             current = self.store.job(job["id"])
             if current and current["cancel_requested"] and cancelled_at is None:
                 self.store.add_event(job["id"], "warn", "annulation demandée", datetime.now(UTC))
@@ -212,7 +262,11 @@ class Worker:
                 cancelled_at = -1e9  # une seule fois
             self.sleep(1.0)
         final = self.store.job(job["id"])
-        if final and final["status"] == "running":  # la commande n'a pas clos sa ligne
+        if interrupted_at is not None and final and final["status"] in ("running", "failed"):
+            self.store.finish_job(
+                job["id"], "failed", EXIT_INTERRUPTED, datetime.now(UTC), INTERRUPTED_TEXT
+            )
+        elif final and final["status"] == "running":  # la commande n'a pas clos sa ligne
             status = "cancelled" if cancelled_at is not None else ("ok" if code == 0 else "failed")
             self.store.finish_job(job["id"], status, code, datetime.now(UTC))
         elif cancelled_at is not None and final and final["status"] != "cancelled":
@@ -225,6 +279,8 @@ class Worker:
         c = console.get()
         c.info(f"worker {self.name} : file interrogée toutes les {self.poll_s:g} s")
         self.heartbeat(None)
+        if n := self.reap_orphans():
+            c.warn(f"{n} tâche(s) d'un worker disparu close(s) en échec")
         last_beat = self.clock()
         while not self.stop:
             job = None
@@ -244,6 +300,8 @@ class Worker:
                 return 0
             if self.clock() - last_beat >= self.heartbeat_s:
                 self.heartbeat(None)
+                if n := self.reap_orphans():  # l'ancien conteneur s'est tu après notre départ
+                    c.warn(f"{n} tâche(s) d'un worker disparu close(s) en échec")
                 last_beat = self.clock()
             self.sleep(self.poll_s)
         return 0

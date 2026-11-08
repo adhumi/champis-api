@@ -135,10 +135,13 @@ def workers_section(
         rows = store.list_workers()
     except Exception:
         return []
-    for w in rows:
+    for i, w in enumerate(rows):
         age = jobs.age_hours(w["heartbeat_at"], now)
         w["silent_min"] = round(age * 60, 1) if age is not None else None
-        if age is not None and age * 60 > WORKER_MAX_SILENCE_MIN:
+        # les lignes suivantes sont des conteneurs remplacés par un déploiement (oubliées au bout
+        # d'une heure par le battement) : seul le plus récent dit si le service est là
+        w["current"] = i == 0
+        if i == 0 and age is not None and age * 60 > WORKER_MAX_SILENCE_MIN:
             _alert(
                 alerts, "warn", f"service d'exécution {w['name']} muet depuis {age * 60:.0f} min"
             )
