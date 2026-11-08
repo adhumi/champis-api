@@ -12,7 +12,7 @@ empreinte unique pour toutes les espèces : `grid_current` est global.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Any
 
 from champis_pipeline.species import (
@@ -26,10 +26,13 @@ from champis_pipeline.species import (
 from champis_pipeline.storage import MANIFEST_KEY, BucketLike, parse_tile_name
 
 from .. import counts, render
+from ..scoring import phenology_window
 from ..settings import Settings
 from ..store import Store
 
 USAGE_DAYS = 30
+PHI_YEAR = 2026  # année non bissextile : 365 jours, les mêmes pour toutes les espèces
+PHI_ALTITUDE_STEPS_M = (0, 600)  # courbes Φ à l'altitude de référence et 600 m plus haut
 
 
 def grid_hash(settings: Settings) -> str | None:
@@ -37,6 +40,27 @@ def grid_hash(settings: Settings) -> str | None:
         return json.loads(settings.weather_grid.read_text(encoding="utf-8")).get("species_hash")
     except (OSError, ValueError):
         return None
+
+
+def file_view(sid: str) -> dict[str, Any]:
+    """Le fichier espèce tel quel pour la fiche (demande d'Adrien du 8 nov. 2026 : lecture
+    structurée du fichier), avec la fenêtre Φ jour par jour calculée par le scoring de l'API,
+    à l'altitude de référence du décalage et 600 m plus haut : la fiche ne recalcule rien."""
+    spec = load_species(sid)
+    shift = spec.get("phenology", {}).get("altitude_shift") or {}
+    ref = float(shift.get("reference_m", 0))
+    first = date(PHI_YEAR, 1, 1)
+    curves = [
+        {
+            "altitude_m": ref + step,
+            "days": [
+                round(phenology_window(spec, first + timedelta(days=i), ref + step), 3)
+                for i in range(365)
+            ],
+        }
+        for step in PHI_ALTITUDE_STEPS_M
+    ]
+    return {"id": sid, "hash": species_hash(sid), "file": spec, "phi": curves}
 
 
 def _busy_jobs(store: Store | None) -> list[dict[str, Any]]:

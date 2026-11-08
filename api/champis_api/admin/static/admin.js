@@ -445,5 +445,201 @@ function renderSheet(d) {
     el("p", {}, [el("span", { class: `state ${sp.state}`, text: STATES[sp.state] || sp.state }), el("span", { class: "meta", text: `${sp.usage.app_share == null ? "" : ` · ${sp.usage.app_share} % des requêtes de l'app`}${sp.usage.web_share == null ? "" : ` · ${sp.usage.web_share} % du site`}` })]),
     ...blocks,
     jobs,
+    fileDetails(sp),
   ]));
+}
+
+// ------------------------------------------------------------------ fichier espèce, lecture structurée
+
+/* Le fichier species/<id>.json tel que le référentiel le porte (GET /admin/api/species/<id>), en
+   lecture seule : en-tête, terrain T, phénologie Φ (courbe calculée par l'API), météo M, fiche en
+   mots, références. Les clés inconnues de la page sont montrées brutes : rien n'est caché. */
+const SVG = "http://www.w3.org/2000/svg";
+const fileCache = {};
+const fileOpen = {};
+const ASPECTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "flat"];
+const MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."];
+const MONTH_STARTS = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+const TRAPEZOID_KEYS = ["min", "opt_low", "opt_high", "max"];
+
+function num(v, digits = 2) { return v == null ? "—" : Number(v).toLocaleString("fr-FR", { maximumFractionDigits: digits }); }
+function svgEl(tag, attrs = {}) { const e = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); return e; }
+function isTrapezoid(v) { return v && typeof v === "object" && TRAPEZOID_KEYS.every((k) => k in v); }
+
+function fileDetails(sp) {
+  const d = el("details", { class: "file" }, [el("summary", { text: "Contenu du fichier" }), el("p", { class: "meta", text: "chargement…" })]);
+  if (fileOpen[sp.id]) d.open = true;
+  const fill = async () => {
+    try {
+      fileCache[sp.id] = fileCache[sp.id] || await api(`/admin/api/species/${sp.id}`);
+      d.replaceChildren(el("summary", { text: "Contenu du fichier" }), renderFile(fileCache[sp.id]));
+    } catch (err) {
+      d.replaceChildren(el("summary", { text: "Contenu du fichier" }), el("p", { class: "meta", text: `fichier illisible : ${err.message}` }));
+    }
+  };
+  d.addEventListener("toggle", () => { fileOpen[sp.id] = d.open; if (d.open) fill(); });
+  if (d.open) fill();
+  return d;
+}
+
+function trapezoid(t, unit) {
+  const vals = TRAPEZOID_KEYS.map((k) => Number(t[k]));
+  const lo = vals[0], span = vals[3] - lo || 1;
+  const W = 160, H = 26, pad = 2, top = 3, bottom = H - 3;
+  const x = (v) => pad + ((v - lo) / span) * (W - 2 * pad);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "trap" });
+  svg.append(svgEl("line", { x1: pad, y1: bottom, x2: W - pad, y2: bottom, class: "axis" }));
+  svg.append(svgEl("polygon", { points: `${x(vals[0])},${bottom} ${x(vals[1])},${top} ${x(vals[2])},${top} ${x(vals[3])},${bottom}` }));
+  const label = `${num(vals[0])} · ${num(vals[1])}–${num(vals[2])} · ${num(vals[3])}${unit ? ` ${unit}` : ""}`;
+  return el("span", { class: "trapwrap" }, [svg, el("span", { class: "meta", text: label })]);
+}
+
+function bars(obj, order) {
+  const known = order ? order.filter((k) => k in obj) : Object.keys(obj).filter((k) => k !== "default").sort((a, b) => obj[b] - obj[a]);
+  const rest = Object.keys(obj).filter((k) => !known.includes(k));
+  const g = el("div", { class: known.length + rest.length > 12 ? "bars wide" : "bars" });
+  for (const k of known.concat(rest)) {
+    const v = Number(obj[k]);
+    g.append(el("span", { text: k }), el("div", { class: "bar" }, el("div", { style: `width:${Math.round(Math.min(1, Math.max(0, v)) * 100)}%` })), el("span", { class: "pct", text: num(v) }));
+  }
+  return g;
+}
+
+function refChips(keys, dict) {
+  if (!keys || !keys.length) return null;
+  return el("span", { class: "refs" }, keys.map((k) => el("abbr", { title: dict[k] || "référence absente du fichier", text: k })));
+}
+
+function pairs(rows) {
+  const dl = el("dl", { class: "pairs" });
+  for (const [k, v] of rows) if (v != null) dl.append(el("dt", { text: k }), el("dd", {}, v));
+  return dl;
+}
+
+/* Paramètres d'un bloc : scalaires en « clé valeur », trapèzes dessinés, le reste en JSON. */
+function params(obj, units = {}, skip = []) {
+  const out = [];
+  for (const [k, v] of Object.entries(obj)) {
+    if (skip.includes(k)) continue;
+    if (isTrapezoid(v)) out.push(el("span", { class: "param" }, [el("span", { class: "k", text: k }), trapezoid(v, units[k])]));
+    else if (v && typeof v === "object") out.push(el("span", { class: "param" }, [el("span", { class: "k", text: k }), el("code", { text: JSON.stringify(v) })]));
+    else out.push(el("span", { class: "param" }, [el("span", { class: "k", text: k }), `${num(v)}${units[k] ? ` ${units[k]}` : ""}`]));
+  }
+  return el("div", { class: "params" }, out);
+}
+
+function phiChart(curves) {
+  const W = 460, H = 96, padL = 6, padR = 6, top = 6, bottom = 18;
+  const x = (i) => padL + (i / 364) * (W - padL - padR);
+  const y = (v) => top + (1 - v) * (H - top - bottom);
+  const svg = svgEl("svg", { viewBox: `0 0 ${W} ${H}`, class: "phi" });
+  for (const v of [0, 0.25, 1]) svg.append(svgEl("line", { x1: padL, y1: y(v), x2: W - padR, y2: y(v), class: v === 0 ? "axis" : "grid" }));
+  MONTH_STARTS.forEach((d, i) => {
+    svg.append(svgEl("line", { x1: x(d), y1: y(1), x2: x(d), y2: y(0), class: "grid" }));
+    const t = svgEl("text", { x: x(d) + 2, y: H - 5 }); t.textContent = MONTHS[i]; svg.append(t);
+  });
+  curves.forEach((c, i) => {
+    const path = svgEl("path", { class: `line line${i}`, d: c.days.map((v, j) => `${j ? "L" : "M"}${x(j).toFixed(1)},${y(v).toFixed(1)}`).join(" ") });
+    svg.append(path);
+  });
+  const legend = el("p", { class: "meta" }, curves.map((c, i) => el("span", { class: `legend line${i}`, text: `à ${num(c.altitude_m, 0)} m` })));
+  return el("div", { class: "phiwrap" }, [svg, legend]);
+}
+
+function section(title, hint, children) {
+  return el("section", { class: "file-section" }, [el("h4", {}, [title, hint ? el("span", { class: "meta", text: ` ${hint}` }) : null]), ...[].concat(children).filter(Boolean)]);
+}
+
+function renderFile(data) {
+  const f = data.file;
+  const refs = { ...(f.references || {}), ...((f.about || {}).references || {}) };
+  const chips = (keys) => refChips(keys, refs);
+  const known = ["id", "schema_version", "group", "names", "notes", "references", "terrain", "phenology", "weather", "about"];
+  const out = el("div", { class: "file-body" });
+
+  out.append(section("En-tête", null, pairs([
+    ["id", el("code", { text: f.id })],
+    ["schéma", `version ${num(f.schema_version, 0)} · empreinte ${data.hash}`],
+    ["groupe", f.group ? `${f.group.fr || f.group.id} (${f.group.id})` : null],
+    ["noms", f.names ? `${f.names.fr || ""} · ${f.names.la || ""}` : null],
+    ["notes", f.notes],
+  ])));
+
+  const t = f.terrain || {};
+  const trefs = t.refs || {};
+  out.append(section("Terrain → potentiel T", "T = hôte × Σ poids × facteur ; altitude hors [min, max] → T = 0", [
+    el("h5", {}, ["Hôtes ", el("span", { class: "meta", text: "poids 0–1 par hôte BD Forêt, default pour une clé absente" }), chips(trefs.hosts)]),
+    t.hosts ? bars(t.hosts) : null,
+    el("h5", {}, ["Couvert ", chips(trefs.cover)]), t.cover ? bars(t.cover, ["fermee", "ouverte", "sans_couvert", "plantation", "non_foret"]) : null,
+    pairs([
+      ["pH (plancher 0,15)", t.ph ? el("span", {}, [trapezoid(t.ph), chips(trefs.ph)]) : null],
+      ["altitude", t.altitude_m ? el("span", {}, [trapezoid(t.altitude_m, "m"), chips(trefs.altitude_m || trefs.altitude)]) : null],
+      ["pente", t.slope_deg ? el("span", {}, [trapezoid(t.slope_deg, "°"), chips(trefs.slope_deg || trefs.slope)]) : null],
+    ]),
+    el("h5", {}, ["Exposition ", chips(trefs.aspect)]), t.aspect ? bars(t.aspect, ASPECTS) : null,
+    el("h5", {}, ["Poids ", el("span", { class: "meta", text: t.weights ? `somme ${num(Object.values(t.weights).reduce((a, b) => a + Number(b), 0))}` : "" }), chips(trefs.weights)]),
+    t.weights ? bars(t.weights, ["cover", "ph", "altitude", "aspect", "slope"]) : null,
+    params(t, {}, ["hosts", "cover", "ph", "altitude_m", "slope_deg", "aspect", "weights", "refs"]),
+  ]));
+
+  const p = f.phenology || {};
+  const shift = p.altitude_shift;
+  out.append(section("Phénologie → fenêtre Φ", "0 hors saison, plancher 0,25 en saison, 1 au pic, rampes linéaires", [
+    pairs([
+      ["saison", p.season ? `${p.season.start} → ${p.season.end}` : null],
+      ["pic", p.peak ? `${p.peak.start} → ${p.peak.end}` : null],
+      ["rampe", p.ramp_days != null ? `${num(p.ramp_days, 0)} jours` : null],
+      ["pic secondaire", p.secondary_peak ? `${p.secondary_peak.start} → ${p.secondary_peak.end}, Φ = ${num(p.secondary_peak.phi)}` : null],
+      ["décalage en altitude", shift ? `référence ${num(shift.reference_m, 0)} m · début ${num(shift.start_days_per_100m, 0)} j et fin ${num(shift.end_days_per_100m, 0)} j par 100 m · au plus ±${num(shift.max_days, 0)} j` : null],
+      ["références", chips(p.refs)],
+    ]),
+    data.phi && data.phi.length ? phiChart(data.phi) : null,
+    params(p, {}, ["season", "peak", "ramp_days", "secondary_peak", "altitude_shift", "refs"]),
+  ]));
+
+  const w = f.weather || {};
+  const wrefs = w.refs || {};
+  const units = { window_days: "j", c: "°C", mm: "mm", event_mm: "mm", event_days: "j", lag_days: "j", tmin_c: "°C", ramp_c: "°C", nights: "nuits", moderate_mm: "mm", severe_mm: "mm", tmax_c: "°C", days: "j" };
+  const factors = [["temp_mean", "température moyenne"], ["rain", "pluie cumulée"], ["trigger", "pluie déclenchante"], ["soil_moisture_pct", "humidité du sol (percentile)"], ["frost", "gel (rampe)"], ["water_balance", "bilan hydrique"], ["heat", "chaleur"], ["memory", "mémoire"], ["persistence", "persistance"]];
+  const wtable = el("table", { class: "factors" }, [el("thead", {}, el("tr", {}, [el("th", { text: "facteur" }), el("th", { text: "paramètres" }), el("th", { text: "réf." })]))]);
+  const tbody = el("tbody");
+  for (const [k, label] of factors) if (w[k] != null) {
+    const v = w[k];
+    tbody.append(el("tr", {}, [el("td", {}, [el("b", { text: label }), el("div", { class: "meta", text: k })]), el("td", {}, isTrapezoid(v) ? trapezoid(v) : typeof v === "object" ? params(v, units) : num(v)), el("td", {}, chips(wrefs[k]))]));
+  }
+  for (const k of Object.keys(w)) if (!factors.some(([f0]) => f0 === k) && !["weights", "refs"].includes(k)) {
+    tbody.append(el("tr", {}, [el("td", {}, el("b", { text: k })), el("td", {}, typeof w[k] === "object" ? params(w[k], units) : num(w[k])), el("td", {}, chips(wrefs[k]))]));
+  }
+  wtable.append(tbody);
+  out.append(section("Météo → indice M", "M = (Σ poids × facteur) × gel × bilan hydrique × chaleur × mémoire, puis persistance", [
+    wtable,
+    el("h5", {}, ["Poids ", el("span", { class: "meta", text: w.weights ? `somme ${num(Object.values(w.weights).reduce((a, b) => a + Number(b), 0))}` : "" }), chips(wrefs.weights)]),
+    w.weights ? bars(w.weights, ["temp", "rain", "trigger", "soil_moisture"]) : null,
+  ]));
+
+  const a = f.about;
+  if (a) {
+    const conf = a.confusions && a.confusions.length
+      ? el("table", {}, [el("thead", {}, el("tr", {}, ["espèce", "risque", "comment la distinguer", "réf."].map((h) => el("th", { text: h })))),
+        el("tbody", {}, a.confusions.map((c) => el("tr", {}, [el("td", {}, [el("b", { text: c.name }), el("div", { class: "meta", text: c.latin })]), el("td", { text: c.risk }), el("td", { text: c.tell }), el("td", {}, chips(c.refs))])))])
+      : el("p", { class: "meta", text: "aucune confusion listée" });
+    const photo = a.photo
+      ? el("figure", {}, [el("img", { src: a.photo.url, alt: "", loading: "lazy" }), el("figcaption", { class: "meta" }, [a.photo.author ? `${a.photo.author} · ` : "", a.photo.license || "", a.photo.page ? el("a", { href: a.photo.page, target: "_blank", rel: "noopener", text: " · page" }) : null])])
+      : el("p", { class: "meta", text: "photo : aucune (null)" });
+    out.append(section("Fiche en mots", "exclue de l'empreinte : la relire ne régénère rien", [
+      pairs([["résumé", a.summary], ["habitat", a.habitat], ["saison", a.season], ["références", chips(a.refs)]]),
+      el("h5", { text: "Confusions" }), conf,
+      el("h5", { text: "Photo" }), photo,
+      params(a, {}, ["summary", "habitat", "season", "confusions", "photo", "refs", "references"]),
+    ]));
+  } else {
+    out.append(section("Fiche en mots", null, el("p", { class: "meta", text: "bloc about absent" })));
+  }
+
+  const refRows = Object.entries(refs).sort(([x], [y]) => x.localeCompare(y));
+  out.append(section("Références", `${refRows.length} sources`, el("table", { class: "refs-table" }, [el("tbody", {}, refRows.map(([k, v]) => el("tr", {}, [el("td", {}, el("code", { text: k })), el("td", { text: v })])))])));
+
+  const extra = Object.keys(f).filter((k) => !known.includes(k));
+  if (extra.length) out.append(section("Autres champs", "inconnus de cette page, montrés tels quels", el("pre", { text: JSON.stringify(Object.fromEntries(extra.map((k) => [k, f[k]])), null, 2) })));
+  return out;
 }

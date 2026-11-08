@@ -276,6 +276,9 @@ async def test_species_route(grid, client, store):
     ):
         assert (await c.get("/admin/api/species")).status_code == 401
         r = await c.get("/admin/api/species", headers=BEARER)
+        r_file = await c.get(f"/admin/api/species/{CEPE}", headers=BEARER)
+        assert (await c.get("/admin/api/species/inconnue", headers=BEARER)).status_code == 404
+        assert (await c.get("/admin/api/species/..%2Fmapping", headers=BEARER)).status_code == 404
         # une base qui refuse (colonne absente, Postgres injoignable) ne fait pas tomber l'onglet
         store.list_workers = _raise
         r_degraded = await c.get("/admin/api/species", headers=BEARER)
@@ -288,6 +291,36 @@ async def test_species_route(grid, client, store):
     )
     cepe = next(s for s in d["species"] if s["id"] == CEPE)
     assert cepe["state"] == "a_jour" and cepe["worker"]["t_current"] == 96
+    assert r_file.status_code == 200
+    body = r_file.json()
+    assert body["id"] == CEPE and body["hash"] == cepe["hash"]
+    assert body["file"]["names"]["la"] == cepe["latin"] and "terrain" in body["file"]
+
+
+def test_file_view_carries_the_file_and_the_phi_curve_of_the_api():
+    """Lecture structurée du fichier (demande d'Adrien du 8 nov. 2026) : le fichier tel quel, et Φ
+    jour par jour calculé par `phenology_window`, à l'altitude de référence et 600 m plus haut."""
+    from datetime import date, timedelta
+
+    from champis_api.scoring import phenology_window
+    from champis_pipeline.species import load_species
+
+    d = view.file_view(CEPE)
+    spec = load_species(CEPE)
+    assert d["file"] == spec
+    ref = spec["phenology"]["altitude_shift"]["reference_m"]
+    assert [c["altitude_m"] for c in d["phi"]] == [ref, ref + 600]
+    for c in d["phi"]:
+        assert len(c["days"]) == 365
+        assert max(c["days"]) == 1.0 and min(c["days"]) == 0.0
+        for i in (0, 200, 250, 300, 364):
+            day = date(view.PHI_YEAR, 1, 1) + timedelta(days=i)
+            assert c["days"][i] == pytest.approx(
+                phenology_window(spec, day, c["altitude_m"]), abs=5e-4
+            )
+    # en montagne, le cèpe démarre plus tôt (décalage négatif) : la courbe haute précède
+    first = [next(i for i, v in enumerate(c["days"]) if v > 0) for c in d["phi"]]
+    assert first[1] < first[0]
 
 
 def test_store_adds_a_column_missing_from_an_existing_table(tmp_path):
