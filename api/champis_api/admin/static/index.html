@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Champis · backoffice</title>
+<link rel="stylesheet" href="/admin/static/admin.css">
+</head>
+<body>
+<header>
+  <h1>Champis · backoffice</h1>
+  <nav id="tabs" hidden>
+    <button data-tab="health" class="active">Santé</button>
+    <button data-tab="usage">Usage</button>
+    <button data-tab="jobs">Tâches</button>
+    <button disabled title="Lot BO3 : service d'exécution">Outils</button>
+    <button disabled title="Lot BO3 : service d'exécution">Cartes</button>
+    <span class="spacer"></span>
+    <button id="logout" class="quiet">Se déconnecter</button>
+  </nav>
+</header>
+
+<main>
+  <section id="login" hidden>
+    <form id="login-form">
+      <label for="key">Clé du backoffice</label>
+      <input id="key" name="key" type="password" autocomplete="current-password" required>
+      <button type="submit">Entrer</button>
+      <p id="login-error" class="error" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="health" class="tab" hidden>
+    <p class="meta" id="health-meta">Chargement…</p>
+    <ul id="alerts" class="alerts"></ul>
+    <div class="grid" id="health-cards"></div>
+    <h2>Contrôles</h2>
+    <table id="checks"></table>
+  </section>
+
+  <section id="usage" class="tab" hidden>
+    <p class="meta">Mesure minimale : totaux par jour civil (heure de Paris), 13 mois, aucun identifiant. « · » = rien de relevé.</p>
+    <div id="usage-charts" class="grid"></div>
+    <h2>Quatorze derniers jours</h2>
+    <table id="usage-table"></table>
+  </section>
+
+  <section id="jobs" class="tab" hidden>
+    <p class="meta">Journal des exécutions : crons Railway (<code>origin: cron</code>), outils lancés ici (<code>admin</code>, lot BO3), CLI sur un poste (<code>cli</code>).</p>
+    <div class="row">
+      <label>Sorte <select id="jobs-kind"><option value="">toutes</option></select></label>
+      <button id="jobs-refresh" class="quiet">Rafraîchir</button>
+    </div>
+    <table id="jobs-table"></table>
+    <article id="job-detail" hidden>
+      <h2 id="job-title"></h2>
+      <p id="job-status" class="meta"></p>
+      <div class="progress"><div id="job-bar"></div></div>
+      <p id="job-progress" class="meta"></p>
+      <ol id="job-events" class="events"></ol>
+      <p><a id="job-log" href="#" hidden>Journal complet</a></p>
+    </article>
+  </section>
+</main>
+<script src="/admin/static/admin.js"></script>
+</body>
+</html>

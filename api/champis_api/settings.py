@@ -89,6 +89,12 @@ class Settings:
     rate_read_per_minute: float = float(os.environ.get("CHAMPIS_RATE_READ", "120"))
     rate_write_per_minute: float = float(os.environ.get("CHAMPIS_RATE_WRITE", "20"))
     max_body_bytes: int = int(os.environ.get("CHAMPIS_MAX_BODY", str(256 * 1024)))
+    # Backoffice (spec › Backoffice, 7 nov. 2026) : la clé unique qui ouvre `/admin` ; vide =
+    # le backoffice n'existe pas (404). Au moins 32 caractères aléatoires, variable secrète Railway.
+    admin_key: str = os.environ.get("CHAMPIS_ADMIN_KEY", "")
+    # Empreinte du déploiement écrite par la CI avant `railway up` (sha et date) ; absente en
+    # développement
+    build_file: Path = Path(os.environ.get("CHAMPIS_BUILD_FILE", "BUILD"))
 
     @property
     def tile_cache_path(self) -> Path:
@@ -102,6 +108,15 @@ class Settings:
         if self.apns_key and Path(self.apns_key).exists():
             return Path(self.apns_key).read_text(encoding="utf-8")
         return ""
+
+    @property
+    def build(self) -> str:
+        """Première ligne du fichier d'empreinte, ou « développement »."""
+        try:
+            line = self.build_file.read_text(encoding="utf-8").strip().splitlines()
+            return line[0] if line else "développement"
+        except OSError:
+            return "développement"
 
     @property
     def apns_configured(self) -> bool:

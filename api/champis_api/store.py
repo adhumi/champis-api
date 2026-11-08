@@ -10,6 +10,7 @@ développement sans Postgres), le code ne porte aucun SQL spécifique à un mote
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
@@ -38,6 +39,16 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
 metadata = MetaData()
+
+
+def _iso(dt: datetime | None) -> str | None:
+    """Horodatage ISO en UTC ; SQLite rend des datetimes naïfs, écrits en UTC."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC).isoformat(timespec="seconds")
+
 
 observations = Table(
     "observations",
@@ -87,6 +98,45 @@ daily_counts = Table(
     Column("day", Date, primary_key=True),
     Column("name", String(48), primary_key=True),
     Column("value", Integer, nullable=False),
+)
+
+# Journal des tâches (spec › Backoffice, 7 nov. 2026, `jobs.py`) : une ligne par exécution d'une
+# commande (cron Railway, outil lancé depuis le backoffice, CLI sur un poste), avec l'étape en
+# cours et sa progression ; les événements (étapes, notes, avertissements) à côté. Gardé 400 jours.
+jobs = Table(
+    "jobs",
+    metadata,
+    Column("id", String(36), primary_key=True),
+    Column("kind", String(32), nullable=False, index=True),  # warm, notify, seed…
+    Column("args", Text, nullable=False, default="{}"),  # JSON : options de la commande
+    Column("origin", String(16), nullable=False),  # cron | admin | cli
+    Column("status", String(16), nullable=False, index=True),  # queued running ok failed cancelled
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("started_at", DateTime(timezone=True)),
+    Column("finished_at", DateTime(timezone=True)),
+    Column("heartbeat_at", DateTime(timezone=True)),
+    Column("step_index", Integer),
+    Column("step_total", Integer),
+    Column("step_name", String(160)),
+    Column("progress_done", Integer),
+    Column("progress_total", Integer),
+    Column("progress_unit", String(24)),
+    Column("message", Text),  # dernière note ou détail
+    Column("summary", Text),  # ligne de résumé finale
+    Column("exit_code", Integer),
+    Column("log_key", String(160)),  # journal complet dans le bucket (jobs/<id>.log)
+    Column("worker", String(80)),
+    Column("cancel_requested", Boolean, nullable=False, default=False),
+)
+
+job_events = Table(
+    "job_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("job_id", String(36), nullable=False, index=True),
+    Column("at", DateTime(timezone=True), nullable=False),
+    Column("level", String(8), nullable=False),  # info | warn | error | step
+    Column("text", Text, nullable=False),
 )
 
 
@@ -327,6 +377,148 @@ class Store:
                 select(func.count(func.distinct(coins.c.user_id)), func.count())
             ).one()
             return int(row[0]), int(row[1])
+
+    def table_counts(self) -> dict[str, int]:
+        """Lignes par table, pour la page Santé du backoffice."""
+        with self.engine.connect() as conn:
+            return {
+                t.name: int(conn.execute(select(func.count()).select_from(t)).scalar_one())
+                for t in (observations, coins, devices, daily_counts, jobs, job_events)
+            }
+
+    # ------------------------------------------------------------------ journal des tâches
+
+    def create_job(
+        self,
+        kind: str,
+        args: dict[str, Any],
+        origin: str,
+        now: datetime,
+        job_id: str | None = None,
+        status: str = "queued",
+    ) -> str:
+        job_id = job_id or str(uuid.uuid4())
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(jobs).values(
+                    id=job_id,
+                    kind=kind,
+                    args=json.dumps(args, ensure_ascii=False, sort_keys=True),
+                    origin=origin,
+                    status=status,
+                    created_at=now.astimezone(UTC),
+                    cancel_requested=False,
+                )
+            )
+        return job_id
+
+    def update_job(self, job_id: str, **fields: Any) -> None:
+        """Champs d'avancement (`step_*`, `progress_*`, `message`, `heartbeat_at`…)."""
+        if not fields:
+            return
+        with self.engine.begin() as conn:
+            conn.execute(update(jobs).where(jobs.c.id == job_id).values(**fields))
+
+    def start_job(self, job_id: str, worker: str, now: datetime) -> None:
+        ts = now.astimezone(UTC)
+        self.update_job(job_id, status="running", started_at=ts, heartbeat_at=ts, worker=worker)
+
+    def finish_job(
+        self,
+        job_id: str,
+        status: str,
+        exit_code: int | None,
+        now: datetime,
+        summary: str | None = None,
+    ) -> None:
+        ts = now.astimezone(UTC)
+        fields: dict[str, Any] = {
+            "status": status,
+            "exit_code": exit_code,
+            "finished_at": ts,
+            "heartbeat_at": ts,
+        }
+        if summary is not None:
+            fields["summary"] = summary
+        self.update_job(job_id, **fields)
+
+    def add_event(self, job_id: str, level: str, text: str, now: datetime) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(
+                insert(job_events).values(
+                    job_id=job_id, at=now.astimezone(UTC), level=level, text=text[:2000]
+                )
+            )
+
+    def job(self, job_id: str) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            r = conn.execute(select(jobs).where(jobs.c.id == job_id)).first()
+            return self._job(r) if r else None
+
+    def list_jobs(self, limit: int = 50, kind: str | None = None) -> list[dict[str, Any]]:
+        """Les plus récentes d'abord."""
+        q = select(jobs).order_by(jobs.c.created_at.desc()).limit(limit)
+        if kind:
+            q = q.where(jobs.c.kind == kind)
+        with self.engine.connect() as conn:
+            return [self._job(r) for r in conn.execute(q)]
+
+    def last_jobs_by_kind(self) -> dict[str, dict[str, Any]]:
+        """La dernière exécution de chaque sorte de tâche (page Santé)."""
+        out: dict[str, dict[str, Any]] = {}
+        with self.engine.connect() as conn:
+            for r in conn.execute(select(jobs).order_by(jobs.c.created_at.desc())):
+                if r.kind not in out:
+                    out[r.kind] = self._job(r)
+        return out
+
+    def events_of(self, job_id: str, limit: int = 500) -> list[dict[str, Any]]:
+        """Dans l'ordre, les `limit` derniers."""
+        q = (
+            select(job_events)
+            .where(job_events.c.job_id == job_id)
+            .order_by(job_events.c.id.desc())
+            .limit(limit)
+        )
+        with self.engine.connect() as conn:
+            rows = conn.execute(q).all()
+        return [{"at": _iso(r.at), "level": r.level, "text": r.text} for r in reversed(rows)]
+
+    def purge_jobs(self, before: datetime) -> int:
+        """400 jours, comme les compteurs : tâches et événements."""
+        ts = before.astimezone(UTC)
+        with self.engine.begin() as conn:
+            old = [r[0] for r in conn.execute(select(jobs.c.id).where(jobs.c.created_at < ts))]
+            if old:
+                conn.execute(delete(job_events).where(job_events.c.job_id.in_(old)))
+                conn.execute(delete(jobs).where(jobs.c.id.in_(old)))
+        return len(old)
+
+    @staticmethod
+    def _job(r) -> dict[str, Any]:
+        return {
+            "id": r.id,
+            "kind": r.kind,
+            "args": json.loads(r.args or "{}"),
+            "origin": r.origin,
+            "status": r.status,
+            "created_at": _iso(r.created_at),
+            "started_at": _iso(r.started_at),
+            "finished_at": _iso(r.finished_at),
+            "heartbeat_at": _iso(r.heartbeat_at),
+            "step_index": r.step_index,
+            "step_total": r.step_total,
+            "step_name": r.step_name,
+            "progress_done": r.progress_done,
+            "progress_total": r.progress_total,
+            "progress_unit": r.progress_unit,
+            "message": r.message,
+            "summary": r.summary,
+            "exit_code": r.exit_code,
+            "log_key": r.log_key,
+            "worker": r.worker,
+            "cancel_requested": bool(r.cancel_requested),
+        }
 
     @staticmethod
     def _coin(r) -> Coin:

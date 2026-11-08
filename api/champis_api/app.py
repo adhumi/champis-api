@@ -1,5 +1,6 @@
 """Service champis-api : `/species`, `/weather`, `/weather/bbox`, `/weather/field`, `/departements`,
-`/observations`, `/coins`, `/health`, et la carte web statique sous `/web`.
+`/observations`, `/coins`, `/health`, le backoffice privé `/admin` (spec › Backoffice) et, en
+développement, la carte web statique sous `/web`.
 
 Sans état hors le cache météo SQLite ; aucun calcul géographique (tout est dans les tuiles).
 
@@ -19,7 +20,7 @@ import logging
 import os
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -33,6 +34,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import counts
+from .admin.router import router as admin_router
 from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
@@ -186,6 +188,10 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         cache.close()
 
     app = FastAPI(title="Champis API", lifespan=lifespan)
+    # Le backoffice (`/admin`) lit la clé et l'heure de démarrage ici ; `settings` reste la seule
+    # source de configuration, les routeurs ne relisent pas l'environnement.
+    app.state.settings = settings
+    app.state.started_at = datetime.now(UTC)
     # `/weather/bbox` sur une emprise large pèse plusieurs Mo en JSON très répétitif, dix fois
     # moins une fois compressé (décision du 2 nov. 2026).
     app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -212,21 +218,36 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
 
     site_origin = settings.site_url.rstrip("/")
 
+    def _store():
+        return getattr(getattr(app.state, "champis", None), "store", None)
+
     @app.middleware("http")
-    async def count_map_opens(request, call_next):
+    async def count_requests(request, call_next):
         """Mesure minimale (étape C, lot C2) : une ouverture de la carte du site de plus, rien
         d'autre ; seul l'en-tête Origin est regardé (est-ce le site ?), ni adresse IP ni
-        identifiant ne sont lus ou gardés."""
-        response = await call_next(request)
+        identifiant ne sont lus ou gardés. Depuis le backoffice (lot BO1) : les réponses 429 et
+        5xx du jour, en nombre seulement, pour la page Santé."""
+        try:
+            response = await call_next(request)
+        except Exception:
+            store = _store()
+            if store is not None:
+                await asyncio.to_thread(counts.bump_quietly, store, "http_5xx")
+            raise
+        store = _store()
+        if store is None:
+            return response
         if (
             request.method == "GET"
             and request.url.path == MAP_OPEN_PATH
             and request.headers.get("origin") == site_origin
             and response.status_code == 200
         ):
-            store = getattr(getattr(request.app.state, "champis", None), "store", None)
-            if store is not None:
-                await asyncio.to_thread(counts.bump_quietly, store, "web_map_opens")
+            await asyncio.to_thread(counts.bump_quietly, store, "web_map_opens")
+        elif response.status_code == 429:
+            await asyncio.to_thread(counts.bump_quietly, store, "http_429")
+        elif response.status_code >= 500:
+            await asyncio.to_thread(counts.bump_quietly, store, "http_5xx")
         return response
 
     app.include_router(species.router)
@@ -235,6 +256,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     app.include_router(departements.router)
     app.include_router(observations.router)
     app.include_router(coins.router)
+    app.include_router(admin_router)  # 404 tant que CHAMPIS_ADMIN_KEY est vide
 
     @app.get("/health")
     async def health() -> dict[str, str | int | None]:

@@ -110,6 +110,10 @@ jobs:
       - name: Railway CLI
         run: npm install -g @railway/cli
 
+      # Empreinte du déploiement, lue par le backoffice (page Santé) : sha court et date UTC
+      - name: Empreinte du build
+        run: echo "${GITHUB_SHA::7} $(date -u +%Y-%m-%dT%H:%MZ)" > BUILD
+
       # sans remote GitHub, la CLI envoie l'arbre de travail, sous-module compris
       - name: Déploiement (${{ matrix.service }})
         run: |

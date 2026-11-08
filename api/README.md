@@ -84,6 +84,9 @@ Migration d'une API qui pré-chauffait elle-même : avant la première exécutio
 | `CHAMPIS_NOTIFY_HOURS` | `7` (vide dans l'image) | Heure(s) Paris de la notification « mes coins » envoyée par l'API (repli) ; vide = service cron `champis-notify` (`.railway/railway.ts`) |
 | `CHAMPIS_RATE_READ`, `CHAMPIS_RATE_WRITE` | `120`, `20` | Requêtes par minute et par IP, lectures et écritures (`POST`/`PUT`/`DELETE`) ; au-delà 429 + `Retry-After` |
 | `CHAMPIS_MAX_BODY` | `262144` | Taille maximale d'un corps d'écriture (octets) ; au-delà 413 |
+| `CHAMPIS_ADMIN_KEY` | *(vide)* | Clé unique du backoffice `/admin` (≥ 32 caractères aléatoires, variable secrète Railway) ; vide = le backoffice n'existe pas (404) |
+| `CHAMPIS_JOB_ORIGIN` | `cli` | Origine inscrite dans le journal des tâches par les commandes `champis-api` : `cron` sur les services Railway (`.railway/railway.ts`), `admin` depuis le backoffice (lot BO3) |
+| `CHAMPIS_BUILD_FILE` | `BUILD` | Empreinte du déploiement (sha et date) écrite par la CI avant `railway up`, affichée par le backoffice ; absente en développement |
 
 ## PMTiles : bucket et `/tiles`
 
@@ -122,6 +125,24 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 
 **Protection** (service public) : seau à jetons par IP et par worker (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
 
+## Backoffice `/admin` (spec › Backoffice, 7 et 8 nov. 2026 ; lot BO1)
+
+Une page privée de l'API, `https://api.champis.app/admin`, pour Adrien seul : santé du service, usage, journal des tâches. HTML et JS sans build ni dépendance (`champis_api/admin/static/`), servis par l'API sur la même origine que leurs données ; `X-Robots-Tag: noindex`. Le tableau de bord Railway reste la référence pour CPU, RAM, réseau et journaux bruts.
+
+**Accès.** `CHAMPIS_ADMIN_KEY` (variable secrète Railway, `openssl rand -base64 32`) ; vide, tout `/admin` répond 404. `POST /admin/login` compare la clé en temps constant (5 essais par minute et par IP) et pose un cookie `champis_admin` signé (HMAC d'une date d'expiration par une clé dérivée ; rien n'est stocké, changer la clé déconnecte tout), HttpOnly, Secure, SameSite=Strict, `Path=/admin`, 30 jours. Les routes refusent tout `Origin` étranger et `Authorization` n'est pas dans les en-têtes CORS : une page tierce ne lit ni n'agit ; les actions (`POST`) exigent `X-Champis-Admin: 1`. Pour curl : `Authorization: Bearer <clé>`.
+
+```bash
+curl -s -H "Authorization: Bearer $CHAMPIS_ADMIN_KEY" https://api.champis.app/admin/api/health | jq .alerts
+```
+
+| Route | Ce qu'elle rend |
+| --- | --- |
+| `GET /admin/api/health` | Les contrôles de `doctor` plus ce que seul le service connaît : version déployée (`BUILD`), cache météo (`cells`, `seeded`, `dept_index_at`, `cache_published` et son âge), volume, cache des tuiles, base (lignes par table), dernière exécution de chaque tâche, bucket (manifeste des tuiles par jeu, cache et amorçage publiés), trafic (`http_429`, `http_5xx` sur 7 jours) ; `alerts` en tête, les plus graves d'abord (cache publié de plus de 14 h, passe en échec ou absente, moins de 5 Go libres, base ou bucket injoignables, 5xx la veille) |
+| `GET /admin/api/usage?days=90` | Les compteurs de la mesure minimale par jour (`counters`), et le tableau des 14 derniers jours de `make stats` |
+| `GET /admin/api/jobs?limit=50&kind=` et `/admin/api/jobs/<id>` | Le journal des tâches : liste, puis détail avec les événements et, s'il est dans le bucket, l'adresse présignée du journal complet (1 h) |
+
+**Journal des tâches** (`jobs.py`, tables `jobs` et `job_events` de la base des observations). Quand `DATABASE_URL` est fournie, chaque commande `champis-api` qui fait quelque chose (`warm`, `notify`, `seed`, `publish-seed`, `publish-cache` ; pas `doctor` ni `stats`) s'inscrit au départ (`origin` : `cron` sur Railway, `cli` ailleurs), relève ses étapes `[i/n]`, ses notes, ses avertissements et la progression de ses étapes longues (au plus toutes les 2 s ou tous les 1 %) par un puits branché sur `champis_pipeline.console`, puis se clôt avec son code de sortie et dépose son journal complet dans le bucket sous `jobs/<id>.log`. Une base absente ou injoignable débranche le puits et la commande continue. Les crons `champis-warm` et `champis-notify` sont donc visibles dans l'onglet Tâches sans rien changer à Railway (`DATABASE_URL` et `CHAMPIS_JOB_ORIGIN=cron` dans `.railway/railway.ts`). Rétention 400 jours. La page interroge le détail d'une tâche en cours toutes les 3 s ; les outils lancés depuis la page et la carte HD arrivent avec le service d'exécution (lot BO3).
+
 ## Mesure minimale (étape C, lot C2)
 
 Spec › Produit › Mesure minimale (6 nov. 2026) : des totaux par jour civil (heure de Paris), calculés côté serveur à partir de ce que Champis reçoit ou stocke déjà ; ni cookie, ni identifiant, ni adresse IP, ni outil tiers. Table `daily_counts` (jour, nom, valeur) de la même base que les observations (`counts.py`), lignes de plus de 400 jours effacées à chaque notification du matin.
@@ -133,6 +154,7 @@ Spec › Produit › Mesure minimale (6 nov. 2026) : des totaux par jour civil (
 | `devices_with_coins`, `coins` | la notification du matin (`notify_all`), relevé du jour |
 | `notify_sent`, `notify_failed` | la notification du matin, cumulés sur la journée |
 | `warm_cells`, `cells_without_weather` | la pré-chauffe, seulement si `DATABASE_URL` est fournie au service `champis-warm` (sinon l'étape n'existe pas) |
+| `http_429`, `http_5xx` | l'API, à chaque réponse refusée par le limiteur ou en erreur serveur (backoffice › Santé, lot BO1) : un nombre, aucune adresse |
 
 Lecture : `make stats` (`champis-api stats --days 14`, tableau sur stdout, « · » = rien de relevé ce jour-là, jamais un zéro inventé) ; `make doctor` en donne la veille en une ligne. Les soutiens et les coûts restent un relevé manuel mensuel.
 

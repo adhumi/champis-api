@@ -10,6 +10,11 @@ Conventions :
   (`CHAMPIS_LOG_DIR` pour changer de dossier, vide pour ne rien écrire) ; les 50 derniers journaux
   sont gardés.
 
+Un **puits** (`Sink`) peut être branché sur la console (`console.get().sink = …`) : il reçoit les
+mêmes événements que l'écran (début et fin d'étape, notes, avertissements, progression, résumé)
+pour les écrire ailleurs, par exemple dans le journal des tâches du backoffice (spec › Backoffice,
+7 nov. 2026 : `champis_api.jobs`). Un puits qui échoue n'arrête jamais la commande.
+
 Rien ici ne touche au modèle ni aux données : un module de confort, testé en mode non-TTY.
 """
 
@@ -24,7 +29,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import IO, Any
+from typing import IO, Any, Protocol
 
 from tqdm import tqdm as _tqdm
 
@@ -40,6 +45,18 @@ YELLOW = "\033[33m"
 CYAN = "\033[36m"
 
 _STATUS_STYLE = {"ok": GREEN, "deja fait": DIM, "ECHEC": RED + BOLD, "ignore": YELLOW}
+
+
+class Sink(Protocol):
+    """Ce qu'un puits reçoit de la console ; chaque méthode peut ne rien faire."""
+
+    def step_begin(self, index: int, total: int, name: str) -> None: ...
+    def step_end(
+        self, index: int, total: int, name: str, status: str, detail: str, seconds: float
+    ) -> None: ...
+    def event(self, level: str, text: str) -> None: ...
+    def progress(self, done: int, total: int | None, unit: str, detail: str) -> None: ...
+    def summary(self, text: str) -> None: ...
 
 
 def wants_color(stream: IO[str]) -> bool:
@@ -95,6 +112,8 @@ class Console:
             self._log_file = log_path.open("a", encoding="utf-8")
         self.started = time.monotonic()
         self.failures = 0
+        self.sink: Sink | None = None
+        self._sink_failed = False
         # exception déjà affichée par une étape : `run` ne la répète pas
         self.reported: BaseException | None = None
         self.reported_step: str = ""
@@ -130,6 +149,19 @@ class Console:
             self._log_file.close()
             self._log_file = None
 
+    # ------------------------------------------------------------------ puits
+
+    def emit(self, method: str, *args: Any) -> None:
+        """Transmet un événement au puits, s'il y en a un ; sa première erreur est écrite dans le
+        journal et le puits est débranché : la commande continue."""
+        if self.sink is None or self._sink_failed:
+            return
+        try:
+            getattr(self.sink, method)(*args)
+        except Exception as e:  # jamais bloquant
+            self._sink_failed = True
+            self.log_only(f"# puits débranché ({method}) : {_one_line(e)}")
+
     # ------------------------------------------------------------------ étapes
 
     def title(self, text: str) -> None:
@@ -138,15 +170,18 @@ class Console:
     def info(self, text: str) -> None:
         """Ligne d'information secondaire (grise), indentée sous l'étape en cours."""
         self.write(self.style("      - " + text, DIM), "      - " + text, important=False)
+        self.emit("event", "info", text)
 
     def warn(self, text: str) -> None:
         self.write(self.style("      ! " + text, YELLOW), "      ! " + text)
+        self.emit("event", "warn", text)
 
     def error(self, text: str, hint: str | None = None) -> None:
         self.failures += 1
         self.write(self.style("ECHEC " + text, RED, BOLD), "ECHEC " + text)
         if hint:
             self.write(self.style("      " + hint, DIM), "      " + hint)
+        self.emit("event", "error", text)
 
     def steps(self, total: int, title: str | None = None) -> Steps:
         if title:
@@ -159,6 +194,7 @@ class Console:
         if self.log_path is not None:
             tail += f" · journal : {self.log_path}"
         self.write(self.style(text + tail, BOLD), text + tail)
+        self.emit("summary", text)
 
     # ------------------------------------------------------------------ journaux `logging`
 
@@ -178,7 +214,7 @@ class Steps:
     @contextmanager
     def step(self, name: str) -> Iterator[Step]:
         self.index += 1
-        step = Step(self.console, f"[{self.index}/{self.total}]", name)
+        step = Step(self.console, f"[{self.index}/{self.total}]", name, self.index, self.total)
         step.begin()
         try:
             yield step
@@ -191,10 +227,14 @@ class Steps:
 
 
 class Step:
-    def __init__(self, console: Console, prefix: str, name: str) -> None:
+    def __init__(
+        self, console: Console, prefix: str, name: str, index: int = 0, total: int = 0
+    ) -> None:
         self.console = console
         self.prefix = prefix
         self.name = name
+        self.index = index
+        self.total = total
         self.status = "ok"
         self.detail = ""
         self.t0 = time.monotonic()
@@ -206,10 +246,17 @@ class Step:
         self.console.write(
             self.console.style(self.prefix, CYAN) + " " + self.console.style(self.name, BOLD), plain
         )
+        self.console.emit("step_begin", self.index, self.total, self.name)
 
     def note(self, text: str) -> None:
         """Détail affiché sur la ligne de résultat (`3812x4620 px`, chemin écrit…)."""
         self.detail = text
+
+    def progress(
+        self, done: int, total: int | None = None, unit: str = "", detail: str = ""
+    ) -> None:
+        """Avancement d'une étape longue, pour le puits seulement (l'écran a ses barres tqdm)."""
+        self.console.emit("progress", done, total, unit, detail)
 
     def skip(self, text: str = "") -> None:
         """L'étape n'avait rien à faire (fichier présent)."""
@@ -237,6 +284,15 @@ class Step:
             + ("  " + detail if detail else "")
         )
         self.console.write(text, plain)
+        self.console.emit(
+            "step_end",
+            self.index,
+            self.total,
+            self.name,
+            status,
+            detail,
+            time.monotonic() - self.t0,
+        )
 
 
 def _one_line(e: BaseException) -> str:

@@ -17,3 +17,5 @@ htmlcov/
 node_modules/
 package.json
 package-lock.json
+# empreinte du déploiement écrite par la CI (backoffice › Santé)
+BUILD

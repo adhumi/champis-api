@@ -69,6 +69,10 @@ def test_warm_fills_the_cache_and_computes_the_department_index(settings, scenar
     store = Store(settings.database_url)
     day = counts.today()
     assert store.counts_since(day)[day] == {"warm_cells": 2, "cells_without_weather": 0}
+    # journal des tâches (backoffice) : la passe est inscrite, ses trois étapes passées
+    (job,) = store.list_jobs()
+    assert job["status"] == "ok" and (job["step_index"], job["step_total"]) == (3, 3)
+    assert job["progress_done"] is None  # la progression ne vaut que pendant l'étape longue
     store.close()
     assert err.splitlines()[-1].startswith("pré-chauffe terminée en ")
     assert "forecast" in scenario.calls
@@ -136,10 +140,19 @@ def test_seed_then_publish_seed(settings, scenario, capsys, monkeypatch, tmp_pat
 def test_notify_requires_apns(settings, capsys):
     assert cli.main(["notify"]) == 1
     assert "ECHEC APNs non configuré" in capsys.readouterr().err
+    # même refusée d'emblée, la tâche est inscrite en échec : le backoffice le voit
+    store = Store(settings.database_url)
+    (job,) = store.list_jobs()
+    assert job["kind"] == "notify" and job["status"] == "failed" and job["exit_code"] == 1
+    assert store.events_of(job["id"])[-1]["level"] == "error"
+    store.close()
 
 
 def test_doctor_runs_through_the_cli(settings, capsys):
     assert cli.main(["doctor", "--offline"]) == 0
+    store = Store(settings.database_url)
+    assert store.list_jobs() == []  # une lecture ne s'inscrit pas dans le journal des tâches
+    store.close()
     err = capsys.readouterr().err
     assert "grille météo" in err and "2 cellules, version 2" in err
     assert "manque  bucket PMTiles" in err and "manque  notifications APNs" in err
@@ -238,7 +251,21 @@ def test_cron_pass_pulls_warms_and_publishes_what_the_api_imports(
     assert "[3/6] pré-chauffe" in err and "[4/6] indice" in err
     assert "[5/6] publication du cache dans le bucket" in err and "2 cellules" in err
     assert "[6/6] bilan dans la mesure" in err
-    assert bucket.uploads[-1] == CACHE_DB_KEY and bucket.downloads == ["weather/weather_seed.db"]
+    assert bucket.downloads == ["weather/weather_seed.db"]
+    # journal des tâches (backoffice, lot BO1) : la passe s'est inscrite, étapes et progression
+    # comprises, et son journal complet suit l'instantané dans le bucket
+    store = Store(settings.database_url)
+    (job,) = store.list_jobs()
+    assert job["kind"] == "warm" and job["origin"] == "cli" and job["status"] == "ok"
+    assert job["args"] == {"interval": "0.0", "pull": "True", "publish": "True"}
+    assert (job["step_index"], job["step_total"]) == (6, 6)
+    assert job["summary"] == "pré-chauffe terminée" and job["log_key"] == f"jobs/{job['id']}.log"
+    events = store.events_of(job["id"])
+    assert events[0]["text"] == "[1/6] cache publié dans le bucket"
+    assert any(e["text"].startswith("[3/6] pré-chauffe du cache météo : ok") for e in events)
+    store.close()
+    assert bucket.uploads[-2:] == [CACHE_DB_KEY, job["log_key"]]
+    assert b"[3/6] pr" in bucket.objects[job["log_key"]]
     meta = bucket.json[CACHE_META_KEY]
     assert meta["cells"] == 2 and meta["cell_weather"] > 0 and meta["today"] == TODAY.isoformat()
     assert meta["dept_index_at"] and meta["published"] and meta["bytes"] > 0
@@ -285,7 +312,9 @@ def test_publish_cache_command(settings, scenario, bucket: MemoryBucket, capsys)
     assert cli.main(["-q", "publish-cache"]) == 0
     err = capsys.readouterr().err
     assert "[1/1] publication du cache dans le bucket" in err and "cache publié" in err
-    assert bucket.uploads[-1] == CACHE_DB_KEY and bucket.uploads.count(CACHE_DB_KEY) == 1
+    # l'instantané, puis le journal de la tâche (backoffice) ; l'instantané une seule fois
+    assert bucket.uploads[-2] == CACHE_DB_KEY and bucket.uploads.count(CACHE_DB_KEY) == 1
+    assert bucket.uploads[-1].startswith("jobs/") and bucket.uploads[-1].endswith(".log")
 
 
 def test_notify_pull_takes_the_published_cache_first(
