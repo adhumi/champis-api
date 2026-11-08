@@ -25,6 +25,8 @@ COPY data/weather_grid.json data/weather_grid.json
 # Repli local (Doubs) tant qu'aucun amorçage n'est publié dans le bucket (weather/weather_seed.db) ;
 # le motif [n] rend le COPY tolérant si le fichier n'est pas versionné.
 COPY data/weather_seed.jso[n] data/
+# Empreinte du déploiement écrite par la CI (sha, date), affichée par le backoffice ; absente en local
+COPY BUIL[D] ./
 RUN uv sync
 
 # CHAMPIS_WARM_HOURS et CHAMPIS_NOTIFY_HOURS vides : l'API n'a plus de tâche de fond, les

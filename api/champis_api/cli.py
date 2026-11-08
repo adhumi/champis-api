@@ -10,7 +10,10 @@ de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — d
 `champis-api doctor [--offline]` — l'environnement est-il prêt ; `champis-api stats [--days 14]` —
 mesure minimale, les compteurs agrégés par jour (étape C, lot C2).
 
-Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/)."""
+Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/). Journal
+des tâches (spec › Backoffice, lot BO1) : quand `DATABASE_URL` est fournie, chaque commande qui
+fait quelque chose s'inscrit dans la table `jobs` avec ses étapes et sa progression (`jobs.py`), et
+son journal complet part dans le bucket s'il y en a un ; `doctor` et `stats` ne s'inscrivent pas."""
 
 from __future__ import annotations
 
@@ -25,7 +28,7 @@ from champis_pipeline import console
 from champis_pipeline.progress import tqdm
 from champis_pipeline.species import list_species
 
-from . import counts
+from . import counts, jobs
 from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
@@ -94,6 +97,12 @@ async def _warm(interval: float, pull: bool, publish: bool) -> int:
                         bar.n = done
                         bar.set_postfix_str(f"{unavailable} indisponibles, {stale} périmées")
                         bar.refresh()
+                        step.progress(
+                            done,
+                            total,
+                            "cellules",
+                            f"{unavailable} indisponibles, {stale} périmées",
+                        )
 
                     report = await warm(grid, client, progress=progress)
                 step.note(
@@ -130,7 +139,15 @@ def _publish_cache_step(steps, settings: Settings, cache: WeatherCache, bucket) 
     with steps.step("publication du cache dans le bucket") as step:
         bar = tqdm(desc="téléversement", unit="B", unit_scale=True, unit_divisor=1024)
         try:
-            info = publish_cache(bucket, cache, settings.cache_db.parent, progress=bar.update)
+            sent = 0
+
+            def progress(n: int) -> None:
+                nonlocal sent
+                sent += n
+                bar.update(n)
+                step.progress(sent, None, "octets")
+
+            info = publish_cache(bucket, cache, settings.cache_db.parent, progress=progress)
         finally:
             bar.close()
         step.note(
@@ -354,13 +371,38 @@ def _dispatch(args) -> int:
     return asyncio.run(_warm(args.interval, args.pull, args.publish))
 
 
+def _job_args(args) -> dict:
+    return {k: v for k, v in vars(args).items() if k not in ("cmd", "verbose", "quiet")}
+
+
+def _log_bucket(settings: Settings):
+    """Le bucket pour y déposer le journal de la tâche, None s'il n'y en a pas."""
+    if settings.s3 is None:
+        return None
+    from champis_pipeline.storage import Bucket
+
+    return Bucket(settings.s3)
+
+
 def main(argv: list[str] | None = None) -> int:
     from champis_pipeline.config import load_env
 
     load_env()
     args = build_parser().parse_args(argv)
-    console.setup("api-" + args.cmd, verbose=args.verbose, quiet=args.quiet)
-    return console.run(_dispatch, args)
+    c = console.setup("api-" + args.cmd, verbose=args.verbose, quiet=args.quiet)
+    settings = Settings()
+    # journal des tâches (backoffice) : la commande tourne même si la base manque ou refuse
+    registration = jobs.register(
+        args.cmd, {k: str(v) for k, v in _job_args(args).items()}, settings.database_url, c
+    )
+    code = console.run(_dispatch, args)
+    if registration is not None:
+        try:
+            bucket = _log_bucket(settings)
+        except Exception:  # un bucket mal configuré ne doit pas cacher le résultat
+            bucket = None
+        registration.close(code, c.log_path, bucket)
+    return code
 
 
 if __name__ == "__main__":

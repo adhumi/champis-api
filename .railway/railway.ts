@@ -40,6 +40,9 @@ export default defineRailway(() => {
       AWS_DEFAULT_REGION: preserve(),
       AWS_S3_BUCKET_NAME: preserve(),
       CHAMPIS_OPEN_METEO_API_KEY: preserve(),
+      // Backoffice /admin (spec › Backoffice, 8 nov. 2026) : la clé unique, posée une fois dans
+      // Railway (`openssl rand -base64 32`), jamais dans le dépôt
+      CHAMPIS_ADMIN_KEY: preserve(),
       CHAMPIS_TILES_MODE: "proxy",
       DATABASE_URL: db.env.DATABASE_URL,
       // CHAMPIS_WARM_HOURS et CHAMPIS_NOTIFY_HOURS restent vides (valeur de l'image) : les crons
@@ -57,11 +60,13 @@ export default defineRailway(() => {
   };
 
   // Pré-chauffe : repart de l'instantané publié, calcule la France, redépose l'instantané.
+  // DATABASE_URL : le bilan de la mesure minimale et le journal des tâches du backoffice
+  // (`origin: cron`), que la page Tâches affiche.
   const warm = service("champis-warm", {
     start: "uv run champis-api -q warm --pull --publish",
     deploy: { cronSchedule: "0 2,14 * * *", restartPolicyType: "never" },
     replicas: { "europe-west4-drams3a": 1 },
-    env: bucketEnv,
+    env: { ...bucketEnv, DATABASE_URL: db.env.DATABASE_URL, CHAMPIS_JOB_ORIGIN: "cron" },
   });
 
   // Notification « mes coins », après la pré-chauffe du matin.
@@ -72,6 +77,7 @@ export default defineRailway(() => {
     env: {
       ...bucketEnv,
       DATABASE_URL: db.env.DATABASE_URL,
+      CHAMPIS_JOB_ORIGIN: "cron",
       CHAMPIS_APNS_KEY: preserve(),
       CHAMPIS_APNS_KEY_ID: preserve(),
       CHAMPIS_APNS_TEAM_ID: preserve(),

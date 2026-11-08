@@ -78,6 +78,7 @@ all --dept 25 · 7 espèce(s)
 | `api/tests/test_scoring.py`, `test_vectors.py`, `test_spec_rules.py` | M, Φ, M_eff, trigger « meilleur événement », correction d'altitude, gel, chaleur, mémoire, persistance, groupes ; vecteurs de parité avec l'app |
 | `api/tests/test_weather_api.py`, `test_departements.py`, `test_observations.py`, `test_coins.py`, `test_ratelimit.py` | Contrats des endpoints, cache 12 h, pannes et quotas Open-Meteo, amorçage, indice par département, retour terrain, coins et notifications, limitation de débit |
 | `api/tests/test_app_lifespan.py`, `test_api_cli.py`, `test_doctor.py` | Démarrage réel de l'API en mode dégradé, planificateurs, commandes `champis-api` de bout en bout |
+| `api/tests/test_admin.py`, `test_jobs.py` | Backoffice `/admin` : fermé sans clé, cookie signé, Bearer, origine et essais limités, pages Santé, Usage et Tâches ; journal des tâches, puits de la console, inscription des commandes, compteurs 429 et 5xx |
 
 La CI exige une couverture d'au moins 90 % du pipeline et de l'API (`make check`, `make coverage` pour le détail). Ce qui n'est pas couvert et assumé : les appels réseau réels (Géoplateforme, ISRIC, AWS, Open-Meteo, APNs, CDS) ; le site a ses propres tests dans `adhumi/champis-web`.
 
@@ -93,7 +94,7 @@ Railway, trois services construits par le même `Dockerfile` (décision du 4 nov
 
 | Service (`.railway/railway.ts`) | Commande | Rôle |
 | --- | --- | --- |
-| `champis` (API) | `uvicorn` (CMD du `Dockerfile`) | FastAPI, plusieurs workers uvicorn (`CHAMPIS_WORKERS`, 2), volume sur `/data` (cache météo SQLite), site statique, relais de tuiles avec cache disque des plages sur le volume (`CHAMPIS_TILE_CACHE_MB`) |
+| `champis` (API) | `uvicorn` (CMD du `Dockerfile`) | FastAPI, plusieurs workers uvicorn (`CHAMPIS_WORKERS`, 2), volume sur `/data` (cache météo SQLite), relais de tuiles avec cache disque des plages sur le volume (`CHAMPIS_TILE_CACHE_MB`), backoffice privé `/admin` (`CHAMPIS_ADMIN_KEY` ; `api/README.md` › Backoffice) |
 | `champis-warm` (cron) | `champis-api warm --pull --publish` | À 2 h et 14 h UTC (3 h et 15 h Paris en hiver, une heure plus tard en été) : pré-chauffe Open-Meteo, indice par département, météo précalculée, puis instantané du cache déposé dans le bucket |
 | `champis-notify` (cron) | `champis-api notify --pull` | À 6 h UTC (7 h Paris en hiver) : notification « mes coins » |
 

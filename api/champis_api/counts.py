@@ -12,7 +12,9 @@ Adrien seul (`champis-api stats`, une ligne dans `doctor`).
 - `observations_found`, `observations_not_found` : observations reçues ce jour-là (nouvelles seulement) ;
 - `devices_with_coins`, `coins` : relevés à chaque notification du matin ;
 - `notify_sent`, `notify_failed` : notifications de ce jour-là ;
-- `warm_cells`, `cells_without_weather` : bilan de la dernière pré-chauffe du jour.
+- `warm_cells`, `cells_without_weather` : bilan de la dernière pré-chauffe du jour ;
+- `http_429`, `http_5xx` : réponses refusées par le limiteur et erreurs du serveur ce jour-là, en
+  nombre seulement (backoffice › Santé, lot BO1, 8 nov. 2026).
 
 Les soutiens et les coûts restent un relevé manuel mensuel.
 """
@@ -43,6 +45,8 @@ COUNTERS: dict[str, str] = {
     "notify_failed": "échecs",
     "warm_cells": "cellules",
     "cells_without_weather": "sans météo",
+    "http_429": "429",
+    "http_5xx": "5xx",
 }
 
 
