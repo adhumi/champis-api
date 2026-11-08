@@ -89,6 +89,26 @@ def bucket() -> MemoryBucket:
     return b
 
 
+def test_api_does_not_import_rasterio_and_render_matches_the_pipeline():
+    """L'image de l'API n'a pas les bibliothèques de rasterio : importer `champis_api.app` ne doit
+    charger ni rasterio ni `champis_pipeline.tiles` (panne du 8 nov. 2026)."""
+    import subprocess
+    import sys
+
+    code = (
+        "import sys, champis_api.app;"
+        "bad = [m for m in ('rasterio', 'champis_pipeline.tiles', 'geopandas') if m in sys.modules];"
+        "sys.exit(', '.join(bad) or 0)"
+    )
+    r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert r.returncode == 0, f"modules lourds importés par l'API : {r.stderr.strip()}"
+    from champis_pipeline import tiles
+
+    assert render.NODATA == tiles.NODATA
+    arr = np.array([[0, 127], [254, NODATA]], dtype=np.uint8)
+    np.testing.assert_array_equal(render.unpng(_png(arr)), arr)
+
+
 def test_keys_grid_and_entry_selection():
     assert (
         render.render_key("boletus_edulis", "af34c16e", 9)
