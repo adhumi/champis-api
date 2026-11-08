@@ -11,7 +11,9 @@ de `champis-pipeline soil-clim`) ; `champis-api publish-seed [--seed …]` — d
 mesure minimale, les compteurs agrégés par jour (étape C, lot C2) ; `champis-api render
 [--species …] [--zoom 9] [--force]` — carte HD de la France par espèce dans le bucket (backoffice,
 lot BO3) ; `champis-api worker [--once]` — le service d'exécution `champis-jobs`, qui sert la file
-des tâches du backoffice.
+des tâches du backoffice ; `champis-api pipeline <étape> [options]` — une étape de
+champis-pipeline (batch, tiles, publish, weather-grid, status, soil-clim) inscrite dans le journal
+des tâches (lot BO4).
 
 Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/). Journal
 des tâches (spec › Backoffice, lot BO1) : quand `DATABASE_URL` est fournie, chaque commande qui
@@ -387,6 +389,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--poll", type=float, default=5.0, help="secondes entre deux lectures de la file"
     )
     p = sub.add_parser(
+        "pipeline",
+        help="une étape de champis-pipeline inscrite dans le journal des tâches "
+        f"({', '.join(jobs.PIPELINE_KINDS)}) : `champis-api pipeline batch --depts all`",
+    )
+    p.add_argument("step", choices=jobs.PIPELINE_KINDS)
+    p.add_argument("rest", nargs=argparse.REMAINDER, help="options de l'étape")
+    p = sub.add_parser(
         "stats", help="mesure minimale : les compteurs agrégés par jour (Adrien seul)"
     )
     p.add_argument("--days", type=int, default=14, help="nombre de jours, aujourd'hui compris")
@@ -441,11 +450,31 @@ def _dispatch(args) -> int:
         from . import worker
 
         return worker.main(Settings(), once=args.once, poll_s=args.poll)
+    if args.cmd == "pipeline":
+        return _pipeline(args.step, args.rest)
     return asyncio.run(_warm(args.interval, args.pull, args.publish))
 
 
+def _pipeline(step: str, rest: list[str]) -> int:
+    """Une étape de champis-pipeline dans ce processus, sur la console déjà installée (donc dans
+    le journal des tâches quand une base est là) : le service d'exécution lance ses outils
+    lourds ainsi (lot BO4)."""
+    from champis_pipeline import cli as pipeline_cli
+
+    rest = [a for a in rest if a != "--"]
+    p_args = pipeline_cli.build_parser().parse_args([step, *rest])
+    result = p_args.fn(p_args)
+    return int(result or 0)
+
+
 def _job_args(args) -> dict:
+    if args.cmd == "pipeline":
+        return {"step": args.step, "args": " ".join(a for a in args.rest if a != "--")}
     return {k: v for k, v in vars(args).items() if k not in ("cmd", "verbose", "quiet")}
+
+
+def _job_kind(args) -> str:
+    return args.step if args.cmd == "pipeline" else args.cmd
 
 
 def _log_bucket(settings: Settings):
@@ -462,11 +491,11 @@ def main(argv: list[str] | None = None) -> int:
 
     load_env()
     args = build_parser().parse_args(argv)
-    c = console.setup("api-" + args.cmd, verbose=args.verbose, quiet=args.quiet)
+    c = console.setup("api-" + _job_kind(args), verbose=args.verbose, quiet=args.quiet)
     settings = Settings()
     # journal des tâches (backoffice) : la commande tourne même si la base manque ou refuse
     registration = jobs.register(
-        args.cmd, {k: str(v) for k, v in _job_args(args).items()}, settings.database_url, c
+        _job_kind(args), {k: str(v) for k, v in _job_args(args).items()}, settings.database_url, c
     )
     code = console.run(_dispatch, args)
     if registration is not None:

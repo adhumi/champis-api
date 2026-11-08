@@ -136,8 +136,8 @@ gbif-check: ## Contrôle GBIF (AUC de T aux occurrences) : reports/<espèce>-$(D
 # ------------------------------------------------------------------ Pipeline terrain (plusieurs départements : DEPTS)
 
 .PHONY: batch
-batch: ## download + grid + terrain en parallèle (JOBS départements à la fois), reprise automatique
-	$(PIPELINE) batch --depts $(DEPTS) --jobs $(JOBS) $(SP)
+batch: ## download + grid + terrain en parallèle (JOBS départements à la fois), reprise automatique ; CLEAN_RAW=1 efface data/raw/<dept> au fil de l'eau
+	$(PIPELINE) batch --depts $(DEPTS) --jobs $(JOBS) $(if $(CLEAN_RAW),--clean-raw) $(SP)
 
 .PHONY: tiles
 tiles: ## PMTiles T par espèce, A (altitude) et G par groupe (GROUPS=1) du jeu DEPTS, plus un jeu par département

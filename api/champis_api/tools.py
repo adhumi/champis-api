@@ -13,18 +13,20 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from champis_pipeline.batch import parse_depts
 from champis_pipeline.species import list_species
 
 from . import jobs
 
 RENDER_ZOOMS = (9, 10)
 ALL = "all"
+PIPELINE = "pipeline"  # module : `champis-api pipeline <sorte> …` (journal des tâches compris)
 
 
 @dataclass(frozen=True)
 class Field:
     name: str
-    kind: str  # bool | number | choice
+    kind: str  # bool | number | choice | depts (codes séparés par des espaces, ou `all`)
     label: str
     default: Any = None
     choices: tuple[str, ...] | None = None
@@ -44,6 +46,8 @@ class Tool:
     needs: str
     fields: tuple[Field, ...] = ()
     exclusive: bool = False  # jamais deux à la fois, cron compris
+    min_free_gb: float = 0.0  # le worker refuse de démarrer sous ce seuil sur son volume
+    confirm: str = ""  # la page demande confirmation avant de lancer, avec ce texte
 
     @property
     def label(self) -> str:
@@ -103,7 +107,7 @@ TOOLS: dict[str, Tool] = {
     ),
     "soil-clim": Tool(
         "soil-clim",
-        "champis_pipeline.cli",
+        PIPELINE,
         "heures (Climate Data Store)",
         "compte CDS (CDSAPI_URL, CDSAPI_KEY)",
         exclusive=True,
@@ -118,6 +122,81 @@ TOOLS: dict[str, Tool] = {
             Field("zoom", "choice", "niveau", "9", choices=tuple(str(z) for z in RENDER_ZOOMS)),
             Field("force", "bool", "refaire même si la carte existe", False),
         ),
+    ),
+    # lot BO4 : le pipeline terrain sur le volume du service d'exécution
+    "status": Tool(
+        "status",
+        PIPELINE,
+        "secondes",
+        "lecture seule : disque du worker et bucket",
+        (
+            Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field("groups", "bool", "compter aussi les G", True),
+        ),
+    ),
+    "batch": Tool(
+        "batch",
+        PIPELINE,
+        "≈ 15 min par département, reprise automatique",
+        "≈ 2 Go de RAM par processus, ≈ 5 Go d'entrées brutes par département (effacées à la fin de chacun)",
+        (
+            Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field("jobs", "number", "départements en parallèle", 2, minimum=1, maximum=4),
+            Field(
+                "clean_raw",
+                "bool",
+                "effacer les entrées brutes d'un département une fois ses T écrits",
+                True,
+            ),
+            Field("force", "bool", "refaire même si le résultat existe", False),
+        ),
+        exclusive=True,
+        min_free_gb=10.0,
+    ),
+    "tiles": Tool(
+        "tiles",
+        PIPELINE,
+        "heures pour la France",
+        "les T de tous les départements sur le volume ; niveau 15 en parallèle",
+        (
+            Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field("jobs", "number", "processus pour le niveau 15", 2, minimum=1, maximum=8),
+            Field("per_dept", "bool", "aussi un jeu par département (hors ligne de l'app)", True),
+            Field("groups", "bool", "aussi un PMTiles G par groupe", True),
+            Field("force", "bool", "refaire même si le résultat existe", False),
+        ),
+        exclusive=True,
+        min_free_gb=10.0,
+    ),
+    "publish": Tool(
+        "publish",
+        PIPELINE,
+        "minutes à une heure (téléversement)",
+        "bucket ; les PMTiles dans data/tiles du worker",
+        (
+            Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field("per_dept", "bool", "publier aussi les jeux par département", True),
+            Field("groups", "bool", "publier aussi les G", True),
+            Field("prune", "bool", "effacer du bucket les autres jeux de départements", False),
+            Field(
+                "dry_run", "bool", "montrer seulement ce qui serait fait (rien n'est écrit)", True
+            ),
+        ),
+        exclusive=True,
+        confirm="Publier avec --prune efface du bucket les PMTiles des autres jeux : la carte n'affichera plus que ce jeu. Lance d'abord avec « montrer seulement » coché et lis le journal. Continuer ?",
+    ),
+    "weather-grid": Tool(
+        "weather-grid",
+        PIPELINE,
+        "minutes",
+        "les T sur le volume ; le fichier est versionné : déposé dans le bucket (artifacts/) à committer",
+        (
+            Field("depts", "depts", "départements (codes ou all)", ALL),
+            Field(
+                "to_bucket", "bool", "déposer weather_grid.json dans le bucket (artifacts/)", True
+            ),
+        ),
+        exclusive=True,
     ),
 }
 
@@ -145,6 +224,8 @@ def describe() -> list[dict[str, Any]]:
                 "duration": tool.duration,
                 "needs": tool.needs,
                 "exclusive": tool.exclusive,
+                "min_free_gb": tool.min_free_gb,
+                "confirm": tool.confirm,
                 "fields": [
                     {
                         "name": f.name,
@@ -179,6 +260,15 @@ def validate(kind: str, args: dict[str, Any] | None) -> dict[str, str]:
             if isinstance(value, str):
                 value = value.strip().lower() in ("1", "true", "oui", "on", "yes")
             out[f.name] = "True" if bool(value) else "False"
+        elif f.kind == "depts":
+            tokens = [t for t in str(value).replace(",", " ").split() if t]
+            if not tokens:
+                raise ToolError(f"{f.name} : au moins un département, ou all")
+            try:
+                parsed = parse_depts(tokens if tokens != [ALL] else [ALL])
+            except SystemExit as e:
+                raise ToolError(f"{f.name} : {e}") from e
+            out[f.name] = ALL if tokens == [ALL] else " ".join(parsed)
         elif f.kind == "number":
             try:
                 number = float(value)
@@ -201,12 +291,21 @@ def command(kind: str, args: dict[str, Any] | None) -> list[str]:
     """La ligne de commande du sous-processus : `python -m <module> -q <commande> [options]`."""
     tool = TOOLS[kind]
     normalized = validate(kind, args)
-    argv = [sys.executable, "-m", tool.module, "-q", kind]
+    if tool.module == PIPELINE:
+        argv = [sys.executable, "-m", "champis_api.cli", "-q", "pipeline", kind]
+    else:
+        argv = [sys.executable, "-m", tool.module, "-q", kind]
     for f in tool.fields:
         value = normalized[f.name]
         if f.kind == "bool":
             if value == "True":
                 argv.append(f.option())
+        elif f.kind == "depts":
+            argv += [f.option(), *value.split()]
+        elif (
+            f.kind == "number" and value.replace(".", "", 1).isdigit() and float(value).is_integer()
+        ):
+            argv += [f.option(), str(int(float(value)))]
         else:
             argv += [f.option(), value]
     return argv

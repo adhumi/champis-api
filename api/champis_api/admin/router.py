@@ -8,7 +8,7 @@
 - lot BO3 : `GET /admin/api/tools` (catalogue, état du service d'exécution, file), `POST
   /admin/api/jobs` (`{"kind", "args"}` → tâche `queued`, que `champis-jobs` prend), `POST
   /admin/api/jobs/<id>/cancel`, `GET /admin/api/renders` (cartes HD présentes dans le bucket, URL
-  présignées d'une heure).
+  présignées d'une heure) ; lot BO4 : `GET /admin/api/artifacts` (sorties du pipeline à committer).
 
 Tout répond 404 sans `CHAMPIS_ADMIN_KEY`. `X-Robots-Tag: noindex` partout.
 """
@@ -249,6 +249,23 @@ async def api_cancel(job_id: str, request: Request, _: auth.Action) -> JSONRespo
     if state is None:
         raise HTTPException(409, "tâche inconnue ou déjà terminée")
     return JSONResponse({"id": job_id, "status": state}, headers=ROBOTS)
+
+
+@router.get("/api/artifacts")
+async def api_artifacts(request: Request, _: auth.Authenticated) -> JSONResponse:
+    """Les sorties du pipeline à committer (lot BO4 : `weather_grid.json`), avec leur URL d'une heure."""
+    from champis_pipeline import artifacts
+
+    bucket = _state(request).bucket
+    if bucket is None:
+        raise HTTPException(503, "bucket non configuré")
+
+    def gather():
+        return [
+            {**a, "url": bucket.presign(a["key"], 3600)} for a in artifacts.list_artifacts(bucket)
+        ]
+
+    return JSONResponse({"artifacts": await asyncio.to_thread(gather)}, headers=ROBOTS)
 
 
 @router.get("/api/renders")

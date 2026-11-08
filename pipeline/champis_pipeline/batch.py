@@ -122,10 +122,14 @@ def batch(
     executor_factory: Callable[[int], Executor] | None = None,  # défaut : « spawn »
     status_path: Path | None = None,
     report: Callable[[DeptResult], None] | None = None,
+    clean_raw: bool = False,
 ) -> dict[str, dict]:
     """Lance `runner` sur chaque département manquant, `jobs` à la fois ; écrit l'état au fil de l'eau.
 
     `report` reçoit chaque résultat dès qu'il arrive (la CLI en fait une ligne) ; défaut : journal.
+    `clean_raw` (service d'exécution, lot BO4) : les entrées brutes propres au département
+    (`data/raw/<dept>`, l'archive BD Forêt et son extraction) sont effacées dès que ses T sont
+    écrits ; les dalles DEM et les découpes SoilGrids, partagées entre départements, restent.
     """
     status_path = status_path or status_file()
     if report is None:
@@ -146,8 +150,27 @@ def batch(
             r = fut.result()
             status[r.dept] = asdict(r)
             save_status(status, status_path)
+            if clean_raw and r.ok:
+                freed = clean_dept_raw(r.dept)
+                if freed:
+                    r.message += f" · {freed / 1e9:.1f} Go d'entrées brutes effacés"
             report(r)
     return status
+
+
+def clean_dept_raw(dept: str) -> int:
+    """Efface `data/raw/<dept>` ; renvoie les octets libérés (0 si rien)."""
+    import shutil
+
+    from . import config
+
+    root = config.RAW_DIR / dept
+    if not root.exists():
+        return 0
+    freed = sum(f.stat().st_size for f in root.rglob("*") if f.is_file())
+    shutil.rmtree(root, ignore_errors=True)
+    log.info("%s : entrées brutes effacées (%.1f Go)", dept, freed / 1e9)
+    return freed
 
 
 def _log_result(r: DeptResult) -> None:

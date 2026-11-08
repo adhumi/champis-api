@@ -158,8 +158,27 @@ def cmd_tiles(args) -> None:
 
 def cmd_weather_grid(args) -> None:
     depts = _depts(args)
-    with console.get().steps(1).step(f"weather-grid · {len(depts)} département(s)") as step:
-        step.written(weather_grid.build(depts, args.species))
+    to_bucket = bool(getattr(args, "to_bucket", False))
+    steps = console.get().steps(1 + to_bucket)
+    with steps.step(f"weather-grid · {len(depts)} département(s)") as step:
+        out = weather_grid.build(depts, args.species)
+        step.written(out)
+    if to_bucket:  # le fichier est versionné : depuis le worker, il revient dans git par le bucket
+        from . import artifacts
+        from .storage import Bucket, S3Config
+
+        cfg = S3Config.from_env()
+        if cfg is None:
+            raise SystemExit(NO_BUCKET)
+        with steps.step("dépôt dans le bucket (artifacts/)") as step:
+            meta = artifacts.publish_artifact(
+                Bucket(cfg),
+                out,
+                out.name,
+                f"weather-grid --depts {' '.join(args.depts)}",
+                {"depts": depts},
+            )
+            step.note(f"{meta['key']} · {console.size(meta['bytes'])} · à committer dans data/")
 
 
 # ---------------------------------------------------------------------- diagnostics
@@ -255,8 +274,16 @@ def cmd_batch(args) -> None:
         if not r.ok:
             for line in r.message.splitlines()[1:]:
                 c.info(line)
+        c.emit("progress", count["n"], todo, "départements", f"{r.dept} {status}")
 
-    status = batch.batch(depts, args.species, jobs=args.jobs, force=args.force, report=report)
+    status = batch.batch(
+        depts,
+        args.species,
+        jobs=args.jobs,
+        force=args.force,
+        report=report,
+        clean_raw=bool(getattr(args, "clean_raw", False)),
+    )
     failed = [d for d in depts if not status.get(d, {}).get("ok")]
     c.summary(
         f"{len(depts) - len(failed)}/{len(depts)} départements ok · état : {batch.status_file()}"
@@ -437,6 +464,12 @@ def build_parser() -> argparse.ArgumentParser:
     ):
         p = sub.add_parser(name, parents=[common], help=help_)
         p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")
+        if name == "weather-grid":
+            p.add_argument(
+                "--to-bucket",
+                action="store_true",
+                help="déposer aussi le fichier dans le bucket (artifacts/), pour le committer depuis un poste",
+            )
         if name == "tiles":
             p.add_argument("--jobs", type=int, default=None, help="processus pour le niveau 15")
             p.add_argument(
@@ -484,6 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--depts", nargs="+", required=True, help="codes ou `all`")
     p.add_argument("--jobs", type=int, default=2, help="départements en parallèle (~2 Go chacun)")
+    p.add_argument(
+        "--clean-raw",
+        action="store_true",
+        help="effacer data/raw/<dept> dès que ses T sont écrits (volume borné du service d'exécution)",
+    )
     p.set_defaults(fn=cmd_batch)
     return ap
 

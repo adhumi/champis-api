@@ -230,7 +230,8 @@ def test_batch_prints_one_line_per_department_and_fails_on_errors(
         ),
     ]
 
-    def fake_batch(depts, species, jobs, force, report):
+    def fake_batch(depts, species, jobs, force, report, clean_raw=False):
+        assert clean_raw is False  # pas demandé ici
         for r in results:
             report(r)
         return {r.dept: {"ok": r.ok} for r in results}
