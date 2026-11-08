@@ -49,7 +49,7 @@ async def test_health_and_species(api):
     assert body["scoring_version"] == "1.0.0"
     assert body["palette"]["thresholds"][0]["label"] == "excellent"
     assert body["species"]["boletus_edulis"]["group"]["id"] == "cepes"
-    assert len(body["species"]) == 10
+    assert len(body["species"]) == 27
 
 
 @pytest.mark.asyncio

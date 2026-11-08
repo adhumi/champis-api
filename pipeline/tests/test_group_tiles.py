@@ -34,10 +34,27 @@ from pmtiles.reader import MmapSource, Reader
 from rasterio.transform import from_origin
 
 CEPES = ["boletus_aereus", "boletus_edulis", "boletus_pinophilus", "boletus_reticulatus"]
-GIROLLES = ["cantharellus_alborufescens", "cantharellus_cibarius", "cantharellus_pallens"]
-LACTAIRES = ["lactarius_deliciosus"]
-PIEDS_DE_MOUTON = ["hydnum_repandum"]
-TROMPETTES = ["craterellus_cornucopioides"]
+GIROLLES = [
+    "cantharellus_alborufescens",
+    "cantharellus_amethysteus",
+    "cantharellus_cibarius",
+    "cantharellus_pallens",
+]
+LACTAIRES = [
+    "lactarius_deliciosus",
+    "lactarius_deterrimus",
+    "lactarius_salmonicolor",
+    "lactarius_sanguifluus",
+    "lactifluus_volemus",
+]
+PIEDS_DE_MOUTON = ["hydnum_repandum", "hydnum_rufescens"]
+TROMPETTES = ["craterellus_cinereus", "craterellus_cornucopioides"]
+CHANTERELLES = ["craterellus_lutescens", "craterellus_tubaeformis"]
+BOLETS_BAIS = ["imleria_badia"]
+PIEDS_BLEUS = ["lepista_nuda"]
+RUSSULES = ["russula_cyanoxantha", "russula_virescens"]
+NONNETTES = ["suillus_granulatus", "suillus_luteus"]
+PETITS_GRIS = ["tricholoma_portentosum", "tricholoma_terreum"]
 LON, LAT = 6.37, 47.19  # une hêtraie du Doubs
 DEPT = "99"
 BOUNDS = (LON - 0.05, LAT - 0.05, LON + 0.05, LAT + 0.05)
@@ -144,27 +161,41 @@ def _read(pm: Path, z: int, x: int, y: int) -> np.ndarray | None:
 def test_species_groups_and_hash_follow_the_species_files():
     """Groupes et ordre des canaux depuis `species/*.json` ; hash = sha256 des hashes concaténés."""
     assert species_groups() == {
+        "bolets_bais": BOLETS_BAIS,
         "cepes": CEPES,
+        "chanterelles": CHANTERELLES,
         "girolles": GIROLLES,
         "lactaires": LACTAIRES,
+        "nonnettes": NONNETTES,
+        "petits_gris": PETITS_GRIS,
+        "pieds_bleus": PIEDS_BLEUS,
         "pieds_de_mouton": PIEDS_DE_MOUTON,
+        "russules": RUSSULES,
         "trompettes": TROMPETTES,
     }
     assert species_groups(["boletus_edulis", "cantharellus_pallens", "boletus_aereus"]) == {
         "cepes": ["boletus_aereus", "boletus_edulis"],
         "girolles": ["cantharellus_pallens"],
     }
+    # lactaires : cinq espèces, deux fichiers (quatre canaux, puis un), le second suffixé -2
     assert group_sets() == [
+        ("bolets_bais", 1, BOLETS_BAIS),
         ("cepes", 1, CEPES),
+        ("chanterelles", 1, CHANTERELLES),
         ("girolles", 1, GIROLLES),
-        ("lactaires", 1, LACTAIRES),
+        ("lactaires", 1, LACTAIRES[:4]),
+        ("lactaires", 2, LACTAIRES[4:]),
+        ("nonnettes", 1, NONNETTES),
+        ("petits_gris", 1, PETITS_GRIS),
+        ("pieds_bleus", 1, PIEDS_BLEUS),
         ("pieds_de_mouton", 1, PIEDS_DE_MOUTON),
+        ("russules", 1, RUSSULES),
         ("trompettes", 1, TROMPETTES),
     ]
     expected = hashlib.sha256("".join(species_hash(s) for s in CEPES).encode()).hexdigest()[:8]
     assert group_hash(CEPES) == expected and len(expected) == 8
     assert group_hash(CEPES) != group_hash(list(reversed(CEPES)))  # l'ordre des canaux compte
-    # cinq espèces : deux fichiers, le second suffixé -2 (jamais nécessaire aujourd'hui)
+    # un seul fichier refuse plus de quatre espèces ; la partie 2 est suffixée -2
     with pytest.raises(ValueError, match="1 à 4"):
         tiles.build_group("cepes", [*CEPES, "boletus_zeta"], ["99"])
     assert tiles.group_tag("cepes", CEPES, ["99"], part=2).endswith(
@@ -231,9 +262,10 @@ def test_build_group_stacks_t_sets_channel_by_channel(sandbox, caplog):
 
 def test_three_species_fill_the_fourth_channel_with_nodata(sandbox):
     t15 = _tile(15)
-    for i, sid in enumerate(GIROLLES, 1):
+    trois = [s for s in GIROLLES if s != "cantharellus_amethysteus"]  # un groupe de trois
+    for i, sid in enumerate(trois, 1):
         _t_set(sid, [DEPT], {(15, t15.x, t15.y): _full(i)}, bounds=(LON - i, LAT, LON, LAT + i))
-    pm = tiles.build_group("girolles", GIROLLES, [DEPT], jobs=1)
+    pm = tiles.build_group("girolles", trois, [DEPT], jobs=1)
     arr = _read(pm, 15, t15.x, t15.y)
     assert arr[100, 100].tolist() == [1, 2, 3, 255]
     with open(pm, "rb") as f:
@@ -373,9 +405,9 @@ def test_status_counts_groups_when_asked(sandbox):
         p = config.TILES_DIR / n
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"x")
-    assert status.dept_status("25", [*CEPES, *GIROLLES], {}).tiles_expected == 8
+    assert status.dept_status("25", [*CEPES, *GIROLLES], {}).tiles_expected == 9
     with_g = status.dept_status("25", [*CEPES, *GIROLLES], {}, groups=True)
-    assert (with_g.tiles, with_g.tiles_expected) == (10, 10)
+    assert (with_g.tiles, with_g.tiles_expected) == (11, 11)
     s = status.set_status(["25"], [*CEPES, *GIROLLES], groups=True)
     assert s.expected == names and s.local == names
 
@@ -412,8 +444,8 @@ def test_cli_tiles_groups_builds_each_complete_group(monkeypatch, capsys, tmp_pa
     err = capsys.readouterr().err
     assert (
         "· 2 groupe(s)" in err
-        and "[9/12] tiles G cepes" in err
-        and "[10/12] tiles G girolles" in err
+        and "[10/13] tiles G cepes" in err
+        and "[11/13] tiles G girolles" in err
     )
     assert ("G", "cepes", CEPES, ["25", "39"], 1, 2) in seen
     assert ("G", "girolles", GIROLLES, ["25", "39"], 1, 2) in seen
@@ -423,7 +455,7 @@ def test_cli_tiles_groups_builds_each_complete_group(monkeypatch, capsys, tmp_pa
         ("Gd", "cepes", "39", 1),
         ("Gd", "girolles", "39", 1),
     ]
-    assert "10 fichiers · 30 o" in err  # par département : 7 T + A + 2 G
+    assert "11 fichiers · 33 o" in err  # par département : 8 T + A + 2 G
 
     # une espèce seule avec --groups : avertissement, pas de G
     seen.clear()
@@ -431,3 +463,19 @@ def test_cli_tiles_groups_builds_each_complete_group(monkeypatch, capsys, tmp_pa
     err = capsys.readouterr().err
     assert "groupe cepes incomplet" in err and not any(c[0] == "G" for c in seen)
     assert "[1/2] tiles T boletus_edulis" in err
+
+
+def test_a_five_species_group_gets_two_files_only_when_whole():
+    """Lactaires (cinq espèces depuis le 8 nov. 2026) : deux G, quatre canaux puis un, le second
+    suffixé -2 ; sélectionner quatre lactaires sur cinq ne donne aucun G, pas une moitié."""
+    depts = ["25"]
+    names = publish.expected_names(depts, LACTAIRES, groups=True)
+    g = [n for n in names if n.startswith("G-")]
+    assert g == [
+        f"G-{tiles.group_tag('lactaires', LACTAIRES[:4], depts, 1)}.pmtiles",
+        f"G-{tiles.group_tag('lactaires', LACTAIRES[4:], depts, 2)}.pmtiles",
+    ]
+    assert g[1].endswith(f"-d{tiles._depts_hash(depts)}-2.pmtiles")
+    assert [parse_tile_name(n)["part"] for n in g[1:]] == [2]
+    assert publish.complete_group_sets(LACTAIRES[:4]) == []
+    assert publish.partial_groups(LACTAIRES[:4]) == ["lactaires"]

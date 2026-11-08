@@ -107,7 +107,7 @@ def species_groups(species_ids: list[str] | None = None) -> dict[str, list[str]]
 
 def group_sets(species_ids: list[str] | None = None) -> list[tuple[str, int, list[str]]]:
     """Fichiers G à produire : `(groupe, partie, espèces)`, au plus `GROUP_CHANNELS` espèces par
-    fichier ; au-delà, une seconde partie (suffixe `-2` du nom), jamais nécessaire aujourd'hui."""
+    fichier ; au-delà, une seconde partie (suffixe `-2` du nom), pour les lactaires depuis le 8 nov. 2026."""
     out = []
     for gid, ids in species_groups(species_ids).items():
         for i in range(0, len(ids), GROUP_CHANNELS):
