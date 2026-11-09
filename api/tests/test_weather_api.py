@@ -49,9 +49,9 @@ async def test_health_and_species(api):
     assert body["scoring_version"] == "1.0.0"
     assert body["palette"]["thresholds"][0]["label"] == "excellent"
     assert body["species"]["boletus_edulis"]["group"]["id"] == "cepes"
-    # seules les espèces complètes (about, photo, planche) sont servies : 25 des 27 fichiers le
-    # 9 nov. 2026 (dix d'origine, quinze planches déposées le jour même), deux attendent leur planche
-    assert len(body["species"]) == len(load_species_ids()) == 25
+    # seules les espèces complètes (about, photo, planche) sont servies : 26 des 27 fichiers le
+    # 9 nov. 2026 (dix d'origine, seize planches déposées le jour même), la chanterelle en tube attend
+    assert len(body["species"]) == len(load_species_ids()) == 26
 
 
 @pytest.mark.asyncio
