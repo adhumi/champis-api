@@ -34,7 +34,7 @@ def test_completeness_follows_the_referential():
     assert not c["complete"] and c["missing"] == ["illustration"]
     complete = list_complete_species()
     assert COMPLETE in complete and INCOMPLETE not in complete
-    assert set(complete) < set(list_species()) and len(complete) == 15  # 10 + 5 planches du 9 nov.
+    assert set(complete) < set(list_species()) and len(complete) == 20  # 10 + 10 planches du 9 nov.
     # le backoffice applique la même règle
     assert admin_species.completeness(load_species(INCOMPLETE), INCOMPLETE) == c
 
