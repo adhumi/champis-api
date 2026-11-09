@@ -223,7 +223,9 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
 
     # appareils actifs (lot BO2) : par worker, les empreintes déjà écrites aujourd'hui
     tracker = counts.DeviceDayTracker()
-    groups = species_groups()  # cible d'une requête météo : groupe ou espèce
+    # cible d'une requête météo : groupe ou espèce, parmi les espèces servies aux clients (une
+    # couche « girolles » de l'app demande les girolles complètes, pas celles sans planche)
+    groups = species_groups(list_complete_species())
 
     def _measure(store: Store, request, status: int) -> None:
         """Dans un fil, après la réponse : ce que la mesure minimale retient de la requête."""
