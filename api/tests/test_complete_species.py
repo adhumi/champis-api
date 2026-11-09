@@ -34,7 +34,7 @@ def test_completeness_follows_the_referential():
     assert not c["complete"] and c["missing"] == ["illustration"]
     complete = list_complete_species()
     assert COMPLETE in complete and INCOMPLETE not in complete
-    assert set(complete) < set(list_species()) and len(complete) == 10
+    assert set(complete) < set(list_species()) and len(complete) == 15  # 10 + 5 planches du 9 nov.
     # le backoffice applique la même règle
     assert admin_species.completeness(load_species(INCOMPLETE), INCOMPLETE) == c
 
@@ -66,8 +66,5 @@ async def test_clients_only_see_complete_species(api):
     # l'indice par département groupe les espèces complètes : un groupe entièrement incomplet
     # n'apparaît pas, un groupe mixte ne compte que ses espèces complètes
     groups = groups_of(list_complete_species())
-    assert "grisets" not in groups and groups["girolles"] == [
-        "cantharellus_alborufescens",
-        "cantharellus_cibarius",
-        "cantharellus_pallens",
-    ]
+    # (chanterelles : la jaune a sa planche depuis le 9 nov., la chanterelle en tube pas encore)
+    assert "grisets" not in groups and groups["chanterelles"] == ["craterellus_lutescens"]
