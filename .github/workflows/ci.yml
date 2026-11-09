@@ -109,8 +109,16 @@ jobs:
         with:
           node-version: 22
 
+      # Le binaire vient d'une release GitHub : un 504 passager (vu le 9 nov. 2026, deux fois de
+      # suite sur champis-warm) ne doit pas laisser un service sur une ancienne image.
       - name: Railway CLI
-        run: npm install -g @railway/cli
+        run: |
+          for i in 1 2 3 4; do
+            npm install -g @railway/cli && exit 0
+            echo "installation de la CLI Railway refusée (essai $i), nouvel essai dans $((i * 15)) s"
+            sleep $((i * 15))
+          done
+          exit 1
 
       # Empreinte du déploiement, lue par le backoffice (page Santé) : sha court et date UTC
       - name: Empreinte du build
