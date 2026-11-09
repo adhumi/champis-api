@@ -36,7 +36,20 @@ from typing import Any
 from champis_pipeline.weather_store import SCHEMA
 
 BUCKET_HOURS = 12  # deux rafraîchissements par jour (décision du 17 oct. 2026)
-HISTORY_VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil")
+HISTORY_VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil", "soil_t")
+# Variables sans lesquelles un jour n'est pas rangé ; `soil_t` (température du sol, 9 nov. 2026)
+# est optionnelle : `null` dans la ligne, absente des lignes écrites avant elle (sept valeurs)
+REQUIRED_HISTORY_VARS = HISTORY_VARS[:7]
+
+
+def _history_row(values_json: str) -> dict[str, float | None]:
+    """Une ligne d'historique → variables ; une ligne plus courte (écrite avant une variable
+    optionnelle) est complétée par `None`, jamais rejetée."""
+    vals = json.loads(values_json)
+    vals = [*vals, *([None] * (len(HISTORY_VARS) - len(vals)))]
+    return dict(zip(HISTORY_VARS, vals, strict=True))
+
+
 HISTORY_KEEP_DAYS = 400  # au-delà, plus aucune fenêtre du modèle ne lit
 # Fenêtre des onze lignes d'une entrée `cell_weather` autour de son `today` : J−3 → J+7
 # (`weather_service.DAYS_BEFORE` / `DAYS_AFTER`, repris ici pour ne pas importer le service).
@@ -174,17 +187,19 @@ class WeatherCache:
     ) -> int:
         """Range des jours passés. `forecast` écrase ; `seed` ne remplit que les trous.
 
-        Un jour dont une variable manque n'est pas rangé : l'historique ne contient que des jours
-        complets, la règle « jamais d'approximation silencieuse » s'applique au moment du calcul.
+        Un jour dont une variable requise manque n'est pas rangé : l'historique ne contient que des
+        jours complets, la règle « jamais d'approximation silencieuse » s'applique au moment du
+        calcul. Les variables optionnelles (température du sol) sont rangées `null` si absentes.
         """
         verb = "INSERT OR REPLACE" if source == "forecast" else "INSERT OR IGNORE"
         n = 0
         for day, vals in rows.items():
-            if any(vals.get(v) is None for v in HISTORY_VARS):
+            if any(vals.get(v) is None for v in REQUIRED_HISTORY_VARS):
                 continue
+            row = [None if vals.get(v) is None else float(vals[v]) for v in HISTORY_VARS]
             self.db.execute(
                 f"{verb} INTO history VALUES (?, ?, ?, ?)",  # verbe contrôlé ci-dessus
-                (cell_id, day, source, json.dumps([float(vals[v]) for v in HISTORY_VARS])),
+                (cell_id, day, source, json.dumps(row)),
             )
             n += 1
         self.db.commit()
@@ -195,7 +210,15 @@ class WeatherCache:
             "SELECT day, values_json FROM history WHERE cell_id = ? AND day BETWEEN ? AND ?",
             (cell_id, start.isoformat(), end.isoformat()),
         ).fetchall()
-        return {day: dict(zip(HISTORY_VARS, json.loads(js), strict=True)) for day, js in rows}
+        return {day: _history_row(js) for day, js in rows}
+
+    def history_days_with(self, cell_id: str, var: str) -> int:
+        """Jours d'historique où la variable optionnelle `var` est renseignée (collecte d'une
+        variable mise en service après l'amorçage : `soil_t` depuis le 9 nov. 2026)."""
+        rows = self.db.execute(
+            "SELECT values_json FROM history WHERE cell_id = ?", (cell_id,)
+        ).fetchall()
+        return sum(1 for (js,) in rows if _history_row(js).get(var) is not None)
 
     def last_history_day(self, cell_id: str) -> date | None:
         """Dernier jour présent dans l'historique (amorçage ou prévision), None si aucun."""

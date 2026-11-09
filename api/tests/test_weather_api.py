@@ -603,7 +603,8 @@ async def test_past_days_follows_the_history_gap(grid, scenario):
     client = make_client(scenario)  # les deux cellules amorcées jusqu'à hier
     report = await warm(grid, client)
     assert scenario.past_days == [1]  # un seul appel groupé, past_days=1
-    assert report.weight == pytest.approx(call_weight(2, 9, 7))  # 2 points, 1+8 jours, 7 variables
+    # 2 points, 1+8 jours, 8 variables (température du sol comprise depuis le 9 nov. 2026)
+    assert report.weight == pytest.approx(call_weight(2, 9, 8))
     assert report.weight / report.cells < 1
     # cellule froide dans le même lot → tout le lot à 92
     client2 = make_client(scenario, cache=cache, seeded=False)  # trou de 5 ; l'autre jamais amorcée

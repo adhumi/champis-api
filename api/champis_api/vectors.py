@@ -7,6 +7,7 @@ uv run champis-vectors --check    # vérifie que les fichiers sont à jour (CI)
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import sys
 from datetime import date, timedelta
@@ -104,6 +105,8 @@ def _scenario_series(kind: str) -> DailySeries:
         et0=[1.5] * n,
         soil_moisture_pct=[0.6] * n,
         cell_elevation_m=700.0,
+        soil_temp=[11.0]
+        * n,  # facteur optionnel (9 nov. 2026) : fourni à tous, lu par qui l'emploie
     )
     i = s.i
     if kind == "ideal":
@@ -150,7 +153,37 @@ def _scenario_series(kind: str) -> DailySeries:
         s.rain[i(date(2026, 10, 1))] = 30.0
         for k in range(i(date(2026, 10, 16)), n):
             s.t_mean[k] = s.rain[k] = s.soil_moisture_pct[k] = 0.0
+    # température du sol (facteur optionnel, 9 nov. 2026) : sol froid, puis sol qui se réchauffe
+    # sur la fenêtre (la moyenne tombe entre min et opt_low), air inchangé pour isoler le facteur
+    elif kind == "soil_temp_cold":
+        s.rain[i(date(2026, 10, 1))] = 30.0
+        for k in range(len(s.soil_temp)):
+            s.soil_temp[k] = 3.0
+    elif kind == "soil_temp_warming":
+        s.rain[i(date(2026, 10, 1))] = 30.0
+        for k, d in enumerate(s.dates):
+            s.soil_temp[k] = 3.0 if d < date(2026, 10, 9) else 9.0
     return s
+
+
+# Espèce fictive à fichier embarqué (`species_override`) : le cèpe de Bordeaux avec le facteur
+# optionnel `soil_temp`, qu'aucune espèce publiée n'emploie encore. Le client rejoue le cas avec
+# ce fichier plutôt qu'avec sa ressource `boletus_edulis.json`.
+SOIL_TEMP_OVERRIDE = {
+    "soil_temp": {
+        "window_days": 10,
+        "c": {"min": 4.0, "opt_low": 8.0, "opt_high": 15.0, "max": 20.0},
+    },
+    "weights": {"temp": 0.15, "rain": 0.3, "trigger": 0.25, "soil_moisture": 0.1, "soil_temp": 0.2},
+}
+
+
+def _soil_temp_species() -> dict[str, Any]:
+    sp = copy.deepcopy(load_species("boletus_edulis"))
+    sp.pop("about", None)
+    sp["id"] = "boletus_edulis+soil_temp"
+    sp["weather"] = {**sp["weather"], **copy.deepcopy(SOIL_TEMP_OVERRIDE)}
+    return sp
 
 
 def m_vectors() -> list[dict[str, Any]]:
@@ -171,9 +204,16 @@ def m_vectors() -> list[dict[str, Any]]:
         ("crash", date(2026, 10, 20), 700.0),
         ("crash", date(2026, 11, 5), 700.0),
     ]
-    for sid in list_species():
-        sp = load_species(sid)
-        for kind, day, alt in cases:
+    soil_cases = [
+        ("ideal", date(2026, 10, 13), 700.0),  # 11 °C dans l'optimum → facteur 1
+        ("ideal", date(2026, 10, 13), 1450.0),  # 11 − 4,5 °C = 6,5 : sur la rampe → 0,625
+        ("soil_temp_cold", date(2026, 10, 13), 700.0),  # 3 °C < min → 0
+        ("soil_temp_warming", date(2026, 10, 13), 700.0),  # moyenne 10 j = 6 °C → 0,5
+    ]
+    runs = [(sid, load_species(sid), cases, None) for sid in list_species()]
+    runs.append(("boletus_edulis", _soil_temp_species(), soil_cases, _soil_temp_species()))
+    for sid, sp, sp_cases, override in runs:
+        for kind, day, alt in sp_cases:
             full = _scenario_series(kind)
             a = full.i(day - timedelta(days=required_series_days(sp) + 1))
             b = full.i(day) + 1
@@ -187,12 +227,14 @@ def m_vectors() -> list[dict[str, Any]]:
                 et0=full.et0[a:b],
                 soil_moisture_pct=full.soil_moisture_pct[a:b],
                 cell_elevation_m=full.cell_elevation_m,
+                soil_temp=full.soil_temp[a:b],  # type: ignore[index]
             )
             r = weather_index(sp, s, day, alt)
             lo, hi = 0, len(s.dates)
             out.append(
                 {
                     "species": sid,
+                    **({"species_override": override} if override else {}),
                     "scenario": kind,
                     "day": day.isoformat(),
                     "alt_m": alt,
@@ -206,6 +248,7 @@ def m_vectors() -> list[dict[str, Any]]:
                         "snow": s.snow[lo:hi],
                         "et0": s.et0[lo:hi],
                         "soil_moisture_pct": s.soil_moisture_pct[lo:hi],
+                        "soil_temp": s.soil_temp[lo:hi],  # type: ignore[index]
                     },
                     "expected": {k: _r(v) for k, v in r.items()},
                 }
