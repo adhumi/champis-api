@@ -14,7 +14,7 @@ from champis_pipeline import config, explain, rasterize, terrain, tiles, weather
 from champis_pipeline.check import report as check_report
 from champis_pipeline.config import CRS_CALC, Grid
 from champis_pipeline.scoring import NODATA_U8, decode_u8
-from champis_pipeline.species import host_index, species_hash
+from champis_pipeline.species import host_index, load_species, species_hash
 from rasterio.transform import from_origin
 from shapely.geometry import box
 
@@ -141,6 +141,83 @@ def test_grid_terrain_tiles(sandbox):
     )
     assert set(zooms) == set(range(tiles.MIN_ZOOM, tiles.MAX_ZOOM + 1))
     assert zooms[15] > zooms[10] >= 1
+
+
+def test_edge_distance_raster_and_factor(sandbox, monkeypatch):
+    """Distance à la lisière (palier 2, 9 nov. 2026) : 0 hors forêt, 1 au premier pixel de forêt
+    contre la coupe rase, plafond loin de tout bord ; le bord du raster n'est pas une lisière.
+    Une espèce qui aime la lisière y voit son T monter, une espèce sans le bloc ne change pas."""
+    from champis_pipeline.rasterize import EDGE_CAP_PX, edge_distance_px, forest_mask
+    from champis_pipeline.scoring import terrain_potential
+
+    shp, grid = sandbox["shp"], sandbox["grid"]
+    host_p, cover_p = rasterize.host_cover(DEPT, shp, grid)
+    rasterize.ph(DEPT, sandbox["ph"], grid)
+    rasterize.dem_products(DEPT, [sandbox["dem"]], grid)
+    edge_p = rasterize.edge(DEPT, host_p, cover_p, grid)
+    with rasterio.open(edge_p) as s:
+        edge = s.read(1)
+    assert edge.shape == (400, 400) and edge.dtype == np.uint8
+    # la coupe rase FF0 (sans couvert) : 0 dedans, 1 juste à côté, puis la distance croît
+    assert edge[310, 90] == 0
+    assert edge[310, 80] == 0 and edge[310, 79] == 1 and edge[310, 70] == 10
+    # loin de la coupe et du bord du raster (traité comme de la forêt) : le plafond
+    assert edge[100, 300] == EDGE_CAP_PX and edge[0, 399] == EDGE_CAP_PX
+    # idempotent
+    assert rasterize.edge(DEPT, host_p, cover_p, grid) == edge_p
+
+    # distance octogonale sur un masque jouet : 3 × 3 de forêt dans du non-forêt → 1 partout
+    toy = np.zeros((5, 5), dtype=bool)
+    toy[1:4, 1:4] = True
+    d = edge_distance_px(toy, cap=5)
+    assert d[2, 2] == 2 and d[1, 1] == 1 and d[0, 0] == 0
+    # un masque tout forêt : le plafond partout, sans boucler au-delà
+    assert (edge_distance_px(np.ones((4, 4), dtype=bool), cap=3) == 3).all()
+    # `sans_couvert` et `non_foret` ne sont pas de la forêt pour la lisière
+    host = np.full((2, 2), host_index("hetre"), dtype=np.uint8)
+    cover = np.array([[0, 2], [4, 1]], dtype=np.uint8)  # fermee, sans_couvert, non_foret, ouverte
+    assert forest_mask(host, cover).tolist() == [[True, False], [False, True]]
+
+    # une espèce qui aime la lisière : T plus haut contre la coupe qu'au cœur de la hêtraie
+    edulis = load_species("boletus_edulis")
+    lover = json.loads(json.dumps(edulis))
+    lover["terrain"]["edge_m"] = {"min": 0, "opt_low": 0, "opt_high": 75, "max": 300}
+    w = lover["terrain"]["weights"]
+    lover["terrain"]["weights"] = {**{k: round(v * 0.7, 3) for k, v in w.items()}, "edge": 0.3}
+    lover["terrain"]["weights"]["slope"] = round(
+        1 - sum(v for k, v in lover["terrain"]["weights"].items() if k != "slope"), 3
+    )
+    with rasterio.open(host_p) as s:
+        host = s.read(1)
+    with rasterio.open(cover_p) as s:
+        cover = s.read(1)
+    g = sandbox["tmp"] / "grid" / DEPT
+    with rasterio.open(g / "ph.tif") as s:
+        ph10 = s.read(1)
+    with rasterio.open(g / "alt.tif") as s:
+        alt = s.read(1)
+    with rasterio.open(g / "slope.tif") as s:
+        slope = s.read(1)
+    with rasterio.open(g / "aspect.tif") as s:
+        aspect = s.read(1)
+    t_lover = terrain_potential(lover, host, cover, ph10, alt, slope, aspect, edge)
+    t_plain = terrain_potential(edulis, host, cover, ph10, alt, slope, aspect, edge)
+    assert t_lover[310, 79] > t_lover[200, 100]  # contre la coupe > cœur de la hêtraie
+    assert t_plain[310, 79] == pytest.approx(t_plain[200, 100], abs=1e-6)  # sans le bloc : rien
+    with pytest.raises(ValueError, match=r"edge\.tif"):
+        terrain_potential(lover, host, cover, ph10, alt, slope, aspect)  # le raster manque
+
+    # terrain.compute lit edge.tif seulement pour une espèce qui l'emploie
+    monkeypatch.setattr(terrain, "load_species", lambda sid: lover if sid == "lover" else edulis)
+    monkeypatch.setattr(terrain, "species_hash", lambda sid: "abcdef01")
+    t_path = terrain.compute(DEPT, "lover")
+    with rasterio.open(t_path) as s:
+        t = decode_u8(s.read(1))
+    assert t[310, 79] > t[200, 100]
+    edge_p.unlink()
+    with pytest.raises(FileNotFoundError, match="edge"):
+        terrain.compute(DEPT, "lover", force=True)
+    assert terrain.compute(DEPT, "boletus_edulis", force=True).exists()  # sans le bloc : pas besoin
 
 
 def test_tile_position_and_value(sandbox):

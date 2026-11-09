@@ -14,7 +14,14 @@ from rasterio.warp import reproject, transform_bounds
 
 from .config import CRS_CALC, RES_M, Grid, dept_dirs
 from .scoring import NODATA_U8, NODATA_U16
-from .species import ASPECT_CLASSES, COVER_CLASSES, MAPPING_FILE, host_index, load_mapping
+from .species import (
+    ASPECT_CLASSES,
+    COVER_CLASSES,
+    MAPPING_FILE,
+    host_index,
+    host_vocabulary,
+    load_mapping,
+)
 
 log = logging.getLogger(__name__)
 
@@ -91,6 +98,66 @@ def host_cover(dept: str, shp: Path, grid: Grid, force: bool = False) -> tuple[P
     _write(host_p, host, grid, "uint8", NODATA_U8)
     _write(cover_p, cover, grid, "uint8", NODATA_U8)
     return host_p, cover_p
+
+
+# --------------------------------------------------------------------------- lisière
+
+EDGE_CAP_PX = 40  # 1 000 m à 25 m : au-delà, « loin de la lisière » suffit au trapèze `edge_m`
+NON_FOREST_COVERS = ("sans_couvert", "non_foret")
+
+
+def forest_mask(host: np.ndarray, cover: np.ndarray) -> np.ndarray:
+    """Pixels de forêt au sens de la lisière : un polygone BD Forêt (ou un repli forestier) dont
+    l'hôte n'est pas `herbacee` et le couvert ni `sans_couvert` ni `non_foret`. Une coupe rase ou
+    une trouée sans couvert fait donc une lisière, comme le bord du massif."""
+    vocab = host_vocabulary()
+    forest = host != NODATA_U8
+    if "herbacee" in vocab:
+        forest &= host != vocab.index("herbacee")
+    for name in NON_FOREST_COVERS:
+        forest &= cover != COVER_CLASSES.index(name)
+    return forest
+
+
+def edge_distance_px(forest: np.ndarray, cap: int = EDGE_CAP_PX) -> np.ndarray:
+    """Distance de chaque pixel de forêt au pixel non forestier le plus proche, en pixels, par
+    érosions successives du masque (voisinage de 4 puis de 8 en alternance : distance octogonale,
+    à moins de 8 % de l'euclidienne), plafonnée à `cap`. 0 hors forêt. Le bord du raster est
+    traité comme de la forêt : la limite d'un département ne fait pas de fausse lisière."""
+    dist = np.zeros(forest.shape, dtype=np.uint8)
+    inner = forest.copy()
+    for k in range(1, cap + 1):
+        padded = np.pad(inner, 1, mode="edge")
+        eroded = (
+            padded[1:-1, 1:-1]
+            & padded[:-2, 1:-1]
+            & padded[2:, 1:-1]
+            & padded[1:-1, :-2]
+            & padded[1:-1, 2:]
+        )
+        if k % 2 == 0:  # voisinage de 8 un pas sur deux
+            eroded &= padded[:-2, :-2] & padded[:-2, 2:] & padded[2:, :-2] & padded[2:, 2:]
+        ring = inner & ~eroded
+        dist[ring] = k
+        inner = eroded
+        if not inner.any():
+            return dist
+    dist[inner] = cap
+    return dist
+
+
+def edge(dept: str, host_p: Path, cover_p: Path, grid: Grid, force: bool = False) -> Path:
+    """`grid/<dept>/edge.tif` : distance à la lisière en pixels de 25 m (palier 2, 9 nov. 2026),
+    dérivée de host.tif et cover.tif, 255 = nodata (jamais : tout pixel a une distance)."""
+    out = dept_dirs(dept)["grid"] / "edge.tif"
+    if not force and _fresh(out, host_p, cover_p):
+        return out
+    with rasterio.open(host_p) as h, rasterio.open(cover_p) as c:
+        host, cover = h.read(1), c.read(1)
+    log.info("distance à la lisière %s (%dx%d, plafond %d px)", dept, *host.shape, EDGE_CAP_PX)
+    dist = edge_distance_px(forest_mask(host, cover))
+    _write(out, dist, grid, "uint8", NODATA_U8)
+    return out
 
 
 # --------------------------------------------------------------------------- SoilGrids

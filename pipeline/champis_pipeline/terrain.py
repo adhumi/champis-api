@@ -19,15 +19,20 @@ log = logging.getLogger(__name__)
 
 def compute(dept: str, species_id: str, force: bool = False) -> Path:
     g = dept_dirs(dept)["grid"]
-    srcs = {k: g / f"{k}.tif" for k in ("host", "cover", "ph", "alt", "slope", "aspect")}
+    sp = load_species(species_id)
+    names = ["host", "cover", "ph", "alt", "slope", "aspect"]
+    if "edge_m" in sp["terrain"]:  # distance à la lisière, seulement si l'espèce l'emploie
+        names.append("edge")
+    srcs = {k: g / f"{k}.tif" for k in names}
     missing = [k for k, p in srcs.items() if not p.exists()]
     if missing:
-        raise FileNotFoundError(f"rasters grid manquants pour {dept} : {missing}")
+        raise FileNotFoundError(
+            f"rasters grid manquants pour {dept} : {missing} (`champis-pipeline grid --dept {dept}`)"
+        )
     out = T_DIR / species_id / f"{dept}-{species_hash(species_id)}.tif"
     if out.exists() and not force:
         return out
     out.parent.mkdir(parents=True, exist_ok=True)
-    sp = load_species(species_id)
 
     handles = {k: rasterio.open(p) for k, p in srcs.items()}
     ref = handles["host"]
@@ -49,6 +54,7 @@ def compute(dept: str, species_id: str, force: bool = False) -> Path:
                 handles["alt"].read(1, window=w),
                 handles["slope"].read(1, window=w),
                 handles["aspect"].read(1, window=w),
+                handles["edge"].read(1, window=w) if "edge" in handles else None,
             )
             dst.write(encode_u8(t, nodata_mask=(host == NODATA_U8)), 1, window=w)
     for h in handles.values():

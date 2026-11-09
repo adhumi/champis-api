@@ -15,6 +15,7 @@ from .species import ASPECT_CLASSES, COVER_CLASSES, host_vocabulary
 
 PH_FLOOR = 0.15
 MISSING_FACTOR = 0.5
+EDGE_PX_M = 25.0  # edge.tif compte la distance à la lisière en pixels de 25 m
 NODATA_U8 = 255
 NODATA_U16 = 65535
 
@@ -51,9 +52,11 @@ def terrain_factors(
     alt_m: NDArray[np.uint16],
     slope_deg: NDArray[np.uint8],
     aspect: NDArray[np.uint8],
+    edge_px: NDArray[np.uint8] | None = None,
 ) -> dict[str, NDArray[np.float64]]:
-    """Chaque facteur de T séparément (host, cover, ph, altitude, slope, aspect), même codage que
-    `terrain_potential`. Sert au calcul de T et au diagnostic (`champis-pipeline explain`)."""
+    """Chaque facteur de T séparément (host, cover, ph, altitude, slope, aspect, et `edge` si
+    l'espèce a le bloc optionnel `edge_m`), même codage que `terrain_potential`. Sert au calcul de
+    T et au diagnostic (`champis-pipeline explain`)."""
     t = species["terrain"]
     if "default" not in t["hosts"]:
         raise ValueError(f"{species['id']}: hosts.default manquant")
@@ -79,7 +82,7 @@ def terrain_factors(
     f_aspect = np.where(
         valid_aspect, aspect_w[np.minimum(aspect, len(aspect_w) - 1)], MISSING_FACTOR
     )
-    return {
+    out = {
         "host": f_host,
         "cover": f_cover,
         "ph": f_ph,
@@ -87,6 +90,16 @@ def terrain_factors(
         "slope": f_slope,
         "aspect": f_aspect,
     }
+    if "edge_m" in t:  # distance à la lisière (facteur optionnel, palier 2, 9 nov. 2026)
+        if edge_px is None:
+            raise ValueError(f"{species['id']}: terrain.edge_m demande le raster edge.tif")
+        valid_edge = edge_px != NODATA_U8
+        out["edge"] = np.where(
+            valid_edge,
+            trapezoid(edge_px.astype(np.float64) * EDGE_PX_M, t["edge_m"]),
+            MISSING_FACTOR,
+        )
+    return out
 
 
 def terrain_potential(
@@ -97,6 +110,7 @@ def terrain_potential(
     alt_m: NDArray[np.uint16],
     slope_deg: NDArray[np.uint8],
     aspect: NDArray[np.uint8],
+    edge_px: NDArray[np.uint8] | None = None,
 ) -> NDArray[np.float32]:
     """T pour un bloc de pixels. Entrées = codes des rasters du pipeline (voir skill geo-pipeline).
 
@@ -106,9 +120,10 @@ def terrain_potential(
     - alt_m : mètres, 65535 = inconnu → facteur 0,5 (mais pas de règle dure)
     - slope_deg : degrés, 255 = inconnu → 0,5
     - aspect : index dans ASPECT_CLASSES (8 = flat), 255 = inconnu → 0,5
+    - edge_px : distance à la lisière en pixels de 25 m (facteur optionnel `edge_m`), 255 → 0,5
     """
     t = species["terrain"]
-    f = terrain_factors(species, host, cover, ph10, alt_m, slope_deg, aspect)
+    f = terrain_factors(species, host, cover, ph10, alt_m, slope_deg, aspect, edge_px)
     result = f["host"] * weighted_sum(species, f)
     # règle dure : altitude connue et strictement hors [min, max] → 0
     alt_f = alt_m.astype(np.float64)
@@ -119,15 +134,19 @@ def terrain_potential(
 
 
 def weighted_sum(species: dict[str, Any], f: dict[str, NDArray[np.float64]]) -> NDArray[np.float64]:
-    """Σ(poids × facteur) sur cover, ph, altitude, aspect, slope (l'hôte est multiplicatif)."""
+    """Σ(poids × facteur) sur cover, ph, altitude, aspect, slope et, si l'espèce l'emploie, edge
+    (l'hôte est multiplicatif)."""
     w = species["terrain"]["weights"]
-    return (
+    total = (
         w["cover"] * f["cover"]
         + w["ph"] * f["ph"]
         + w["altitude"] * f["altitude"]
         + w["aspect"] * f["aspect"]
         + w["slope"] * f["slope"]
     )
+    if "edge" in f:
+        total = total + w.get("edge", 0.0) * f["edge"]
+    return total
 
 
 def encode_u8(

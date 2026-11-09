@@ -37,7 +37,15 @@ def calls(monkeypatch, tmp_path: Path) -> list[tuple]:
     monkeypatch.setattr(
         rasterize,
         "host_cover",
-        lambda dept, shp, grid, force: seen.append(("host_cover", dept, force)),
+        lambda dept, shp, grid, force: (
+            seen.append(("host_cover", dept, force))
+            or (tmp_path / "host.tif", tmp_path / "cover.tif")
+        ),
+    )
+    monkeypatch.setattr(
+        rasterize,
+        "edge",
+        lambda dept, host_p, cover_p, grid, force: seen.append(("edge", dept, force)),
     )
     monkeypatch.setattr(
         rasterize, "ph", lambda dept, src, grid, force: seen.append(("ph", dept, force))
@@ -90,6 +98,7 @@ def test_all_runs_the_five_stages_in_order(calls, capsys):
         "dem",  # download
         "bdforet",
         "host_cover",
+        "edge",
         "soilgrids",
         "ph",
         "dem",
@@ -121,6 +130,7 @@ def test_download_grid_and_terrain_commands(calls, capsys):
     calls.clear()
     assert cli.main(["grid", "--dept", "39", "--force"]) == 0
     assert ("host_cover", "39", True) in calls and ("dem_products", "39", True) in calls
+    assert ("edge", "39", True) in calls
     calls.clear()
     assert cli.main(["terrain", "--dept", "39", "--species", "x"]) == 0
     assert calls == [("terrain", "39", "x", False)]

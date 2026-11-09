@@ -85,7 +85,8 @@ def run_dept(dept: str, species: list[str] | None, force: bool) -> DeptResult:
         shp = download.bdforet(dept)
         grid = rasterize.dept_grid(shp)
         bbox = rasterize.grid_bbox_4326(grid)
-        rasterize.host_cover(dept, shp, grid, force)
+        host_p, cover_p = rasterize.host_cover(dept, shp, grid, force)
+        rasterize.edge(dept, host_p, cover_p, grid, force)
         rasterize.ph(dept, download.soilgrids_ph(bbox), grid, force)
         rasterize.dem_products(dept, download.copernicus_dem_tiles(bbox), grid, force)
         for sid in species or list_species():

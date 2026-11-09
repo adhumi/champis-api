@@ -19,6 +19,7 @@ Python 3.12, `rasterio`, `geopandas`, `numpy`, `pyogrio`, `mercantile`, `pillow`
 data/raw/<source>/<dept>/…          téléchargements, jamais modifiés, .md5 vérifié
 data/grid/<dept>/host.tif            uint8, code hôte (index dans hosts.json)
 data/grid/<dept>/cover.tif           uint8, code couvert
+data/grid/<dept>/edge.tif            uint8, distance à la lisière en pixels de 25 m (plafond 40 = 1 km), 0 hors forêt
 data/grid/<dept>/ph.tif              uint8, pH × 10 (255 = inconnu)
 data/grid/<dept>/alt.tif             uint16, m
 data/grid/<dept>/slope.tif           uint8, degrés
@@ -47,9 +48,11 @@ Chaque étape vérifie si sa sortie existe et est plus récente que ses entrées
 
 **Corine Land Cover 2018** — UMC 25 ha, shapefile métropole ; sert uniquement de repli.
 
+**Lisière** (`rasterize.edge`, palier 2 du 9 nov. 2026) — dérivée de `host.tif` et `cover.tif`, sans nouvelle source : forêt = polygone BD Forêt dont l'hôte n'est pas `herbacee` et le couvert ni `sans_couvert` ni `non_foret` (une coupe rase fait une lisière) ; distance au pixel non forestier le plus proche par érosions successives du masque, voisinage de 4 puis de 8 en alternance (distance octogonale, à moins de 8 % de l'euclidienne, sans scipy), plafonnée à `EDGE_CAP_PX` = 40 px (1 km) ; le bord du raster est traité comme de la forêt (la limite d'un département ne fait pas de fausse lisière). Le raster se calcule sur le département entier en mémoire (quelques dizaines de Mo). Lu par `terrain.compute` et `explain` **seulement si l'espèce a le bloc optionnel `terrain.edge_m`** (`scoring.terrain_factors`, facteur `edge`, trapèze sur les mètres, poids `weights.edge`) ; une espèce sans le bloc ne change pas. Avant d'ajouter le bloc à une espèce : AUC GBIF (`check`) sur un département de référence avec et sans, et l'empreinte de l'espèce change (tuiles T à rerendre).
+
 ## Calcul de `T`
 
-`pipeline/champis_pipeline/scoring.py` : `trapezoid()` et `terrain_potential(species, host, cover, ph, alt, slope, aspect) -> float32` vectorisés numpy sur des blocs de 2048 × 2048 (jamais le département en mémoire d'un coup). Voir skill `champis-model` pour les règles. Les tables de correspondance (poids par hôte) sont converties une fois en tableaux numpy indexés par code, pas de dictionnaire dans la boucle.
+`pipeline/champis_pipeline/scoring.py` : `trapezoid()` et `terrain_potential(species, host, cover, ph, alt, slope, aspect, edge_px=None) -> float32` vectorisés numpy sur des blocs de 2048 × 2048 (jamais le département en mémoire d'un coup). Voir skill `champis-model` pour les règles. Les tables de correspondance (poids par hôte) sont converties une fois en tableaux numpy indexés par code, pas de dictionnaire dans la boucle.
 
 ## Tuilage
 
