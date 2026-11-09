@@ -434,7 +434,7 @@ function renderSheet(d) {
         try { await action(); } catch (err) { alert(err.message); }
         setTimeout(loadSpecies, 800);
       });
-      b.append(btn);
+      b.append(el("span", { class: "actions" }, [btn]));
     }
     return b;
   };
@@ -461,7 +461,20 @@ function renderSheet(d) {
   const mapDetail = sp.maps.length
     ? el("span", {}, sp.maps.flatMap((m, i) => [i ? " · " : "", mapLink(sp.id, m)]))
     : "aucune carte";
-  blocks.push(block(sp.maps.some((m) => m.current) ? "ok" : "", "Carte HD", mapDetail, "Générer", () => launch("render", { species: sp.id, zoom: $("species-zoom").value, force: false }), !pub || !pub.hash));
+  const mapBlock = block(sp.maps.some((m) => m.current) ? "ok" : "", "Carte HD", mapDetail, "Générer", () => launch("render", { species: sp.id, zoom: $("species-zoom").value, force: false }), !pub || !pub.hash);
+  /* « Remplacer » : refait la carte même si elle est déjà dans le bucket (`--force`), par exemple
+     après un changement du rendu ; le nom ne dépend que du jeu et du niveau. */
+  const redo = el("button", { class: "quiet", text: "Remplacer" });
+  redo.disabled = !pub || !pub.hash || busy;
+  redo.addEventListener("click", async () => {
+    const zoom = $("species-zoom").value;
+    if (!confirm(`Refaire la carte HD z${zoom} de ${sp.name} et remplacer celle du bucket ?`)) return;
+    redo.disabled = true;
+    try { await launch("render", { species: sp.id, zoom, force: true }); } catch (err) { alert(err.message); }
+    setTimeout(loadSpecies, 800);
+  });
+  mapBlock.querySelector(".actions").append(redo);
+  blocks.push(mapBlock);
   const jobs = sp.jobs.length
     ? el("p", { class: "meta" }, ["tâche en cours : ", ...sp.jobs.map((j) => el("a", { href: "#jobs", text: `${KINDS[j.kind] ? KINDS[j.kind].label : j.kind} (${j.status}${j.step_name ? ", " + j.step_name : ""})` }))])
     : el("p", { class: "meta", text: "aucune tâche en cours pour cette espèce" });
@@ -487,7 +500,16 @@ function mapLink(speciesId, m) {
       if (fresh && fresh.url) w.location = fresh.url; else { w.close(); alert("carte introuvable : elle a peut-être été remplacée"); }
     } catch (err) { w.close(); alert(err.message); }
   });
-  return el("span", { class: "map" }, [`z${m.zoom} · ${fmt.size(m.bytes)}${m.current ? "" : " (ancien jeu)"} · `, a]);
+  const del = el("a", { href: "#", text: "supprimer" });
+  del.addEventListener("click", async (e) => {
+    e.preventDefault();
+    if (!confirm(`Supprimer ${m.key} du bucket ?`)) return;
+    try {
+      await api("/admin/api/renders/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: m.key }) });
+    } catch (err) { alert(err.message); }
+    loadSpecies();
+  });
+  return el("span", { class: "map" }, [`z${m.zoom} · ${fmt.size(m.bytes)}${m.current ? "" : " (ancien jeu)"} · `, a, " · ", del]);
 }
 
 // ------------------------------------------------------------------ fichier espèce, lecture structurée

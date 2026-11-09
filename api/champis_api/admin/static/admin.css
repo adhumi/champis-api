@@ -93,7 +93,8 @@ tr.clickable:hover td { background: rgba(99, 49, 121, 0.08); }
 .sheet .block .dot.error { background: var(--error); }
 .sheet .block b { display: block; font-size: 14px; }
 .sheet .block .meta { grid-column: 2; }
-.sheet .block button { grid-column: 3; grid-row: 1 / span 2; white-space: nowrap; }
+.sheet .block .actions { grid-column: 3; grid-row: 1 / span 2; display: flex; gap: 6px; }
+.sheet .block button { white-space: nowrap; }
 .state { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; }
 .state.a_jour { color: var(--ok); }
 .state.perimee { color: var(--warn); }

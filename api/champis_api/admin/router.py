@@ -8,7 +8,8 @@
 - lot BO3 : `GET /admin/api/tools` (catalogue, état du service d'exécution, file), `POST
   /admin/api/jobs` (`{"kind", "args"}` → tâche `queued`, que `champis-jobs` prend), `POST
   /admin/api/jobs/<id>/cancel`, `GET /admin/api/renders` (cartes HD présentes dans le bucket, URL
-  présignées d'une heure) ; lot BO4 : `GET /admin/api/artifacts` (sorties du pipeline à committer) ;
+  présignées d'une heure), `POST /admin/api/renders/delete` (`{"key"}` : retire une carte HD du
+  bucket) ; lot BO4 : `GET /admin/api/artifacts` (sorties du pipeline à committer) ;
   lot BO5 : `GET /admin/api/species` (état de chaque espèce à chaque étape), `GET
   /admin/api/species/<id>` (fichier structuré, Φ, planche et son prompt), `GET
   /admin/api/species/<id>/illustration` (la planche, requise pour une espèce complète).
@@ -206,6 +207,10 @@ def _kinds() -> dict[str, Any]:
 # ------------------------------------------------------------------ lot BO3 : lancer, annuler, cartes
 
 
+class RenderKey(BaseModel):
+    key: str
+
+
 class Launch(BaseModel):
     kind: str
     args: dict[str, Any] = {}
@@ -356,3 +361,25 @@ async def api_renders(request: Request, _: auth.Authenticated) -> JSONResponse:
         }
 
     return JSONResponse(await asyncio.to_thread(gather), headers=ROBOTS)
+
+
+@router.post("/api/renders/delete")
+async def api_render_delete(body: RenderKey, request: Request, _: auth.Action) -> JSONResponse:
+    """Retire une carte HD du bucket (sa fiche peut ensuite la régénérer). Seules les clés
+    `renders/T-<espèce>-<hash>-z<niveau>.png` sont acceptées : rien d'autre ne s'efface ici."""
+    bucket = _state(request).bucket
+    if bucket is None:
+        raise HTTPException(503, "bucket non configuré")
+    if render.parse_render_key(body.key) is None:
+        raise HTTPException(422, "clé de carte HD invalide")
+
+    def remove() -> bool:
+        if body.key not in bucket.list(body.key):
+            return False
+        bucket.delete([body.key])
+        return True
+
+    if not await asyncio.to_thread(remove):
+        raise HTTPException(404, "carte absente du bucket")
+    log.info("backoffice : carte HD supprimée (%s)", body.key)
+    return JSONResponse({"key": body.key, "deleted": True}, headers=ROBOTS)
