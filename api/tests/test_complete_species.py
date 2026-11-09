@@ -62,11 +62,11 @@ async def test_clients_only_see_complete_species(api):
     with pytest.raises(ValidationError, match="target inconnu"):
         CoinIn(**coin, target=INCOMPLETE)
     with pytest.raises(ValidationError, match="target inconnu"):
-        CoinIn(**coin, target="petits_gris")  # groupe dont aucune espèce n'est complète
+        CoinIn(**coin, target="grisets")  # groupe dont aucune espèce n'est complète
     # l'indice par département groupe les espèces complètes : un groupe entièrement incomplet
     # n'apparaît pas, un groupe mixte ne compte que ses espèces complètes
     groups = groups_of(list_complete_species())
-    assert "petits_gris" not in groups and groups["girolles"] == [
+    assert "grisets" not in groups and groups["girolles"] == [
         "cantharellus_alborufescens",
         "cantharellus_cibarius",
         "cantharellus_pallens",

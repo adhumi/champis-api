@@ -54,7 +54,7 @@ BOLETS_BAIS = ["imleria_badia"]
 PIEDS_BLEUS = ["lepista_nuda"]
 RUSSULES = ["russula_cyanoxantha", "russula_virescens"]
 NONNETTES = ["suillus_granulatus", "suillus_luteus"]
-PETITS_GRIS = ["tricholoma_portentosum", "tricholoma_terreum"]
+GRISETS = ["tricholoma_portentosum", "tricholoma_terreum"]
 LON, LAT = 6.37, 47.19  # une hêtraie du Doubs
 DEPT = "99"
 BOUNDS = (LON - 0.05, LAT - 0.05, LON + 0.05, LAT + 0.05)
@@ -165,9 +165,9 @@ def test_species_groups_and_hash_follow_the_species_files():
         "cepes": CEPES,
         "chanterelles": CHANTERELLES,
         "girolles": GIROLLES,
+        "grisets": GRISETS,
         "lactaires": LACTAIRES,
         "nonnettes": NONNETTES,
-        "petits_gris": PETITS_GRIS,
         "pieds_bleus": PIEDS_BLEUS,
         "pieds_de_mouton": PIEDS_DE_MOUTON,
         "russules": RUSSULES,
@@ -183,10 +183,10 @@ def test_species_groups_and_hash_follow_the_species_files():
         ("cepes", 1, CEPES),
         ("chanterelles", 1, CHANTERELLES),
         ("girolles", 1, GIROLLES),
+        ("grisets", 1, GRISETS),
         ("lactaires", 1, LACTAIRES[:4]),
         ("lactaires", 2, LACTAIRES[4:]),
         ("nonnettes", 1, NONNETTES),
-        ("petits_gris", 1, PETITS_GRIS),
         ("pieds_bleus", 1, PIEDS_BLEUS),
         ("pieds_de_mouton", 1, PIEDS_DE_MOUTON),
         ("russules", 1, RUSSULES),
