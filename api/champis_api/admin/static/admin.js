@@ -434,7 +434,7 @@ function renderSheet(d) {
         try { await action(); } catch (err) { alert(err.message); }
         setTimeout(loadSpecies, 800);
       });
-      b.append(btn);
+      b.append(el("span", { class: "actions" }, [btn]));
     }
     return b;
   };
@@ -473,7 +473,7 @@ function renderSheet(d) {
     try { await launch("render", { species: sp.id, zoom, force: true }); } catch (err) { alert(err.message); }
     setTimeout(loadSpecies, 800);
   });
-  mapBlock.append(redo);
+  mapBlock.querySelector(".actions").append(redo);
   blocks.push(mapBlock);
   const jobs = sp.jobs.length
     ? el("p", { class: "meta" }, ["tâche en cours : ", ...sp.jobs.map((j) => el("a", { href: "#jobs", text: `${KINDS[j.kind] ? KINDS[j.kind].label : j.kind} (${j.status}${j.step_name ? ", " + j.step_name : ""})` }))])
