@@ -10,10 +10,11 @@ from datetime import date
 from typing import Annotated, Any
 
 from champis_pipeline import SCORING_VERSION
-from champis_pipeline.species import all_species_hash, list_complete_species
+from champis_pipeline.species import all_species_hash
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from ..cache import WeatherCache
+from ..catalog import served_species
 from ..departements import shape_response
 
 router = APIRouter(prefix="/departements", tags=["departements"])
@@ -24,7 +25,7 @@ def _cache(request: Request) -> WeatherCache:
 
 
 def _species(species: Annotated[list[str] | None, Query()] = None) -> list[str]:
-    known = list_complete_species()  # espèces complètes seulement (9 nov. 2026)
+    known = served_species()  # catalogue : complètes et tuiles publiées (9 nov. 2026)
     if not species:
         return known
     unknown = [s for s in species if s not in known]

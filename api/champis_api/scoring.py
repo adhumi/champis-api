@@ -304,18 +304,61 @@ def _shift_days(cfg: dict[str, Any], alt_m: float, key: str) -> int:
     return round_half_up(max(-mx, min(mx, raw)))
 
 
+def _date_md(year: int, md: tuple[int, int]) -> date:
+    m, d = md
+    if m == 2 and d == 29:
+        d = 28
+    return date(year, m, d)
+
+
+def season_wraps(p: dict[str, Any]) -> bool:
+    """Une saison dont `season.end` précède `season.start` passe le 1er janvier (décision
+    d'Adrien du 9 nov. 2026 : pied bleu, petit-gris, lactaire sanguin, bolet bai en janvier)."""
+    return _parse_md(p["season"]["end"]) < _parse_md(p["season"]["start"])
+
+
+def _season_axis(p: dict[str, Any], day: date, ds: int, de: int) -> tuple[int, int, int, int, int]:
+    """`(d, s_start, s_end, p_start, p_end)` sur un même axe entier, décalages compris.
+
+    Saison dans l'année civile : jours de l'année de `day`, comme avant le 9 nov. 2026 (une fin
+    décalée au-delà du 31 décembre ne déborde pas sur janvier : comportement inchangé). Saison à
+    cheval sur le 1er janvier : ordinaux de dates ; la saison qui contient `day` est celle qui
+    commence l'année de `day` ou l'année d'avant, le pic et la fin tombant l'année suivante quand
+    leur mois-jour précède le début."""
+    season, peak = p["season"], p["peak"]
+    s0, e0 = _parse_md(season["start"]), _parse_md(season["end"])
+    ps0, pe0 = _parse_md(peak["start"]), _parse_md(peak["end"])
+    if not season_wraps(p):
+        year = day.year
+        return (
+            day.timetuple().tm_yday,
+            _day_of_year(s0, year) + ds,
+            _day_of_year(e0, year) + de,
+            _day_of_year(ps0, year) + ds,
+            _day_of_year(pe0, year) + de,
+        )
+    d = day.toordinal()
+    candidates = []
+    for year in (day.year - 1, day.year):
+        s_start = _date_md(year, s0).toordinal() + ds
+        s_end = _date_md(year + 1, e0).toordinal() + de
+        p_start = _date_md(year + (1 if ps0 < s0 else 0), ps0).toordinal() + ds
+        p_end = _date_md(year + (1 if pe0 < s0 else 0), pe0).toordinal() + de
+        candidates.append((d, s_start, s_end, p_start, p_end))
+    for c in candidates:
+        if c[1] <= d <= c[2]:
+            return c
+    return candidates[-1]
+
+
 def phenology_window(species: dict[str, Any], day: date, alt_m: float) -> float:
     p = species["phenology"]
     year = day.year
-    doy = day.timetuple().tm_yday
     shift = p.get("altitude_shift", {"reference_m": 0, "max_days": 0})
     ds = _shift_days(shift, alt_m, "start_days_per_100m")
     de = _shift_days(shift, alt_m, "end_days_per_100m")
 
-    s_start = _day_of_year(_parse_md(p["season"]["start"]), year) + ds
-    s_end = _day_of_year(_parse_md(p["season"]["end"]), year) + de
-    p_start = _day_of_year(_parse_md(p["peak"]["start"]), year) + ds
-    p_end = _day_of_year(_parse_md(p["peak"]["end"]), year) + de
+    doy, s_start, s_end, p_start, p_end = _season_axis(p, day, ds, de)
     ramp = int(p["ramp_days"])
 
     # Φ = 0 hors saison ; plancher PHI_FLOOR dans la saison ; rampes linéaires de `ramp` jours
@@ -335,10 +378,11 @@ def phenology_window(species: dict[str, Any], day: date, alt_m: float) -> float:
                 phi = 1.0 - (1.0 - PHI_FLOOR) * (doy - p_end) / (ramp_end - p_end)
 
     sec = p.get("secondary_peak")
-    if sec:
+    if sec:  # pic secondaire : toujours dans l'année civile de `day`
+        day_of_year = day.timetuple().tm_yday
         a = _day_of_year(_parse_md(sec["start"]), year) + ds
         b = _day_of_year(_parse_md(sec["end"]), year) + de
-        if a <= doy <= b:
+        if a <= day_of_year <= b:
             phi = max(phi, float(sec["phi"]))
     return min(1.0, max(0.0, phi))
 
@@ -348,15 +392,10 @@ def season_phase(species: dict[str, Any], day: date, alt_m: float) -> str:
     la saison, « debut » avant le pic, « pleine » au pic (ou quand Φ atteint 1 par un pic
     secondaire), « fin » après. Mêmes dates et même décalage d'altitude que `phenology_window`."""
     p = species["phenology"]
-    year = day.year
-    doy = day.timetuple().tm_yday
     shift = p.get("altitude_shift", {"reference_m": 0, "max_days": 0})
     ds = _shift_days(shift, alt_m, "start_days_per_100m")
     de = _shift_days(shift, alt_m, "end_days_per_100m")
-    s_start = _day_of_year(_parse_md(p["season"]["start"]), year) + ds
-    s_end = _day_of_year(_parse_md(p["season"]["end"]), year) + de
-    p_start = _day_of_year(_parse_md(p["peak"]["start"]), year) + ds
-    p_end = _day_of_year(_parse_md(p["peak"]["end"]), year) + de
+    doy, s_start, s_end, p_start, p_end = _season_axis(p, day, ds, de)
     if not s_start <= doy <= s_end:
         return "hors"
     if p_start <= doy <= p_end or phenology_window(species, day, alt_m) >= 1.0:

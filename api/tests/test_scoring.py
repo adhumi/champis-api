@@ -276,6 +276,34 @@ def test_phi_leap_day_does_not_crash():
         phenology_window(load_species(sid), date(2028, 2, 29), 500)
 
 
+def test_phi_season_across_new_year():
+    """Saison à cheval sur le 1er janvier (décision du 9 nov. 2026) : le pied bleu court du
+    15 août au 31 janvier. Φ garde son plancher en janvier, retombe à 0 en février, et la saison
+    qui contient un jour de janvier est celle qui a commencé l'année d'avant."""
+    from champis_api.scoring import season_phase, season_wraps
+
+    nuda = load_species("lepista_nuda")
+    ref = nuda["phenology"]["altitude_shift"]["reference_m"]
+    assert season_wraps(nuda["phenology"]) and not season_wraps(EDULIS["phenology"])
+    assert phenology_window(nuda, date(2026, 11, 1), ref) == 1.0
+    assert phenology_window(nuda, date(2026, 12, 31), ref) == PHI_FLOOR
+    assert phenology_window(nuda, date(2027, 1, 1), ref) == PHI_FLOOR
+    assert phenology_window(nuda, date(2027, 1, 31), ref) == PHI_FLOOR
+    assert phenology_window(nuda, date(2027, 2, 1), ref) == 0.0
+    assert phenology_window(nuda, date(2027, 6, 1), ref) == 0.0
+    assert season_phase(nuda, date(2027, 1, 15), ref) == "fin"
+    assert season_phase(nuda, date(2027, 2, 15), ref) == "hors"
+    # décalage d'altitude : la fin avance de 4 j/100 m au-dessus de 300 m ; à 1 100 m (−32 j)
+    # la saison finit le 30 décembre, à 0 m (+12 j) le 12 février
+    assert phenology_window(nuda, date(2027, 1, 1), 1100) == 0.0
+    assert phenology_window(nuda, date(2027, 2, 10), 0) == PHI_FLOOR
+    # année bissextile : 2028 compte 366 jours, la saison 2027-2028 tient quand même
+    assert phenology_window(nuda, date(2028, 1, 31), ref) == PHI_FLOOR
+    assert phenology_window(nuda, date(2028, 2, 29), ref) == 0.0
+    # une saison dans l'année civile ne déborde jamais : comportement inchangé
+    assert phenology_window(EDULIS, date(2027, 1, 1), 0) == 0.0
+
+
 # ------------------------------------------------------------------ groupes, palette
 
 

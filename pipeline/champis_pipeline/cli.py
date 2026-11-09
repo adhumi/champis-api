@@ -49,10 +49,11 @@ def _grid(step: console.Step, dept: str, force: bool) -> None:
     shp = download.bdforet(dept)
     grid = rasterize.dept_grid(shp)
     bbox = rasterize.grid_bbox_4326(grid)
-    rasterize.host_cover(dept, shp, grid, force)
+    host_p, cover_p = rasterize.host_cover(dept, shp, grid, force)
+    rasterize.edge(dept, host_p, cover_p, grid, force)
     rasterize.ph(dept, download.soilgrids_ph(bbox), grid, force)
     rasterize.dem_products(dept, download.copernicus_dem_tiles(bbox), grid, force)
-    step.note(f"host, cover, ph, alt, slope, aspect · {grid.width}x{grid.height} px")
+    step.note(f"host, cover, edge, ph, alt, slope, aspect · {grid.width}x{grid.height} px")
 
 
 def _terrain(steps: console.Steps, dept: str, species: list[str], force: bool) -> None:

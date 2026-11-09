@@ -31,17 +31,20 @@ HOST_CAPS = (0.9, 0.8, 0.7)
 
 def explain(dept: str, species_id: str, out_dir: Path = REPORTS_DIR) -> dict[str, Any]:
     g = dept_dirs(dept)["grid"]
-    srcs = {k: g / f"{k}.tif" for k in ("host", "cover", "ph", "alt", "slope", "aspect")}
+    sp = load_species(species_id)
+    names = ["host", "cover", "ph", "alt", "slope", "aspect"]
+    if "edge_m" in sp["terrain"]:
+        names.append("edge")
+    srcs = {k: g / f"{k}.tif" for k in names}
     missing = [k for k, p in srcs.items() if not p.exists()]
     if missing:
         raise FileNotFoundError(f"rasters grid manquants pour {dept} : {missing}")
-    sp = load_species(species_id)
     vocab = host_vocabulary()
     handles = {k: rasterio.open(p) for k, p in srcs.items()}
     ref = handles["host"]
     px_ha = (ref.res[0] * ref.res[1]) / 10_000
 
-    acc = _Acc(len(vocab))
+    acc = _Acc(len(vocab), FACTORS + (("edge",) if "edge_m" in sp["terrain"] else ()))
     windows = [
         Window(c, r, min(BLOCK, ref.width - c), min(BLOCK, ref.height - r))
         for r in range(0, ref.height, BLOCK)
@@ -62,6 +65,7 @@ def explain(dept: str, species_id: str, out_dir: Path = REPORTS_DIR) -> dict[str
             alt,
             handles["slope"].read(1, window=w),
             handles["aspect"].read(1, window=w),
+            handles["edge"].read(1, window=w) if "edge" in handles else None,
         )
         acc.add(sp, host[forest], ph10[forest], alt[forest], {k: v[forest] for k, v in f.items()})
     for h in handles.values():
@@ -79,13 +83,14 @@ def explain(dept: str, species_id: str, out_dir: Path = REPORTS_DIR) -> dict[str
 class _Acc:
     """Accumulateurs par bloc : tout en comptages, rien en RAM pixel par pixel."""
 
-    def __init__(self, n_hosts: int):
+    def __init__(self, n_hosts: int, factors: tuple[str, ...] = FACTORS):
+        self.factors = factors  # + "edge" quand l'espèce a le bloc optionnel `edge_m`
         self.n = 0
         self.host_px = np.zeros(n_hosts, dtype=np.int64)
         self.host_t_sum = np.zeros(n_hosts, dtype=np.float64)
         self.host_excellent = np.zeros(n_hosts, dtype=np.int64)
-        self.f_hist = {k: np.zeros(10, dtype=np.int64) for k in FACTORS}
-        self.f_sum = dict.fromkeys(FACTORS, 0.0)
+        self.f_hist = {k: np.zeros(10, dtype=np.int64) for k in factors}
+        self.f_sum = dict.fromkeys(factors, 0.0)
         self.t_hist = np.zeros(10, dtype=np.int64)
         self.ws_hist = np.zeros(10, dtype=np.int64)
         self.ph_hist = np.zeros(20, dtype=np.int64)  # pH 0–10 par 0,5
@@ -93,7 +98,7 @@ class _Acc:
         self.ph_floor = 0
         self.alt_hist = np.zeros(40, dtype=np.int64)  # 0–4 000 m par 100 m
         self.excellent = 0
-        self.excellent_if_one = dict.fromkeys(FACTORS, 0)
+        self.excellent_if_one = dict.fromkeys(factors, 0)
         self.excellent_if_cap = dict.fromkeys(HOST_CAPS, 0)
 
     def add(self, sp, host, ph10, alt, f):
@@ -105,7 +110,7 @@ class _Acc:
         np.add.at(self.host_px, host, 1)
         np.add.at(self.host_t_sum, host, t)
         np.add.at(self.host_excellent, host, (t >= EXCELLENT).astype(np.int64))
-        for k in FACTORS:
+        for k in self.factors:
             self.f_hist[k] += np.histogram(f[k], bins=edges)[0]
             self.f_sum[k] += float(f[k].sum())
         self.t_hist += np.histogram(t, bins=edges)[0]
@@ -118,7 +123,7 @@ class _Acc:
         valid_alt = alt != NODATA_U16
         self.alt_hist += np.histogram(alt[valid_alt], bins=np.arange(0, 4100, 100))[0]
         self.excellent += int((t >= EXCELLENT).sum())
-        for k in FACTORS:
+        for k in self.factors:
             g = dict(f)
             g[k] = np.ones_like(f[k])
             t1 = g["host"] * weighted_sum(sp, g) if k != "host" else ws
@@ -156,7 +161,7 @@ class _Acc:
                     "hist": self.f_hist[k].tolist(),
                     "share_ge_0_9": round(float(self.f_hist[k][9] / n), 4),
                 }
-                for k in FACTORS
+                for k in self.factors
             },
             "t_hist": self.t_hist.tolist(),
             "weighted_sum_hist": self.ws_hist.tolist(),

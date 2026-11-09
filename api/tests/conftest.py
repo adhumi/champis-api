@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import pytest
 import pytest_asyncio
+from champis_api import catalog
 from champis_api.app import State, create_app
 from champis_api.cache import WeatherCache
 from champis_api.grid import WeatherGrid
@@ -161,6 +162,15 @@ async def api(app):
         transport_ = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport_, base_url="http://test") as c:
             yield c
+
+
+@pytest.fixture(autouse=True)
+def _catalog_without_bucket():
+    """Le catalogue est un état de processus : chaque test repart sans bucket (critère des tuiles
+    inactif) et `create_app` le reconfigure quand il reçoit un bucket."""
+    catalog.configure(None)
+    yield
+    catalog.configure(None)
 
 
 @pytest.fixture(autouse=True)

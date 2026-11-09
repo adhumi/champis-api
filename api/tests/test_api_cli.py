@@ -13,7 +13,7 @@ from champis_api import cli, counts
 from champis_api.cache import WeatherCache
 from champis_api.settings import Settings
 from champis_api.store import Store
-from champis_pipeline.species import list_complete_species
+from champis_pipeline.species import list_complete_species, list_species
 from champis_pipeline.storage import S3Config
 from conftest import GRID, NOW, TODAY, MemoryBucket, seed_from_scenario
 from fixtures.open_meteo import Scenario, transport
@@ -228,6 +228,27 @@ def bucket(settings, monkeypatch) -> MemoryBucket:
     seed_db.meta_set("seed_generated", TODAY.isoformat())
     seed_db.close()
     publish_seed(b, settings.weather_seed_db)
+    # les tuiles T France de toutes les espèces sont « publiées » : le catalogue (9 nov. 2026) ne
+    # sert que les espèces dont le manifeste du bucket porte un jeu T France
+    b.put_json(
+        "tiles/manifest.json",
+        {
+            "version": 1,
+            "generated": TODAY.isoformat(),
+            "depts_by_hash": {"abcdef": ["25", "39"]},
+            "tiles": [
+                {
+                    "kind": "T",
+                    "species": sid,
+                    "depts_hash": "abcdef",
+                    "name": f"T-{sid}.pmtiles",
+                    "key": f"tiles/T-{sid}.pmtiles",
+                    "bytes": 1,
+                }
+                for sid in list_species()
+            ],
+        },
+    )
     return b
 
 
