@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -28,6 +29,47 @@ log = logging.getLogger(__name__)
 
 def _fresh(out: Path, *inputs: Path) -> bool:
     return out.exists() and all(out.stat().st_mtime >= p.stat().st_mtime for p in inputs)
+
+
+# ------------------------------------------------------------------ grille complète d'un département
+
+GRID_RASTERS = ("host", "cover", "edge", "ph", "alt", "slope", "aspect")
+GRID_STAMP = "inputs.json"
+
+
+def grid_inputs(dept: str) -> dict[str, str]:
+    """Ce dont dépend la grille d'un département, par contenu et non par date : l'édition BD Forêt
+    et l'empreinte de la table TFV → hôtes. Le shapefile réextrait après `--clean-raw` est plus
+    récent que host.tif sans que rien n'ait changé : `_fresh` ne suffit pas à le dire."""
+    import hashlib
+
+    from .config import BDFORET_EDITIONS
+
+    return {
+        "bdforet": BDFORET_EDITIONS[dept],
+        "mapping": hashlib.sha256(MAPPING_FILE.read_bytes()).hexdigest()[:12],
+    }
+
+
+def write_grid_stamp(dept: str) -> Path:
+    """À appeler une fois toutes les étapes de la grille passées : note `grid_inputs` à côté."""
+    out = dept_dirs(dept)["grid"] / GRID_STAMP
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(grid_inputs(dept), indent=1) + "\n", encoding="utf-8")
+    return out
+
+
+def grid_ready(dept: str) -> bool:
+    """Les sept rasters du département sont sur disque et viennent des entrées courantes : le
+    terrain d'une espèce se calcule sans retélécharger BD Forêt ni rasteriser à nouveau."""
+    d = dept_dirs(dept)["grid"]
+    stamp = d / GRID_STAMP
+    if not stamp.exists() or not all((d / f"{k}.tif").exists() for k in GRID_RASTERS):
+        return False
+    try:
+        return json.loads(stamp.read_text(encoding="utf-8")) == grid_inputs(dept)
+    except ValueError:
+        return False
 
 
 def dept_grid(shp: Path) -> Grid:
