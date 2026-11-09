@@ -111,10 +111,14 @@ jobs:
 
       # Le binaire vient d'une release GitHub : un 504 passager (vu le 9 nov. 2026, deux fois de
       # suite sur champis-warm) ne doit pas laisser un service sur une ancienne image.
+      # Un essai raté laisse un paquet à moitié posé (le lanceur sans binaire : « Permission
+      # denied » à railway up, vu le 9 nov. à 08:07Z) : on le retire avant de réessayer, et seule
+      # une CLI qui répond compte comme installée.
       - name: Railway CLI
         run: |
           for i in 1 2 3 4; do
-            npm install -g @railway/cli && exit 0
+            if npm install -g @railway/cli && railway --version; then exit 0; fi
+            npm uninstall -g @railway/cli >/dev/null 2>&1 || true
             echo "installation de la CLI Railway refusée (essai $i), nouvel essai dans $((i * 15)) s"
             sleep $((i * 15))
           done
