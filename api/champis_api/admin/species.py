@@ -171,7 +171,17 @@ def gather(
             if (parse_tile_name(n) or {}).get("species") == sid
         ]
         local_current = [n for n in local_tiles if (parse_tile_name(n) or {}).get("hash") == h]
-        maps = [{**r, "current": r["hash"] == h} for r in renders if r["species"] == sid]
+        # chaque carte présente s'ouvre depuis la fiche (URL signée d'une heure, comme l'onglet
+        # Cartes le faisait avant d'être absorbé) ; la page redemande une URL fraîche au clic
+        maps = [
+            {
+                **r,
+                "current": r["hash"] == h,
+                "url": bucket.presign(r["key"], 3600) if bucket else None,
+            }
+            for r in renders
+            if r["species"] == sid
+        ]
         jobs_here = [
             {
                 "id": j["id"],

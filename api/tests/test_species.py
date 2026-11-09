@@ -145,6 +145,8 @@ def test_gather_states_sources_and_jobs(tmp_path: Path):
         "at": "2026-11-08T18:59:00+00:00",
     }
     assert cepe["maps"][0]["current"] and cepe["jobs"] == []
+    # la carte s'ouvre depuis la fiche : URL signée du bucket (retour d'Adrien du 8 nov. 2026)
+    assert cepe["maps"][0]["url"] == f"https://bucket.test/{cepe['maps'][0]['key']}"
     # usage : l'espèce plus son groupe, en part du total app / site sur 30 jours
     assert cepe["usage"]["app"] == 30 and cepe["usage"]["app_share"] == 75
     assert cepe["usage"]["web"] == 5 and cepe["usage"]["web_share"] == 100
