@@ -478,3 +478,28 @@ async def test_renders_page_lists_species_and_present_maps(grid, client, store):
         not by_id["cantharellus_cibarius"]["published"]
         and by_id["cantharellus_cibarius"]["files"] == []
     )
+
+
+@pytest.mark.asyncio
+async def test_a_render_can_be_deleted_and_nothing_else(grid, client, store):
+    bucket = MemoryBucket()
+    key = "renders/T-boletus_edulis-af34c16e-z9.png"
+    bucket.objects[key] = b"png"
+    bucket.objects["tiles/manifest.json"] = b"{}"
+    app = _app(grid, client, store, bucket=bucket)
+    action = {**BEARER, "X-Champis-Admin": "1"}
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        url = "/admin/api/renders/delete"
+        # sans l'en-tête d'action : refusé, rien n'est effacé
+        assert (await c.post(url, json={"key": key}, headers=BEARER)).status_code == 403
+        assert key in bucket.objects
+        # une clé hors des cartes HD : refusée
+        r = await c.post(url, json={"key": "tiles/manifest.json"}, headers=action)
+        assert r.status_code == 422 and "tiles/manifest.json" in bucket.objects
+        r = await c.post(url, json={"key": key}, headers=action)
+        assert r.status_code == 200 and r.json() == {"key": key, "deleted": True}
+        assert key not in bucket.objects
+        assert (await c.post(url, json={"key": key}, headers=action)).status_code == 404
