@@ -25,7 +25,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
-from champis_pipeline.species import list_species, species_groups
+from champis_pipeline.species import list_complete_species, species_groups
 from champis_pipeline.storage import Bucket, BucketLike
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -441,7 +441,7 @@ async def _warm_once(
         log.exception("pré-chauffe en échec")
         return
     try:  # vue France : l'indice par département se recalcule sur le cache tout juste rempli
-        await compute_dept_index(grid, client, client.cache, list_species())
+        await compute_dept_index(grid, client, client.cache, list_complete_species())
     except Exception:
         log.exception("indice par département en échec")
 

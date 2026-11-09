@@ -21,6 +21,7 @@ from champis_api.scoring import (
 from champis_pipeline.species import (
     REFERENTIAL,
     all_species_hash,
+    list_complete_species,
     list_species,
     load_palette,
     load_species,
@@ -133,8 +134,8 @@ async def test_health_and_species_contract(api):
     assert set(body) == {"scoring_version", "species_hash", "palette", "species"}
     assert body["species_hash"] == all_species_hash()
     assert body["palette"] == load_palette()
-    assert sorted(body["species"]) == list_species()
-    for sid in list_species():
+    assert sorted(body["species"]) == list_complete_species()  # espèces complètes seulement
+    for sid in list_complete_species():
         on_disk = json.loads((REFERENTIAL / "species" / f"{sid}.json").read_text(encoding="utf-8"))
         assert body["species"][sid] == on_disk, sid
 

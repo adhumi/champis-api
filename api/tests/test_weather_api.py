@@ -49,7 +49,9 @@ async def test_health_and_species(api):
     assert body["scoring_version"] == "1.0.0"
     assert body["palette"]["thresholds"][0]["label"] == "excellent"
     assert body["species"]["boletus_edulis"]["group"]["id"] == "cepes"
-    assert len(body["species"]) == 27
+    # seules les espèces complètes (about, photo, planche) sont servies : 10 des 27 fichiers le
+    # 9 nov. 2026, les dix-sept ajoutées la veille attendent leur planche
+    assert len(body["species"]) == len(load_species_ids()) == 10
 
 
 @pytest.mark.asyncio
@@ -92,9 +94,10 @@ async def test_weather_by_lat_lon_and_errors(api):
 
 
 def load_species_ids() -> list[str]:
-    from champis_pipeline.species import list_species
+    """Ce que `/species` sert : les espèces complètes (bloc about, photo, planche ; 9 nov. 2026)."""
+    from champis_pipeline.species import list_complete_species
 
-    return list_species()
+    return list_complete_species()
 
 
 @pytest.mark.asyncio
@@ -1073,12 +1076,11 @@ async def test_field_is_m_eff_times_phi_rounded_from_the_precomputed_weather(
 
 @pytest.mark.asyncio
 async def test_field_default_species_is_all_and_unknown_is_404(api, grid, client):
-    from champis_pipeline.species import list_species
 
     await _precompute(grid, client)
     r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
     assert r.status_code == 200
-    assert all(set(c["f"]) == set(list_species()) for c in r.json()["cells"])
+    assert all(set(c["f"]) == set(load_species_ids()) for c in r.json()["cells"])  # complètes
     r = await api.get("/weather/field", params={**BBOX_FR, "day": J, "species": "amanita_x"})
     assert r.status_code == 404 and "amanita_x" in r.json()["detail"]
 

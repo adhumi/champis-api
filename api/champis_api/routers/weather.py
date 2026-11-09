@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from typing import Annotated, Any
 
 from champis_pipeline import SCORING_VERSION
-from champis_pipeline.species import list_species
+from champis_pipeline.species import list_complete_species
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
@@ -50,7 +50,7 @@ def _cache(request: Request) -> WeatherCache:
 
 
 def _species(species: Annotated[list[str] | None, Query()] = None) -> list[str]:
-    known = list_species()
+    known = list_complete_species()  # espèces complètes seulement (9 nov. 2026)
     if not species:
         return known
     unknown = [s for s in species if s not in known]
