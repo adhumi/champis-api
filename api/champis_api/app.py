@@ -25,7 +25,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
-from champis_pipeline.species import list_complete_species, species_groups
+from champis_pipeline.species import species_groups
 from champis_pipeline.storage import Bucket, BucketLike
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,7 +33,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import counts
+from . import catalog, counts
 from .admin.router import router as admin_router
 from .apns import ApnsClient
 from .cache import WeatherCache
@@ -94,11 +94,13 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     async def lifespan(app: FastAPI):
         if state is not None:
             app.state.champis = state
+            catalog.configure(state.bucket)
             yield
             return
         settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
         cache = WeatherCache(settings.cache_db, shared=True)
         bucket = Bucket(settings.s3) if settings.s3 else None
+        catalog.configure(bucket)  # les tuiles publiées décident des espèces servies
         if bucket is None:
             log.warning("pas de bucket (CHAMPIS_S3_*) : /tiles vide, glisser-déposer seul")
         tile_cache = TileCache.from_settings(settings) if bucket is not None else None
@@ -224,12 +226,13 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     # appareils actifs (lot BO2) : par worker, les empreintes déjà écrites aujourd'hui
     tracker = counts.DeviceDayTracker()
     # cible d'une requête météo : groupe ou espèce, parmi les espèces servies aux clients (une
-    # couche « girolles » de l'app demande les girolles complètes, pas celles sans planche)
-    groups = species_groups(list_complete_species())
+    # couche « girolles » de l'app demande les girolles du catalogue, pas celles sans planche ni
+    # tuiles) ; le catalogue suit le manifeste du bucket, donc relu à chaque mesure (en cache)
 
     def _measure(store: Store, request, status: int) -> None:
         """Dans un fil, après la réponse : ce que la mesure minimale retient de la requête."""
         day = counts.today()
+        groups = species_groups(catalog.served_species())
         user = counts.valid_user_id(request.headers.get("x-champis-user"))
         if user and settings.measure_secret:
             hashed = counts.device_hash(settings.measure_secret, user)
@@ -443,7 +446,7 @@ async def _warm_once(
         log.exception("pré-chauffe en échec")
         return
     try:  # vue France : l'indice par département se recalcule sur le cache tout juste rempli
-        await compute_dept_index(grid, client, client.cache, list_complete_species())
+        await compute_dept_index(grid, client, client.cache, catalog.served_species())
     except Exception:
         log.exception("indice par département en échec")
 

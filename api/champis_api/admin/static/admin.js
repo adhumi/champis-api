@@ -401,8 +401,9 @@ async function loadSpecies() {
   if (d.species.some((sp) => sp.jobs.length)) timers.species = setTimeout(loadSpecies, 5000);
 }
 
-/* Fiche complète = bloc about, photo choisie et planche (demande d'Adrien du 8 nov. 2026). */
-const MISSING = { about: "fiche en mots", photo: "photo", illustration: "illustration" };
+/* Fiche complète = bloc about, photo choisie et planche (demande d'Adrien du 8 nov. 2026) ; servie aux clients
+   si de plus ses tuiles T France sont publiées (9 nov. 2026). */
+const MISSING = { about: "fiche en mots", photo: "photo", illustration: "illustration", tiles: "tuiles publiées" };
 function completeness(c) {
   if (!c) return "";
   if (c.complete) return el("span", { class: "state complete", text: "complète" });

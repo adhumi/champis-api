@@ -16,20 +16,20 @@ trop grande reste un relais en streaming, jamais mise en cache ; `If-None-Match`
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 import httpx
-from champis_pipeline.storage import MANIFEST_KEY, TILES_PREFIX, parse_tile_name
+from champis_pipeline.storage import TILES_PREFIX, parse_tile_name
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
+from .. import catalog
 from ..tile_cache import MAX_ENTRY_BYTES, Entry, TileCache, parse_content_range, parse_exact_range
 
 router = APIRouter(tags=["tiles"])
 
-MANIFEST_TTL_S = 600
+MANIFEST_TTL_S = catalog.MANIFEST_TTL_S
 PROXY_HEADERS = ("content-type", "content-length", "content-range", "accept-ranges", "etag")
 CACHE_CONTROL = "public, max-age=86400, immutable"  # noms de fichiers immuables
 
@@ -39,14 +39,9 @@ def _state(request: Request):
 
 
 async def _manifest(st) -> dict[str, Any]:
-    """Manifeste du bucket, mis en cache MANIFEST_TTL_S par processus (une lecture S3 par
-    worker et par refresh : sans conséquence, il n'y a pas d'état à partager)."""
-    cached = getattr(st, "manifest_cache", None)
-    if cached and cached[0] > time.monotonic():
-        return cached[1]
-    manifest = st.bucket.get_json(MANIFEST_KEY) or {"version": 1, "tiles": [], "depts_by_hash": {}}
-    st.manifest_cache = (time.monotonic() + MANIFEST_TTL_S, manifest)
-    return manifest
+    """Manifeste du bucket, le même que celui du catalogue (`champis_api.catalog`, en cache
+    `MANIFEST_TTL_S` par processus : une lecture S3 par worker et par refresh)."""
+    return catalog.manifest() or dict(catalog.EMPTY_MANIFEST)
 
 
 @router.get("/tiles")

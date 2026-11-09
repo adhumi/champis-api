@@ -10,7 +10,9 @@ empreinte unique pour toutes les espèces : `grid_current` est global.
 
 Une espèce est **complète** (demande d'Adrien du 8 nov. 2026) quand son fichier porte le bloc
 `about`, une photo choisie et sa planche `shared/illustrations/<id>.jpg` ; la fiche montre la
-planche et le prompt qui la produit (`admin/illustrations.py`).
+planche et le prompt qui la produit (`admin/illustrations.py`). Depuis le 9 nov. 2026, elle n'est
+**servie** aux clients que si, de plus, ses tuiles T France sont publiées (`champis_api.catalog`) :
+le tableau nomme ce quatrième manque comme les trois autres.
 """
 
 from __future__ import annotations
@@ -27,12 +29,9 @@ from champis_pipeline.species import (
     species_groups,
     species_hash,
 )
-from champis_pipeline.species import (
-    completeness as species_completeness,
-)
 from champis_pipeline.storage import MANIFEST_KEY, BucketLike, parse_tile_name
 
-from .. import counts, render
+from .. import catalog, counts, render
 from ..scoring import phenology_window
 from ..settings import Settings
 from ..store import Store
@@ -77,11 +76,13 @@ def file_view(sid: str) -> dict[str, Any]:
     }
 
 
-def completeness(spec: dict[str, Any], sid: str) -> dict[str, Any]:
-    """Ce qui manque à la fiche : bloc `about`, photo choisie, planche. `complete` = rien ne manque.
-    Même règle que les clients (`champis_pipeline.species.completeness`) : une espèce incomplète
-    n'est pas servie par `/species`."""
-    return species_completeness(sid, spec)
+def completeness(
+    spec: dict[str, Any], sid: str, manifest: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Même règle que les clients (`champis_api.catalog.completeness`) : une espèce incomplète
+    existe pour le pipeline et le backoffice, pas pour le site ni l'app. Avec `manifest`, le
+    critère des tuiles publiées s'ajoute aux trois du référentiel."""
+    return catalog.completeness(sid, spec, manifest_=manifest)
 
 
 def _busy_jobs(store: Store | None) -> list[dict[str, Any]]:
@@ -206,7 +207,7 @@ def gather(
                 "hash": h,
                 "schema_version": spec.get("schema_version"),
                 "about": bool(spec.get("about")),
-                "completeness": completeness(spec, sid),
+                "completeness": completeness(spec, sid, manifest or None),
                 "state": state,
                 "published": {
                     "hash": france.get("hash") if france else None,
