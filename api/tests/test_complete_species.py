@@ -34,7 +34,7 @@ def test_completeness_follows_the_referential():
     assert not c["complete"] and c["missing"] == ["illustration"]
     complete = list_complete_species()
     assert COMPLETE in complete and INCOMPLETE not in complete
-    assert set(complete) < set(list_species()) and len(complete) == 20  # 10 + 10 planches du 9 nov.
+    assert set(complete) < set(list_species()) and len(complete) == 25  # 10 + 15 planches du 9 nov.
     # le backoffice applique la même règle
     assert admin_species.completeness(load_species(INCOMPLETE), INCOMPLETE) == c
 
@@ -61,10 +61,11 @@ async def test_clients_only_see_complete_species(api):
     assert CoinIn(**coin, target=COMPLETE).target == COMPLETE
     with pytest.raises(ValidationError, match="target inconnu"):
         CoinIn(**coin, target=INCOMPLETE)
-    with pytest.raises(ValidationError, match="target inconnu"):
-        CoinIn(**coin, target="grisets")  # groupe dont aucune espèce n'est complète
-    # l'indice par département groupe les espèces complètes : un groupe entièrement incomplet
-    # n'apparaît pas, un groupe mixte ne compte que ses espèces complètes
+    # un groupe est visable dès qu'une de ses espèces est complète (grisets : le prétentieux l'est)
+    assert CoinIn(**coin, target="grisets").target == "grisets"
+    # l'indice par département groupe les espèces complètes : un groupe mixte ne compte que
+    # ses espèces complètes (chanterelles : la jaune a sa planche, celle en tube pas encore ;
+    # grisets : le prétentieux, pas le petit-gris), un groupe entièrement incomplet n'apparaîtrait pas
     groups = groups_of(list_complete_species())
-    # (chanterelles : la jaune a sa planche depuis le 9 nov., la chanterelle en tube pas encore)
-    assert "grisets" not in groups and groups["chanterelles"] == ["craterellus_lutescens"]
+    assert groups["chanterelles"] == ["craterellus_lutescens"]
+    assert groups["grisets"] == ["tricholoma_portentosum"]
