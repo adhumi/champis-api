@@ -184,9 +184,13 @@ def test_render_composes_tiles_boundaries_and_cartouche(bucket: MemoryBucket, tm
     assert any(
         tuple(px[y, x]) == render.BOUNDARY_RGB for y in range(0, 256) for x in range(0, 256, 4)
     )
-    # cartouche : du texte sombre dans la bande du bas
-    band = px[len(ys) * 256 :, :]
-    assert (band.min(axis=2) < 80).any()
+    # cartouche : le seul nom de l'espèce, une ligne de texte sombre centrée dans la bande du bas
+    band = px[len(ys) * 256 + 2 :, :]
+    dark = np.argwhere(band.min(axis=2) < 80)
+    assert dark.size
+    left, right = dark[:, 1].min(), dark[:, 1].max()
+    assert abs((left + right) / 2 - img.width / 2) < 8  # centré
+    assert dark[:, 0].max() - dark[:, 0].min() < 0.6 * band.shape[0]  # une seule ligne
 
     # même jeu, même espèce : rien à refaire ; `force` rerend
     again = render.render(bucket, "boletus_edulis", ZOOM, tmp_path, boundaries)

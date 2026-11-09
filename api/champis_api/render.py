@@ -9,7 +9,8 @@ départements), lus dans le bucket par plages avec le lecteur de la bibliothèqu
 pyramide au niveau demandé (9 : ≈ 5 600 × 5 600 px ; 10 : ≈ 11 300 × 11 300 px). Couleur par le
 contrat palette v2 (`palette_color` : violet, alpha = T) composée sur blanc ; limites des
 départements en trait fin (`departements.geojson` du site, le fichier que l'app lit déjà) ;
-cartouche en bas (noms, « potentiel toute saison », date du jeu, empreinte, crédits, licence).
+cartouche en bas avec le seul nom de l'espèce, vernaculaire et latin (demande d'Adrien du
+9 nov. 2026 : aucun autre texte sur l'image).
 Résultat : PNG dans le bucket sous `renders/T-<espèce>-<hash>-z<niveau>.png`, nom immuable
 (nouveau jeu ou espèce modifiée = autre nom) ; déjà présent = rien à faire sans `force`.
 """
@@ -43,7 +44,9 @@ FRANCE_BOUNDS = (-5.4, 41.2, 9.8, 51.2)  # lon/lat, France métropolitaine (Cors
 TILE = 256
 T_SCALE = 254  # T × 254 dans le PNG gris (255 = sans donnée)
 BOUNDARY_RGB = (96, 96, 96)
-CREDITS = "BD Forêt V2 © IGN · Copernicus DEM © ESA/Airbus · SoilGrids © ISRIC · données Champis CC BY 4.0"
+# Police du cartouche : DejaVu Sans (`fonts-dejavu-core` dans l'image), qui a les accents ; la
+# police par défaut de Pillow ne les a pas et ne sert que de repli.
+FONT_PATH = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 _NAME = re.compile(r"^renders/T-(?P<species>[a-z_]+)-(?P<hash>[0-9a-f]+)-z(?P<zoom>\d+)\.png$")
 
 Progress = Callable[[int, int], None]
@@ -181,26 +184,27 @@ def draw_boundaries(
                 draw.line(points, fill=BOUNDARY_RGB, width=width)
 
 
-def with_cartouche(img: Image.Image, lines: list[str]) -> Image.Image:
-    """Bande blanche sous la carte : titre en gras, puis les lignes de détail."""
-    band = max(120, img.height // 30)
-    size = max(14, band // 6)
+def title_font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    if FONT_PATH.exists():
+        return ImageFont.truetype(str(FONT_PATH), size)
     try:
-        bold = ImageFont.load_default(size=int(size * 1.4))
-        font = ImageFont.load_default(size=size)
+        return ImageFont.load_default(size=size)
     except TypeError:  # Pillow trop ancien pour `size`
-        bold = font = ImageFont.load_default()
+        return ImageFont.load_default()
+
+
+def with_cartouche(img: Image.Image, title: str) -> Image.Image:
+    """Bande blanche sous la carte, avec le seul titre (le nom de l'espèce), centré."""
+    band = max(90, img.height // 40)
+    size = max(20, band * 2 // 5)
+    font = title_font(size)
     out = Image.new("RGB", (img.width, img.height + band), (255, 255, 255))
     out.paste(img, (0, 0))
     draw = ImageDraw.Draw(out)
     draw.line([(0, img.height), (img.width, img.height)], fill=BOUNDARY_RGB, width=1)
-    margin = size
-    y = img.height + margin
-    draw.text((margin, y), lines[0], fill=(30, 30, 30), font=bold)
-    y += int(size * 1.9)
-    for line in lines[1:]:
-        draw.text((margin, y), line, fill=(60, 60, 60), font=font)
-        y += int(size * 1.35)
+    left, top, right, bottom = draw.textbbox((0, 0), title, font=font)
+    xy = ((img.width - (right - left)) / 2 - left, img.height + (band - (bottom - top)) / 2 - top)
+    draw.text(xy, title, fill=(30, 30, 30), font=font)
     return out
 
 
@@ -244,14 +248,10 @@ def render(
     if boundaries:
         draw_boundaries(img, boundaries, zoom, x0, y0)
     names = load_species(species_id).get("names", {})
-    generated = str(manifest.get("generated", ""))[:10]
-    lines = [
-        f"{names.get('fr', species_id)} ({names.get('la', '')}) · potentiel toute saison",
-        f"Champis · champis.app · jeu de tuiles du {generated} · espèce {entry['hash']} · niveau {zoom}",
-        "Le potentiel terrain T dit où les conditions sont réunies, jamais « il y en a » : violet d'autant plus foncé que T est haut.",
-        CREDITS,
-    ]
-    img = with_cartouche(img, lines)
+    title = names.get("fr", species_id)
+    if names.get("la"):
+        title += f" ({names['la']})"
+    img = with_cartouche(img, title)
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / Path(key).name
     buf = io.BytesIO()
