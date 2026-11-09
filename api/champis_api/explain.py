@@ -83,6 +83,9 @@ def summary(
     temp = factors.get("temp")
     if temp is not None and temp < TEMP_BAD:
         out.append("températures défavorables")
+    soil_temp = factors.get("soil_temp")  # facteur optionnel (9 nov. 2026)
+    if soil_temp is not None and soil_temp < TEMP_BAD:
+        out.append("sol trop froid ou trop chaud")
     if phase in SEASON_WORDS:
         out.append(SEASON_WORDS[phase])
     else:

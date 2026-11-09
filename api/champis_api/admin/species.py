@@ -27,6 +27,9 @@ from champis_pipeline.species import (
     species_groups,
     species_hash,
 )
+from champis_pipeline.species import (
+    completeness as species_completeness,
+)
 from champis_pipeline.storage import MANIFEST_KEY, BucketLike, parse_tile_name
 
 from .. import counts, render
@@ -75,18 +78,10 @@ def file_view(sid: str) -> dict[str, Any]:
 
 
 def completeness(spec: dict[str, Any], sid: str) -> dict[str, Any]:
-    """Ce qui manque à la fiche : bloc `about`, photo choisie, planche. `complete` = rien ne manque."""
-    about = spec.get("about") or {}
-    items = {
-        "about": bool(about),
-        "photo": bool(about.get("photo")),
-        "illustration": illustrations.illustration_info(sid)["present"],
-    }
-    return {
-        **items,
-        "complete": all(items.values()),
-        "missing": [k for k, v in items.items() if not v],
-    }
+    """Ce qui manque à la fiche : bloc `about`, photo choisie, planche. `complete` = rien ne manque.
+    Même règle que les clients (`champis_pipeline.species.completeness`) : une espèce incomplète
+    n'est pas servie par `/species`."""
+    return species_completeness(sid, spec)
 
 
 def _busy_jobs(store: Store | None) -> list[dict[str, Any]]:

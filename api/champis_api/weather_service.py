@@ -16,6 +16,7 @@ from .explain import summary
 from .grid import Cell
 from .scoring import (
     DailySeries,
+    SeriesGapError,  # levée ici (trou) comme dans le scoring (facteur optionnel soil_temp)
     phenology_window,
     required_series_days,
     season_phase,
@@ -40,11 +41,10 @@ class HistoryTooShortError(Exception):
         )
 
 
-class SeriesGapError(Exception):
-    """Trou ou troncature dans les séries : jamais une approximation silencieuse (SCHEMA.md)."""
-
-
-VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil")
+VARS = ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil", "soil_t")
+# Variables optionnelles : un trou n'est une erreur que si une espèce les emploie (facteur optionnel
+# `soil_temp`, 9 nov. 2026) ; l'historique amorcé avant leur mise en service ne les a pas
+OPTIONAL_VARS = frozenset({"soil_t"})
 OPEN_METEO_NAMES = {
     "t_mean": "temperature_2m_mean",
     "t_min": "temperature_2m_min",
@@ -53,6 +53,7 @@ OPEN_METEO_NAMES = {
     "snow": "snowfall_sum",
     "et0": "et0_fao_evapotranspiration",
     "soil": "soil_moisture",
+    "soil_t": "soil_temperature_0_to_7cm_mean",
 }
 
 
@@ -68,31 +69,34 @@ def build_series(raw: CellRaw) -> DailySeries:
     f_idx = {d: i for i, d in enumerate(f["dates"])}
     first = min([f["dates"][0], *h]) if h else f["dates"][0]
     dates = _date_range(date.fromisoformat(first), date.fromisoformat(f["dates"][-1]))
-    merged: dict[str, list[float]] = {}
+    merged: dict[str, list[float | None]] = {}
     for var in VARS:
         values, missing = [], []
+        fvals = f.get(var)
         for d in dates:
             k = d.isoformat()
-            v = f[var][f_idx[k]] if k in f_idx else None
+            v = fvals[f_idx[k]] if fvals is not None and k in f_idx else None
             if v is None and k in h:
                 v = h[k].get(var)
             if v is None:
                 missing.append(k)
             values.append(v)
-        if missing:
+        if missing and var not in OPTIONAL_VARS:
             raise SeriesGapError(f"`{OPEN_METEO_NAMES[var]}` manquant sur {_summary(missing)}")
         merged[var] = values
     soil_pct = [soil_percentile(v, raw.soil_clim) for v in merged["soil"]]
+    soil_t = merged["soil_t"]
     return DailySeries(
         dates=dates,
-        t_mean=[float(v) for v in merged["t_mean"]],
-        t_min=[float(v) for v in merged["t_min"]],
-        t_max=[float(v) for v in merged["t_max"]],
-        rain=[float(v) for v in merged["rain"]],
-        snow=[float(v) for v in merged["snow"]],
-        et0=[float(v) for v in merged["et0"]],
+        t_mean=[float(v) for v in merged["t_mean"]],  # type: ignore[arg-type]
+        t_min=[float(v) for v in merged["t_min"]],  # type: ignore[arg-type]
+        t_max=[float(v) for v in merged["t_max"]],  # type: ignore[arg-type]
+        rain=[float(v) for v in merged["rain"]],  # type: ignore[arg-type]
+        snow=[float(v) for v in merged["snow"]],  # type: ignore[arg-type]
+        et0=[float(v) for v in merged["et0"]],  # type: ignore[arg-type]
         soil_moisture_pct=[float(v) for v in soil_pct],  # type: ignore[arg-type]
         cell_elevation_m=float(f["elevation"]),
+        soil_temp=[None if v is None else float(v) for v in soil_t],
     )
 
 

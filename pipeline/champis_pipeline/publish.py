@@ -38,7 +38,8 @@ def complete_group_sets(species: list[str]) -> list[tuple[str, int, list[str]]]:
     son groupe entier (ordre des canaux = ordre alphabétique de tout le groupe). Un groupe dont
     seule une partie est sélectionnée n'a pas de G (`partial_groups` les nomme)."""
     selected = set(species)
-    return [s for s in group_sets() if set(s[2]) <= selected]
+    whole = species_groups()  # un groupe en deux parties n'a de G que s'il est entier
+    return [s for s in group_sets() if set(whole[s[0]]) <= selected]
 
 
 def partial_groups(species: list[str]) -> list[str]:

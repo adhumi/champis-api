@@ -60,8 +60,12 @@ def test_m_vectors():
             et0=ser["et0"],
             soil_moisture_pct=ser["soil_moisture_pct"],
             cell_elevation_m=c["cell_elevation_m"],
+            soil_temp=ser.get("soil_temp"),
         )
-        got = weather_index(load_species(c["species"]), s, date.fromisoformat(c["day"]), c["alt_m"])
+        # `species_override` : fichier espèce embarqué dans le cas (facteur qu'aucune espèce
+        # publiée n'emploie encore, 9 nov. 2026), sinon la ressource du référentiel
+        sp = c.get("species_override") or load_species(c["species"])
+        got = weather_index(sp, s, date.fromisoformat(c["day"]), c["alt_m"])
         for k, v in c["expected"].items():
             assert abs(got[k] - v) <= TOL, (c["species"], c["scenario"], k)
 

@@ -68,6 +68,30 @@ def illustration_path(species_id: str) -> Path | None:
     return path if path.is_file() else None
 
 
+def completeness(species_id: str, spec: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Ce qui manque pour qu'une espèce soit complète : bloc `about`, photo choisie, planche
+    (décision d'Adrien des 8 et 9 nov. 2026). Une espèce incomplète existe pour le pipeline et le
+    backoffice (tuiles, contrôle GBIF), pas pour les clients : `/species`, l'indice par département,
+    les coins et la carte du site ne servent que les espèces complètes. La planche n'est pas un
+    prérequis de la CI du référentiel."""
+    about = (load_species(species_id) if spec is None else spec).get("about") or {}
+    items = {
+        "about": bool(about),
+        "photo": bool(about.get("photo")),
+        "illustration": illustration_path(species_id) is not None,
+    }
+    return {
+        **items,
+        "complete": all(items.values()),
+        "missing": [k for k, v in items.items() if not v],
+    }
+
+
+def list_complete_species() -> list[str]:
+    """Les espèces servies aux clients : celles dont rien ne manque (`completeness`)."""
+    return [sid for sid in list_species() if completeness(sid)["complete"]]
+
+
 def fingerprint_bytes(raw: bytes) -> bytes:
     """Octets soumis à l'empreinte : le fichier tel quel, sans le bloc `about` (la fiche en mots,
     lot 4), que relire ne doit jamais régénérer une tuile. Sans `about`, les octets d'origine."""
@@ -107,7 +131,7 @@ def species_groups(species_ids: list[str] | None = None) -> dict[str, list[str]]
 
 def group_sets(species_ids: list[str] | None = None) -> list[tuple[str, int, list[str]]]:
     """Fichiers G à produire : `(groupe, partie, espèces)`, au plus `GROUP_CHANNELS` espèces par
-    fichier ; au-delà, une seconde partie (suffixe `-2` du nom), jamais nécessaire aujourd'hui."""
+    fichier ; au-delà, une seconde partie (suffixe `-2` du nom), pour les lactaires depuis le 8 nov. 2026."""
     out = []
     for gid, ids in species_groups(species_ids).items():
         for i in range(0, len(ids), GROUP_CHANNELS):

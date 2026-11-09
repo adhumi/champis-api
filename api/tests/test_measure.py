@@ -12,7 +12,7 @@ from champis_api import counts
 from champis_api.app import State, create_app
 from champis_api.settings import Settings
 from champis_api.store import Store
-from champis_pipeline.species import species_groups
+from champis_pipeline.species import list_complete_species, species_groups
 
 D = counts.today()
 USER = "11111111-1111-4111-8111-111111111111"
@@ -149,7 +149,8 @@ async def test_without_a_secret_devices_are_not_counted_but_layers_are(grid, cli
     ):
         h = {"X-Champis-User": USER}
         assert (await c.get("/species", headers=h)).status_code == 200
-        q = "&".join(f"species={s}" for s in species_groups()["girolles"])
+        # les girolles servies : la girolle améthyste, sans planche, n'est pas dans le catalogue
+        q = "&".join(f"species={s}" for s in species_groups(list_complete_species())["girolles"])
         assert (await c.get(f"/weather?cell=c_0930_6680&{q}", headers=h)).status_code == 200
     assert store.table_counts()["device_days"] == 0
     assert store.counts_since(D)[D] == {"layer_app:girolles": 1}

@@ -31,7 +31,7 @@ from pathlib import Path
 import httpx
 from champis_pipeline import console
 from champis_pipeline.progress import tqdm
-from champis_pipeline.species import list_species
+from champis_pipeline.species import list_complete_species, list_species
 
 from . import counts, jobs
 from .apns import ApnsClient
@@ -115,7 +115,7 @@ async def _warm(interval: float, pull: bool, publish: bool) -> int:
                     f"{report.stale} servies depuis un cache périmé, ≈ {report.weight:.0f} appels pondérés"
                 )
             with steps.step("indice par département") as step:
-                index = await compute_dept_index(grid, client, cache, list_species())
+                index = await compute_dept_index(grid, client, cache, list_complete_species())
                 step.note(
                     f"{index.departements} départements, {index.cells} cellules "
                     f"({index.cells_without_weather} sans météo)"

@@ -29,6 +29,7 @@ def make_series(
     et0: float = 1.5,
     soil: float = 0.6,
     elevation: float = 700.0,
+    soil_temp: float | None = None,
 ) -> DailySeries:
     dates = [start + timedelta(days=i) for i in range(n)]
     return DailySeries(
@@ -41,6 +42,7 @@ def make_series(
         et0=[et0] * n,
         soil_moisture_pct=[soil] * n,
         cell_elevation_m=elevation,
+        soil_temp=None if soil_temp is None else [soil_temp] * n,
     )
 
 

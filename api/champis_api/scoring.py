@@ -33,9 +33,15 @@ def round_half_up(x: float) -> int:
 
 
 def required_series_days(species: dict[str, Any]) -> int:
-    """Longueur minimale de série avant J pour calculer M_eff sans troncature."""
+    """Longueur minimale de série avant J pour calculer M_eff sans troncature (la fenêtre de la
+    température du sol, facteur optionnel, est comptée si elle dépasse celle de la pluie)."""
     w = species["weather"]
-    return int(w["memory"]["window_days"] + w["rain"]["window_days"] + w["persistence"]["days"])
+    window = max(w["rain"]["window_days"], w.get("soil_temp", {}).get("window_days", 0))
+    return int(w["memory"]["window_days"] + window + w["persistence"]["days"])
+
+
+class SeriesGapError(Exception):
+    """Trou ou troncature dans les séries : jamais une approximation silencieuse (SCHEMA.md)."""
 
 
 # --------------------------------------------------------------------------- séries météo
@@ -54,6 +60,10 @@ class DailySeries:
     et0: list[float]
     soil_moisture_pct: list[float]  # percentile 0–1 déjà calculé par rapport à la climatologie
     cell_elevation_m: float
+    # température du sol 0–7 cm (°C), facteur optionnel du 9 nov. 2026 : `None` quand la source
+    # ne la fournit pas, `None` par jour quand l'historique amorcé avant sa mise en service l'ignore ;
+    # seule une espèce qui l'emploie en a besoin, et alors un trou est une erreur
+    soil_temp: list[float | None] | None = None
     index: dict[date, int] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -64,6 +74,8 @@ class DailySeries:
         for name in ("t_mean", "t_min", "t_max", "rain", "snow", "et0", "soil_moisture_pct"):
             if len(getattr(self, name)) != n:
                 raise ValueError(f"{name}: {len(getattr(self, name))} valeurs pour {n} dates")
+        if self.soil_temp is not None and len(self.soil_temp) != n:
+            raise ValueError(f"soil_temp: {len(self.soil_temp)} valeurs pour {n} dates")
         self.index = {d: i for i, d in enumerate(self.dates)}
 
     def i(self, d: date) -> int:
@@ -133,6 +145,26 @@ def trigger_event(species: dict[str, Any], s: DailySeries, day: date) -> tuple[f
 
 def factor_trigger(species: dict[str, Any], s: DailySeries, day: date) -> float:
     return trigger_event(species, s, day)[0]
+
+
+def factor_soil_temp(species: dict[str, Any], s: DailySeries, day: date, alt_m: float) -> float:
+    """Température du sol 0–7 cm, moyenne sur `window_days`, corrigée à l'altitude du pixel comme
+    l'air (spec › Scoring › Facteurs de sol et de paysage, 9 nov. 2026). Facteur optionnel : appelé
+    seulement si l'espèce a un bloc `soil_temp`. Une valeur absente dans la fenêtre est une erreur."""
+    cfg = species["weather"]["soil_temp"]
+    if s.soil_temp is None:
+        raise SeriesGapError("`soil_temperature_0_to_7cm_mean` absent de la série")
+    vals = s.window(s.soil_temp, day, cfg["window_days"])
+    e = s.i(day)
+    window_dates = s.dates[e - len(vals) + 1 : e + 1]
+    missing = [d.isoformat() for d, v in zip(window_dates, vals, strict=True) if v is None]
+    if missing:
+        raise SeriesGapError(
+            f"`soil_temperature_0_to_7cm_mean` manquant sur {len(missing)} jour(s) "
+            f"({missing[0]} → {missing[-1]}) : collecte trop récente pour ce facteur"
+        )
+    corrected_vals = corrected([float(v) for v in vals], s, alt_m)
+    return trapezoid(sum(corrected_vals) / len(corrected_vals), cfg["c"])
 
 
 def factor_soil(species: dict[str, Any], s: DailySeries, day: date) -> float:
@@ -220,6 +252,9 @@ def weather_index_raw(
         + w["trigger"] * f["trigger"]
         + w["soil_moisture"] * f["soil_moisture"]
     )
+    if "soil_temp" in species["weather"]:  # facteur optionnel (9 nov. 2026) : absent = poids 0
+        f["soil_temp"] = factor_soil_temp(species, s, day, alt_m)
+        base += w.get("soil_temp", 0.0) * f["soil_temp"]
     m = base * f["frost"] * f["water_balance"] * f["heat"] * f["memory"]
     f["M"] = m
     return f

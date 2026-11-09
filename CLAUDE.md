@@ -27,6 +27,7 @@ data/         téléchargements et rasters, jamais commités (sauf weather_grid.
 
 - Jamais de commit poussé sur `main` sans PR : branche, PR, CI verte, fusion (règle du 30 oct. 2026), ici comme dans le référentiel.
 - Jamais de valeur d'espèce dans le code : tout vient de `champis/species/*.json`, qui se modifie dans `adhumi/champis` (skill `species-file`).
+- Les clients ne voient que les espèces **complètes** (bloc `about`, photo, planche `shared/illustrations/<id>.jpg` ; `champis_pipeline.species.completeness`, décision du 9 nov. 2026) : `/species`, l'indice par département et les coins passent par `list_complete_species()` ; le pipeline, les tuiles et le backoffice voient toutes les espèces (`list_species()`).
 - Jointure BD Forêt sur `CODE_TFV` uniquement. `rain_sum`, jamais `precipitation_sum`.
 - Tests sans réseau : fixtures et données synthétiques (`pipeline/tests/test_pipeline_e2e.py` montre comment).
 - pytest : `[tool.pytest.ini_options]` à la racine ; `pytest.approx` pour les flottants, `numpy.testing` pour les tableaux.

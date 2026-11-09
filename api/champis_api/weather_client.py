@@ -64,6 +64,10 @@ BATCH_CLIMATOLOGY = 10  # points par requête de climatologie (10 ans chacun : l
 MIN_REQUEST_INTERVAL_S = 0.25  # lissage : jamais de rafale vers Open-Meteo
 RETRY_MAX_WAIT_S = 10  # un seul réessai, et seulement si Open-Meteo demande une courte attente
 SOIL_DAILY = "soil_moisture_0_to_7cm_mean"
+# Température du sol 0–7 cm, journalière, en prévision comme en archive (vérifié le 9 nov. 2026) :
+# facteur optionnel `soil_temp` (spec › Scoring › Facteurs de sol et de paysage). Une variable de
+# plus dans chaque appel : poids d'appel 8/10 au lieu de 7/10
+SOIL_TEMP_DAILY = "soil_temperature_0_to_7cm_mean"
 SOIL_CLIM_YEAR = "year"  # clé des quantiles de l'année entière dans `soil_clim` (7 nov. 2026)
 
 DAILY_VARS = [
@@ -74,8 +78,9 @@ DAILY_VARS = [
     "snowfall_sum",
     "et0_fao_evapotranspiration",
 ]
-# Prévision et archive demandent les mêmes variables journalières, humidité du sol 0–7 cm comprise
-SERIES_VARS = [*DAILY_VARS, SOIL_DAILY]
+# Prévision et archive demandent les mêmes variables journalières, sol 0–7 cm compris (humidité
+# et, depuis le 9 nov. 2026, température)
+SERIES_VARS = [*DAILY_VARS, SOIL_DAILY, SOIL_TEMP_DAILY]
 
 
 class WeatherUnavailableError(Exception):
@@ -95,7 +100,9 @@ class FetchResult:
 
 @dataclass
 class CellRaw:
-    forecast: dict[str, Any]  # dates, t_mean, t_min, t_max, rain, snow, et0, soil (None possible)
+    forecast: dict[
+        str, Any
+    ]  # dates, t_mean, t_min, t_max, rain, snow, et0, soil, soil_t (None possible)
     history: dict[str, dict[str, float]]  # jour → variables, jours passés accumulés + amorcés
     soil_clim: dict[str, Any]  # {"months": {"1": [11 quantiles], …}, "year": [11 quantiles] | None}
     stale: bool
@@ -327,6 +334,8 @@ def _normalize_series(body: dict[str, Any]) -> dict[str, Any]:
         "snow": d["snowfall_sum"],
         "et0": d["et0_fao_evapotranspiration"],
         "soil": soil,
+        # absente d'une réponse rejouée d'avant le 9 nov. 2026 : `None`, variable optionnelle
+        "soil_t": d.get(SOIL_TEMP_DAILY, [None] * len(d["time"])),
     }
 
 

@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 from uuid import UUID
 
-from champis_pipeline.species import list_species, load_species
+from champis_pipeline.species import list_complete_species, load_species
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
@@ -31,7 +31,11 @@ StoreDep = Annotated[Store, Depends(_store)]
 
 
 def _groups() -> set[str]:
-    return {load_species(s)["group"]["id"] for s in list_species() if load_species(s).get("group")}
+    return {
+        load_species(s)["group"]["id"]
+        for s in list_complete_species()
+        if load_species(s).get("group")
+    }
 
 
 class CoinIn(BaseModel):
@@ -45,7 +49,7 @@ class CoinIn(BaseModel):
 
     @model_validator(mode="after")
     def _known(self) -> CoinIn:
-        known = set(list_species())
+        known = set(list_complete_species())  # ce que l'app peut afficher
         if self.target not in known and self.target not in _groups():
             raise ValueError(f"target inconnu (espèce ou groupe) : {self.target}")
         bad = [s for s in self.t if s not in known]

@@ -32,6 +32,8 @@ class Scenario:
     soil: Daily = field(
         default_factory=const(0.25)
     )  # m³/m³, le médian de la climatologie ci-dessous → percentile 0,5
+    soil_t: Daily = field(default_factory=const(11.0))  # °C, sol 0–7 cm (9 nov. 2026)
+    without_soil_t: bool = False  # réponse d'avant la variable : la clé n'est pas renvoyée
     elevation: float = 700.0
     # climatologie : 11 quantiles identiques tous les mois (donc sur l'année), 0,05 → 0,45 par pas de 0,04
     clim_quantiles: list[float] = field(
@@ -82,6 +84,11 @@ def _forecast_body(sc: Scenario, today: date, past: int, ahead: int) -> dict:
         None if sc.forecast_null_before and d < sc.forecast_null_before else sc.soil(d)
         for d in days
     ]
+    if not sc.without_soil_t:
+        body["daily"]["soil_temperature_0_to_7cm_mean"] = [
+            None if sc.forecast_null_before and d < sc.forecast_null_before else sc.soil_t(d)
+            for d in days
+        ]
     return body
 
 
@@ -89,6 +96,8 @@ def _archive_body(sc: Scenario, start: date, end: date) -> dict:
     days = _days(start, end)
     body = _daily_body(sc, days, None)
     body["daily"]["soil_moisture_0_to_7cm_mean"] = [sc.soil(d) for d in days]
+    if not sc.without_soil_t:
+        body["daily"]["soil_temperature_0_to_7cm_mean"] = [sc.soil_t(d) for d in days]
     return body
 
 
