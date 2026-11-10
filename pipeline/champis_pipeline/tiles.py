@@ -187,7 +187,8 @@ def _missing_message(kind: str, missing: list[Path], total: int) -> str:
     )
     return (
         f"T {folder.name} manquant sous le hash {h} pour {len(depts)}/{total} département(s) "
-        f"({_dept_list(depts)}){why} ; {remedy} (seuls les T manquants sont recalculés)"
+        f"({_dept_list(depts)}){why} ; {remedy} avec `--species {folder.name}` "
+        "(seuls les T manquants sont recalculés)"
     )
 
 
