@@ -161,6 +161,15 @@ def gather(
         ]
         g_current = any(t.get("hash") == current_group_hash.get(gid) for t in g_entries)
         worker_t = (inv or {}).get("t", {}).get(sid)
+        # les tuiles se construisent pour tout le groupe (le G empile un canal par espèce) : une
+        # espèce du groupe sans T sur chaque département fait échouer « Construire les tuiles »
+        # à sa première étape (constaté le 10 nov. 2026, Grisets)
+        inv_depts = (inv or {}).get("depts", 0)
+        group_missing_t = [
+            g
+            for g in group_ids
+            if ((inv or {}).get("t", {}).get(g) or {}).get("current", 0) < inv_depts
+        ]
         local_tiles = [
             n
             for n in (inv or {}).get("tiles", [])
@@ -225,7 +234,8 @@ def gather(
                 "worker": {
                     "t_current": worker_t["current"] if worker_t else 0,
                     "t_stale": worker_t["stale"] if worker_t else 0,
-                    "depts": (inv or {}).get("depts", 0),
+                    "depts": inv_depts,
+                    "group_missing_t": group_missing_t,
                     "tiles_current": len(local_current),
                     "tiles_stale": len(local_tiles) - len(local_current),
                     "batch_last": ((inv or {}).get("batch") or {}).get("last"),

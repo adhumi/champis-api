@@ -118,3 +118,17 @@ def test_built_sets_carry_the_render_version(full_mosaic, tmp_path):
     part = tmp_path / "T-x-00000000-p1.0.0-d111111.pmtiles"
     assert tiles.extract(mbt, part, bounds, "T x 25", "desc") > 0
     assert tiles.render_version(part) == tiles.RENDER_VERSION
+
+
+def test_missing_t_message_names_the_species_to_recompute(tmp_path):
+    """Grisets, 10 nov. 2026 : le terrain d'une seule espèce du groupe avait été calculé ; le
+    message nomme l'espèce dont le batch manque, pas seulement les départements."""
+    folder = tmp_path / "tricholoma_portentosum"
+    folder.mkdir()
+    (folder / "02-00000000.tif").write_bytes(b"")  # T sous un ancien hash
+    missing = [folder / f"{d}-4ed83fe9.tif" for d in ("01", "02")]
+    msg = tiles._missing_message("T", missing, 96)
+    assert "manquant sous le hash 4ed83fe9 pour 2/96 département(s) (01 02)" in msg
+    assert "1 ont un T sous un autre hash" in msg
+    assert "`--species tricholoma_portentosum`" in msg
+    assert "\n" not in msg

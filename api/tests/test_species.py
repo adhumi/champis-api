@@ -139,6 +139,7 @@ def test_gather_states_sources_and_jobs(tmp_path: Path):
         "t_current": 96,
         "t_stale": 3,
         "depts": 96,
+        "group_missing_t": [s for s in species_groups()["cepes"] if s != CEPE],
         "tiles_current": 1,
         "tiles_stale": 1,
         "batch_last": "2026-11-07T20:00:00+00:00",
@@ -158,6 +159,8 @@ def test_gather_states_sources_and_jobs(tmp_path: Path):
         and girolle["published"]["group_current"] is False
     )
     assert girolle["worker"]["t_current"] == 10 and girolle["worker"]["tiles_current"] == 0
+    # 10/96 : la girolle manque à son propre groupe, « Construire les tuiles » attend son terrain
+    assert GIROLLE in girolle["worker"]["group_missing_t"]
 
     # sans tâche, la girolle est périmée ; une espèce sans T publié n'a jamais été publiée
     store.close()
