@@ -465,7 +465,7 @@ function renderSheet(d) {
   /* Contrôle GBIF (12 nov. 2026) : l'AUC de T aux occurrences sur un département, et en option la
      variante lisière du test d'entrée (quatre bornes en mètres et un poids) ; le fichier espèce
      n'est jamais écrit, le bloc entre par PR si le critère est atteint. */
-  const checkDept = el("input", { class: "short", value: "25", size: 3, title: "département" });
+  const checkDept = el("input", { class: "short", value: "25", size: 9, title: "départements : codes séparés par des espaces, ou all = ceux dont le T est sur le volume (contrôle groupé)" });
   const checkEdge = el("input", { class: "short", placeholder: "min,opt_low,opt_high,max", size: 18, title: "variante lisière : bornes en mètres, vide = sans variante" });
   const checkWeight = el("input", { class: "short", placeholder: "poids", size: 5, title: "poids edge de la variante (0,01 à 0,5)" });
   const checkDetail = el("span", {}, sp.checks.length
@@ -473,7 +473,7 @@ function renderSheet(d) {
     : ["aucun rapport dans le bucket"]);
   const checkBlock = block(sp.checks.some((r) => r.entry && r.entry.met) ? "ok" : "", "Contrôle GBIF", checkDetail, "Contrôler", () => {
     const bounds = checkEdge.value.trim().split(/[\s,]+/).filter(Boolean);
-    const args = { dept: checkDept.value.trim(), species: sp.id, force: false, to_bucket: true };
+    const args = { depts: checkDept.value.trim(), species: sp.id, force: false, to_bucket: true };
     if (bounds.length || checkWeight.value.trim()) {
       if (bounds.length !== 4 || !checkWeight.value.trim()) throw new Error("variante lisière : quatre bornes et un poids, ou rien");
       [args.edge_min, args.edge_opt_low, args.edge_opt_high, args.edge_max] = bounds;
@@ -481,7 +481,7 @@ function renderSheet(d) {
     }
     return launch("check", args);
   }, !w);
-  checkBlock.append(el("span", { class: "meta" }, ["département ", checkDept, " · variante lisière ", checkEdge, " poids ", checkWeight]));
+  checkBlock.append(el("span", { class: "meta" }, ["départements ", checkDept, " · variante lisière ", checkEdge, " poids ", checkWeight]));
   blocks.push(checkBlock);
   const mapDetail = sp.maps.length
     ? el("span", {}, sp.maps.flatMap((m, i) => [i ? " · " : "", mapLink(sp.id, m)]))

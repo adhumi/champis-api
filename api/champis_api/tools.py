@@ -220,7 +220,7 @@ TOOLS: dict[str, Tool] = {
         "minutes par espèce (occurrences GBIF puis, avec la variante, un T de plus)",
         "le T de l'espèce sur le volume (batch du département) ; réseau vers api.gbif.org ; bucket pour les rapports",
         (
-            Field("dept", "choice", "département", "25", choices=tuple(parse_depts([ALL]))),
+            Field("depts", "depts", "départements (codes, ou all = ceux dont le T est là)", "25"),
             Field("species", "species", "espèces (ids ; vide = toutes, long)", ""),
             Field(
                 "edge_min", "number", "variante lisière : min (m)", None, minimum=0, maximum=1000

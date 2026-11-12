@@ -56,6 +56,19 @@ class Rejected:
     imprecise_by_m: dict[str, int] = field(default_factory=dict)  # "100-250", …, ">5000"
 
 
+def merge_rejected(a: Rejected, b: Rejected) -> Rejected:
+    """Les compteurs d'écartés de plusieurs emprises réunis (contrôle groupé)."""
+    by_m = dict(a.imprecise_by_m)
+    for k, v in b.imprecise_by_m.items():
+        by_m[k] = by_m.get(k, 0) + v
+    return Rejected(
+        undated=a.undated + b.undated,
+        imprecise=a.imprecise + b.imprecise,
+        rounded=a.rounded + b.rounded,
+        imprecise_by_m=by_m,
+    )
+
+
 def _uncertainty_bucket(unc_m: float) -> str:
     lo = MAX_UNCERTAINTY_M
     for hi in UNCERTAINTY_BUCKETS_M:

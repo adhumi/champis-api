@@ -17,6 +17,8 @@ Sortie : `reports/<espèce>-<dept>.html` (lisible) et `.json` (chiffres), jamais
 
 **Depuis le backoffice** (12 nov. 2026, spec › Backoffice › Espèces) : outil `check` de la fiche de l'espèce, un département à la fois, sur le worker champis-jobs (son T du département vient d'un `batch` préalable) ; les rapports partent dans le bucket sous `reports/` (`--to-bucket`) et la fiche les liste avec leurs AUC.
 
+**Contrôle groupé** (`--depts 12 65 …`, ou `all` = les départements dont le T de l'espèce est sur le volume) : un département seul a rarement 30 occurrences précises (le jeu national est géoréférencé à la commune, seuls iNaturalist et quelques jeux naturalistes sont à moins de 100 m). Les occurrences des emprises sont réunies et dédoublonnées (coordonnées et date), chacune évaluée sur le T du premier département où elle tombe en forêt, le fond tiré dans chaque département au prorata de sa surface forestière ; rapport `reports/<espèce>-<codes>.html` avec le détail par département, sans carte. Un département nommé sans T est une erreur.
+
 **Variante d'un facteur optionnel** (test d'entrée, skill `species-file`) : `--edge min,opt_low,opt_high,max --edge-weight w` calcule un second T de l'espèce **en mémoire** avec le bloc `edge_m` candidat (les autres poids réduits au prorata, somme 1), déposé dans `data/T-variants/` (jamais `data/T/` ni les tuiles), l'évalue sur les **mêmes occurrences** et écrit `reports/<espèce>-<dept>-edge-…-w….html` avec la comparaison et le verdict : au moins 30 occurrences en forêt (sinon « non évalué »), gain d'AUC ≥ 0,01, T moyen aux occurrences qui ne baisse pas. Le fichier espèce n'est jamais écrit : si le critère est atteint, le bloc entre dans le référentiel par PR, avec le résultat en référence.
 
 ## Ce que fait `check`

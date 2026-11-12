@@ -1168,3 +1168,63 @@ def gbif_module():
     from champis_pipeline.check import gbif
 
     return gbif
+
+
+def test_gbif_check_pooled_over_several_departments(sandbox, tmp_path, monkeypatch, capsys):
+    """Contrôle groupé (12 nov. 2026) : `check --depts 99 98` réunit les occurrences des deux
+    emprises sans les compter deux fois, évalue chacune sur le T de son département, tire le fond
+    au prorata des forêts, écrit un seul rapport sans carte ; `all` prend les départements qui
+    ont un T."""
+    import httpx
+    from champis_pipeline import cli, config
+    from champis_pipeline.check import report
+
+    shp, grid = sandbox["shp"], sandbox["grid"]
+    for d in (DEPT, "98"):  # le second département : la même forêt synthétique, à part
+        rasterize.host_cover(d, shp, grid)
+        rasterize.ph(d, sandbox["ph"], grid)
+        rasterize.dem_products(d, [sandbox["dem"]], grid)
+        terrain.compute(d, "boletus_edulis")
+    monkeypatch.setattr(report, "REPORTS_DIR", tmp_path / "reports")
+    monkeypatch.setattr(gbif_module(), "GBIF_DIR", tmp_path / "gbif")
+    monkeypatch.setattr(config, "VARIANTS_DIR", tmp_path / "T-variants")
+
+    rng = np.random.default_rng(3)
+    hetraie = [
+        (930_000 + rng.uniform(300, 4_700), 6_680_000 + rng.uniform(300, 9_700)) for _ in range(30)
+    ]
+    records = _records(hetraie, 9)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _FakeGbifClient(records, **kw))
+
+    assert cli.main(["check", "--depts", DEPT, "98", "--species", "boletus_edulis"]) == 0
+    err = capsys.readouterr().err
+    assert "2 département(s)" in err
+    res = json.loads(
+        (tmp_path / "reports" / f"boletus_edulis-{DEPT}-98.json").read_text(encoding="utf-8")
+    )
+    assert res["dept"] == f"{DEPT}-98" and res["depts"] == [DEPT, "98"]
+    # les mêmes 30 points vus des deux emprises : comptés une fois, attribués au premier département
+    assert res["n_occurrences"] == 30 and res["n_in_forest"] == 30
+    assert res["per_dept"][DEPT]["n_in_forest"] == 30 and res["per_dept"]["98"]["n_in_forest"] == 0
+    # fond au prorata des forêts (égales ici) : moitié-moitié
+    assert res["per_dept"][DEPT]["n_background"] == res["per_dept"]["98"]["n_background"] == 1000
+    assert res["n_background"] == 2000 and res["surface_ha"]["forest_ha"] == pytest.approx(
+        20_000, rel=0.01
+    )
+    assert 0.6 < res["auc"] < 0.8 and res["t_file"] is None and set(res["t_files"]) == {DEPT, "98"}
+    page = (tmp_path / "reports" / f"boletus_edulis-{DEPT}-98.html").read_text(encoding="utf-8")
+    assert "2 départements réunis" in page and "Par département" in page and "base64" not in page
+    # un seul département par --depts : même rapport qu'avec --dept
+    assert cli.main(["check", "--depts", DEPT, "--species", "boletus_edulis"]) == 0
+    one = json.loads((tmp_path / "reports" / f"boletus_edulis-{DEPT}.json").read_text("utf-8"))
+    assert one["dept"] == DEPT and one["n_in_forest"] == 30 and one["t_file"]
+    # `all` = les départements qui ont un T de l'espèce (ici les deux)
+    assert cli.main(["check", "--depts", "all", "--species", "boletus_edulis"]) == 0
+    assert "2 département(s)" in capsys.readouterr().err
+    # ni --dept ni --depts, ou les deux : refusé
+    assert cli.main(["check", "--species", "boletus_edulis"]) == 1
+    assert "l'un des deux" in capsys.readouterr().err
+    # un département sans T : erreur nommée
+    assert cli.main(["check", "--depts", DEPT, "97", "--species", "boletus_edulis"]) == 1
+    assert "T manquant" in capsys.readouterr().err
+    assert report.depts_tag(["01", "02", "03", "04", "05", "06"]).startswith("6depts-")
