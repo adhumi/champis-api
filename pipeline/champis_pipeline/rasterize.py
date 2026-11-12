@@ -22,6 +22,7 @@ from .species import (
     host_index,
     host_vocabulary,
     load_mapping,
+    topo_host_index,
 )
 
 log = logging.getLogger(__name__)
@@ -33,7 +34,20 @@ def _fresh(out: Path, *inputs: Path) -> bool:
 
 # ------------------------------------------------------------------ grille complète d'un département
 
-GRID_RASTERS = ("host", "cover", "edge", "ph", "alt", "slope", "aspect")
+GRID_RASTERS = (
+    "host",
+    "cover",
+    "edge",
+    "ph",
+    "alt",
+    "slope",
+    "aspect",
+    # palier 3 (12 nov. 2026) : BD TOPO, hôtes hors forêt et distance à l'eau
+    "host_topo",
+    "cover_topo",
+    "water",
+)
+BDTOPO_SOURCE = "wfs-v3"  # le flux n'a pas d'édition : la table du mapping fait foi
 GRID_STAMP = "inputs.json"
 
 
@@ -47,6 +61,7 @@ def grid_inputs(dept: str) -> dict[str, str]:
 
     return {
         "bdforet": BDFORET_EDITIONS[dept],
+        "bdtopo": BDTOPO_SOURCE,
         "mapping": hashlib.sha256(MAPPING_FILE.read_bytes()).hexdigest()[:12],
     }
 
@@ -202,6 +217,105 @@ def edge(dept: str, host_p: Path, cover_p: Path, grid: Grid, force: bool = False
     return out
 
 
+# --------------------------------------------------------------------------- BD TOPO (palier 3)
+
+WATER_CAP_PX = 40  # 1 000 m à 25 m, comme la lisière
+
+
+def _read_topo(path: Path, columns: list[str]):
+    """Un GeoJSON BD TOPO (Lambert-93) du pipeline, vide toléré (aucun objet dans l'emprise)."""
+    gdf = gpd.read_file(path, columns=columns) if path.stat().st_size > 0 else gpd.GeoDataFrame()
+    if len(gdf) == 0:
+        return gpd.GeoDataFrame({c: [] for c in columns}, geometry=[], crs=CRS_CALC)
+    if gdf.crs is None:
+        gdf = gdf.set_crs(CRS_CALC)
+    elif gdf.crs.to_epsg() != 2154:
+        gdf = gdf.to_crs(CRS_CALC)
+    return gdf
+
+
+def topo(
+    dept: str, vegetation: Path, host_p: Path, grid: Grid, force: bool = False
+) -> tuple[Path, Path]:
+    """`grid/<dept>/host_topo.tif` et `cover_topo.tif` : les zones de végétation BD TOPO (natures
+    de `mapping › bdtopo_v3`) **là où BD Forêt ne dit rien** (host.tif à nodata), codées dans le
+    vocabulaire à part `topo_hosts` et dans COVER_CLASSES ; 255 ailleurs. Une espèce ne les lit
+    que si elle nomme des hôtes hors forêt (`terrain.hosts_topo`)."""
+    d = dept_dirs(dept)["grid"]
+    host_topo_p, cover_topo_p = d / "host_topo.tif", d / "cover_topo.tif"
+    if (
+        not force
+        and _fresh(host_topo_p, vegetation, host_p, MAPPING_FILE)
+        and _fresh(cover_topo_p, vegetation, host_p, MAPPING_FILE)
+    ):
+        return host_topo_p, cover_topo_p
+    mapping = load_mapping()["bdtopo_v3"]
+    gdf = _read_topo(vegetation, ["nature"])
+    gdf = gdf[gdf["nature"].isin([k for k in mapping if k != "description"])]
+    shape = (grid.height, grid.width)
+    log.info("rasterisation BD TOPO végétation %s (%d zones)", dept, len(gdf))
+    if len(gdf):
+        gdf = gdf.assign(
+            host_idx=[topo_host_index(mapping[n]["host"]) for n in gdf["nature"]],
+            cover_idx=[COVER_CLASSES.index(mapping[n]["cover"]) for n in gdf["nature"]],
+            _area=gdf.geometry.area,
+        ).sort_values("_area", ascending=False)  # les petits polygones gagnent
+        host_topo = rasterize(
+            zip(gdf.geometry, gdf["host_idx"], strict=True),
+            out_shape=shape,
+            transform=grid.transform(),
+            fill=NODATA_U8,
+            dtype="uint8",
+            all_touched=False,
+        )
+        cover_topo = rasterize(
+            zip(gdf.geometry, gdf["cover_idx"], strict=True),
+            out_shape=shape,
+            transform=grid.transform(),
+            fill=NODATA_U8,
+            dtype="uint8",
+            all_touched=False,
+        )
+    else:
+        host_topo = np.full(shape, NODATA_U8, dtype=np.uint8)
+        cover_topo = np.full(shape, NODATA_U8, dtype=np.uint8)
+    with rasterio.open(host_p) as h:
+        forest = h.read(1) != NODATA_U8
+    host_topo[forest] = NODATA_U8  # BD Forêt fait foi partout où elle a un polygone
+    cover_topo[forest] = NODATA_U8
+    _write(host_topo_p, host_topo, grid, "uint8", NODATA_U8)
+    _write(cover_topo_p, cover_topo, grid, "uint8", NODATA_U8)
+    return host_topo_p, cover_topo_p
+
+
+def water(dept: str, troncons: Path, surfaces: Path, grid: Grid, force: bool = False) -> Path:
+    """`grid/<dept>/water.tif` : distance au cours d'eau ou plan d'eau BD TOPO le plus proche, en
+    pixels de 25 m (tronçons non fictifs, tous pixels touchés ; surfaces en eau), même distance
+    octogonale que la lisière, plafonnée à `WATER_CAP_PX` ; 0 dans l'eau. Jamais de nodata."""
+    out = dept_dirs(dept)["grid"] / "water.tif"
+    if not force and _fresh(out, troncons, surfaces):
+        return out
+    shape = (grid.height, grid.width)
+    lines = _read_topo(troncons, ["nature"])
+    polys = _read_topo(surfaces, ["nature"])
+    log.info("distance à l'eau %s (%d tronçons, %d surfaces)", dept, len(lines), len(polys))
+    wet = np.zeros(shape, dtype=bool)
+    for gdf, touched in ((lines, True), (polys, False)):
+        if len(gdf):
+            wet |= rasterize(
+                ((g, 1) for g in gdf.geometry),
+                out_shape=shape,
+                transform=grid.transform(),
+                fill=0,
+                dtype="uint8",
+                all_touched=touched,
+            ).astype(bool)
+    # distance à l'eau = distance au bord du masque « pas d'eau » : l'érosion de la lisière, inversée
+    dist = edge_distance_px(~wet, cap=WATER_CAP_PX)
+    _write(out, dist, grid, "uint8", NODATA_U8)
+    return out
+
+
 # --------------------------------------------------------------------------- SoilGrids
 
 
@@ -297,6 +411,11 @@ def dem_products(
     _write(outs["slope"], slope_u8, grid, "uint8", NODATA_U8)
     _write(outs["aspect"], aspect_u8, grid, "uint8", NODATA_U8)
     return outs
+
+
+def grid_bounds(grid: Grid) -> tuple[float, float, float, float]:
+    """L'emprise de la grille en Lambert-93 (xmin, ymin, xmax, ymax) : le filtre des flux BD TOPO."""
+    return (grid.xmin, grid.ymin, grid.xmax, grid.ymax)
 
 
 def grid_bbox_4326(grid: Grid) -> tuple[float, float, float, float]:

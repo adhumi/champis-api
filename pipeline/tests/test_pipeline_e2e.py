@@ -1228,3 +1228,239 @@ def test_gbif_check_pooled_over_several_departments(sandbox, tmp_path, monkeypat
     assert cli.main(["check", "--depts", DEPT, "97", "--species", "boletus_edulis"]) == 1
     assert "T manquant" in capsys.readouterr().err
     assert report.depts_tag(["01", "02", "03", "04", "05", "06"]).startswith("6depts-")
+
+
+def _topo_files(tmp_path: Path) -> dict[str, Path]:
+    """BD TOPO synthétique (Lambert-93) autour du monde jouet : une peupleraie et une haie hors
+    BD Forêt (à l'ouest du carré), un verger dans la hêtraie (BD Forêt fait foi), une rivière
+    nord-sud et un étang hors forêt."""
+    x0, y0 = 930_000.0, 6_680_000.0
+    out = tmp_path / "bdtopo"
+    out.mkdir(exist_ok=True)
+    veg = gpd.GeoDataFrame(
+        {"nature": ["Peupleraie", "Haie", "Verger", "Forêt fermée de feuillus"]},
+        geometry=[
+            box(x0 - 2000, y0 + 1000, x0 - 1000, y0 + 2000),  # peupleraie hors BD Forêt
+            box(x0 - 1500, y0 + 4000, x0 - 1475, y0 + 6000),  # haie, 25 m de large
+            box(x0 + 500, y0 + 500, x0 + 1000, y0 + 1000),  # verger… dans la hêtraie BD Forêt
+            box(x0 - 3000, y0 + 7000, x0 - 2500, y0 + 7500),  # forêt fermée : pas lue
+        ],
+        crs=CRS_CALC,
+    )
+    from shapely.geometry import LineString
+
+    lines = gpd.GeoDataFrame(
+        {"nature": ["Cours d'eau"]},
+        geometry=[LineString([(x0 - 500, y0 - 500), (x0 - 500, y0 + 10_500)])],  # rivière N-S
+        crs=CRS_CALC,
+    )
+    polys = gpd.GeoDataFrame(
+        {"nature": ["Plan d'eau"]},
+        geometry=[box(x0 - 2000, y0 + 8000, x0 - 1500, y0 + 8500)],
+        crs=CRS_CALC,
+    )
+    paths = {
+        "zone_de_vegetation": out / "vegetation.geojson",
+        "troncon_hydrographique": out / "troncons.geojson",
+        "surface_hydrographique": out / "surfaces.geojson",
+    }
+    veg.to_file(paths["zone_de_vegetation"], driver="GeoJSON")
+    lines.to_file(paths["troncon_hydrographique"], driver="GeoJSON")
+    polys.to_file(paths["surface_hydrographique"], driver="GeoJSON")
+    return paths
+
+
+def test_bdtopo_rasters_and_non_forest_hosts(sandbox, tmp_path):
+    """Palier 3 (spec › Scoring › Facteurs de sol et de paysage, 12 nov. 2026) : les rasters BD TOPO
+    (hôtes hors forêt là où BD Forêt ne dit rien, distance à l'eau) et leur effet sur T, pour une
+    espèce qui nomme des hôtes hors forêt seulement ; les 27 espèces ne bougent pas."""
+    from champis_pipeline.rasterize import WATER_CAP_PX
+    from champis_pipeline.scoring import terrain_potential
+    from champis_pipeline.species import COVER_CLASSES, topo_host_index
+
+    shp = sandbox["shp"]
+    # une grille plus large que BD Forêt, pour avoir des pixels hors forêt à l'ouest
+    grid = Grid.aligned(930_000.0 - 4000, 6_680_000.0, 940_000.0, 6_690_000.0, pad_m=0)
+    host_p, cover_p = rasterize.host_cover(DEPT, shp, grid)
+    rasterize.edge(DEPT, host_p, cover_p, grid)
+    rasterize.ph(DEPT, sandbox["ph"], grid)
+    rasterize.dem_products(DEPT, [sandbox["dem"]], grid)
+    topo = _topo_files(tmp_path)
+    host_topo_p, cover_topo_p = rasterize.topo(DEPT, topo["zone_de_vegetation"], host_p, grid)
+    water_p = rasterize.water(
+        DEPT, topo["troncon_hydrographique"], topo["surface_hydrographique"], grid
+    )
+    with rasterio.open(host_topo_p) as s:
+        host_topo = s.read(1)
+    with rasterio.open(cover_topo_p) as s:
+        cover_topo = s.read(1)
+    with rasterio.open(water_p) as s:
+        water = s.read(1)
+    with rasterio.open(host_p) as s:
+        host = s.read(1)
+    assert host_topo.shape == (400, 560)
+    # colonnes : x = 926 000 + 25·c ; lignes : y = 6 690 000 − 25·r
+    r_peup, c_peup = int((6_690_000 - 6_681_500) / 25), int((928_500 - 926_000) / 25)
+    assert host[r_peup, c_peup] == NODATA_U8  # hors BD Forêt
+    assert host_topo[r_peup, c_peup] == topo_host_index("peupleraie")
+    assert cover_topo[r_peup, c_peup] == COVER_CLASSES.index("plantation")
+    r_haie, c_haie = int((6_690_000 - 6_685_000) / 25), int((928_512 - 926_000) / 25)
+    assert host_topo[r_haie, c_haie] == topo_host_index("haie")
+    r_verg, c_verg = int((6_690_000 - 6_680_750) / 25), int((930_750 - 926_000) / 25)
+    assert host[r_verg, c_verg] != NODATA_U8 and host_topo[r_verg, c_verg] == NODATA_U8  # BD Forêt
+    r_ff, c_ff = int((6_690_000 - 6_687_250) / 25), int((927_250 - 926_000) / 25)
+    assert host_topo[r_ff, c_ff] == NODATA_U8  # forêt fermée BD TOPO : pas lue
+    # distance à l'eau : 0 sur la rivière (x = 929 500), 1 à côté, plafond loin, 0 dans l'étang
+    c_riv = int((929_500 - 926_000) / 25)
+    assert water[200, c_riv] == 0 and water[200, c_riv + 1] == 1 and water[200, c_riv + 10] == 10
+    assert water[200, 500] == WATER_CAP_PX
+    assert water[int((6_690_000 - 6_688_250) / 25), int((928_250 - 926_000) / 25)] == 0
+    assert (water != NODATA_U8).all()
+    # idempotent
+    assert rasterize.topo(DEPT, topo["zone_de_vegetation"], host_p, grid) == (
+        host_topo_p,
+        cover_topo_p,
+    )
+
+    # une espèce « morille » : peupleraies et haies nommées, distance à l'eau ; le cèpe, rien
+    edulis = load_species("boletus_edulis")
+    morel = json.loads(json.dumps(edulis))
+    morel["terrain"]["hosts_topo"] = {"peupleraie": 1.0, "haie": 0.6}
+    morel["terrain"]["water_m"] = {"min": 0, "opt_low": 0, "opt_high": 200, "max": 2000}
+    w = morel["terrain"]["weights"]
+    morel["terrain"]["weights"] = {**{k: round(v * 0.8, 3) for k, v in w.items()}, "water": 0.2}
+    morel["terrain"]["weights"]["slope"] = round(
+        1 - sum(v for k, v in morel["terrain"]["weights"].items() if k != "slope"), 3
+    )
+    g = sandbox["tmp"] / "grid" / DEPT
+    rasters = {}
+    for name in ("cover", "ph", "alt", "slope", "aspect", "edge"):
+        with rasterio.open(g / f"{name}.tif") as s:
+            rasters[name] = s.read(1)
+    t_morel = terrain_potential(
+        morel,
+        host,
+        rasters["cover"],
+        rasters["ph"],
+        rasters["alt"],
+        rasters["slope"],
+        rasters["aspect"],
+        None,
+        host_topo,
+        cover_topo,
+        water,
+    )
+    t_edulis = terrain_potential(
+        edulis,
+        host,
+        rasters["cover"],
+        rasters["ph"],
+        rasters["alt"],
+        rasters["slope"],
+        rasters["aspect"],
+    )
+    assert t_morel[r_peup, c_peup] > 0 and not np.isnan(t_morel[r_peup, c_peup])  # peupleraie
+    assert np.isnan(
+        t_morel[r_peup, 10]
+    )  # hors forêt (x = 926 250), sans zone BD TOPO : sans donnée
+    assert np.isnan(t_edulis[r_peup, c_peup])  # le cèpe ne nomme rien hors forêt
+    assert np.isnan(t_morel[r_ff, c_ff])  # forêt fermée BD TOPO non lue : sans donnée
+    assert not np.isnan(t_morel[r_verg, c_verg]) and not np.isnan(
+        t_edulis[r_verg, c_verg]
+    )  # hêtraie
+    # la distance à l'eau pèse : la même hêtraie (x ≥ 930 000, colonne 160) vaut plus à 625 m de
+    # la rivière (x = 929 500) qu'à 4 km
+    r = 200
+    near, far = t_morel[r, 165], t_morel[r, 300]
+    assert not np.isnan(near) and near > far
+    # l'espèce sans bloc : même raster qu'avant, octet pour octet (NaN hors forêt → nodata)
+    before = terrain.compute(DEPT, "boletus_edulis")
+    with rasterio.open(before) as s:
+        v = s.read(1)
+    assert (v[host == NODATA_U8] == NODATA_U8).all() and (v[host != NODATA_U8] != NODATA_U8).any()
+    assert terrain_factors_keys(edulis) == {
+        "host",
+        "cover",
+        "ph",
+        "altitude",
+        "slope",
+        "aspect",
+        "nodata",
+    }
+    # le bloc sans ses rasters : erreur nommée
+    with pytest.raises(ValueError, match="host_topo"):
+        terrain_potential(
+            morel,
+            host,
+            rasters["cover"],
+            rasters["ph"],
+            rasters["alt"],
+            rasters["slope"],
+            rasters["aspect"],
+        )
+
+
+def terrain_factors_keys(sp) -> set[str]:
+    from champis_pipeline.scoring import terrain_factors
+
+    z = np.full((2, 2), NODATA_U8, dtype=np.uint8)
+    z16 = np.full((2, 2), 65535, dtype=np.uint16)
+    return set(terrain_factors(sp, z, z, z, z16, z, z))
+
+
+def test_bdtopo_download_pages_the_wfs(tmp_path, monkeypatch):
+    """`download.bdtopo` : trois couches par le WFS de la Géoplateforme, filtre CQL sur l'emprise
+    (et sur la nature, et sur `fictif`), pages de 5 000, un GeoJSON par couche, idempotent."""
+    from champis_pipeline import config, download
+
+    monkeypatch.setattr(download, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(download, "WFS_PAGE", 2)
+    calls: list[dict] = []
+
+    class Http:
+        def get(self, url, params=None):
+            calls.append(params)
+            layer = params["TYPENAMES"].split(":")[1]
+            n = {"zone_de_vegetation": 3, "troncon_hydrographique": 2, "surface_hydrographique": 0}[
+                layer
+            ]
+            start = params["STARTINDEX"]
+            feats = [
+                {"type": "Feature", "properties": {"nature": "Bois"}, "geometry": None}
+                for _ in range(max(0, min(2, n - start)))
+            ]
+
+            body = {"type": "FeatureCollection", "totalFeatures": n, "features": feats}
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return body
+
+            return R()
+
+    paths = download.bdtopo("25", (900_000, 6_600_000, 1_000_000, 6_700_000), http=Http())
+    assert set(paths) == {"zone_de_vegetation", "troncon_hydrographique", "surface_hydrographique"}
+    veg = json.loads(paths["zone_de_vegetation"].read_text(encoding="utf-8"))
+    assert len(veg["features"]) == 3 and veg["crs"]["properties"]["name"] == "EPSG:2154"
+    assert (
+        len(json.loads(paths["surface_hydrographique"].read_text(encoding="utf-8"))["features"])
+        == 0
+    )
+    veg_calls = [c for c in calls if "zone_de_vegetation" in c["TYPENAMES"]]
+    assert [c["STARTINDEX"] for c in veg_calls] == [0, 2]  # deux pages pour trois objets
+    assert (
+        "BBOX(geometrie,900000,6600000,1000000,6700000,'EPSG:2154')" in veg_calls[0]["CQL_FILTER"]
+    )
+    assert (
+        "nature IN" in veg_calls[0]["CQL_FILTER"]
+        and veg_calls[0]["PROPERTYNAME"] == "nature,geometrie"
+    )
+    assert "fictif = false" in next(c for c in calls if "troncon" in c["TYPENAMES"])["CQL_FILTER"]
+    n_calls = len(calls)
+    assert (
+        download.bdtopo("25", (0, 0, 1, 1), http=Http()) == paths and len(calls) == n_calls
+    )  # cache
+    assert config.RAW_DIR  # le module reste importable
