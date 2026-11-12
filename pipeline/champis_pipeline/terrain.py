@@ -17,9 +17,19 @@ from .species import load_species, species_hash
 log = logging.getLogger(__name__)
 
 
-def compute(dept: str, species_id: str, force: bool = False) -> Path:
+def compute(
+    dept: str,
+    species_id: str,
+    force: bool = False,
+    spec: dict | None = None,
+    out: Path | None = None,
+) -> Path:
+    """T de l'espèce sur le département. `spec` et `out` ensemble : une variante du fichier espèce
+    (test d'entrée d'un facteur, `check --edge`) écrite ailleurs que dans `data/T/`."""
+    if (spec is None) != (out is None):
+        raise ValueError("spec et out vont ensemble (variante)")
     g = dept_dirs(dept)["grid"]
-    sp = load_species(species_id)
+    sp = load_species(species_id) if spec is None else spec
     names = ["host", "cover", "ph", "alt", "slope", "aspect"]
     if "edge_m" in sp["terrain"]:  # distance à la lisière, seulement si l'espèce l'emploie
         names.append("edge")
@@ -29,7 +39,7 @@ def compute(dept: str, species_id: str, force: bool = False) -> Path:
         raise FileNotFoundError(
             f"rasters grid manquants pour {dept} : {missing} (`champis-pipeline grid --dept {dept}`)"
         )
-    out = T_DIR / species_id / f"{dept}-{species_hash(species_id)}.tif"
+    out = out or T_DIR / species_id / f"{dept}-{species_hash(species_id)}.tif"
     if out.exists() and not force:
         return out
     out.parent.mkdir(parents=True, exist_ok=True)

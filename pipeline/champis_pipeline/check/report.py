@@ -3,6 +3,11 @@ T sur des pixels forestiers tirés au hasard (AUC), histogrammes, mois d'observa
 pH SoilGrids aux occurrences (pour recalibrer `terrain.ph`, skill species-file) et carte miniature.
 
 Critère de phase 1 : AUC > 0,7. Rien d'espèce ici : noms et palette lus depuis le dépôt.
+
+Variante (`check --edge`, 12 nov. 2026) : le même contrôle sur un T calculé avec un bloc candidat
+(`check/variant.py`), comparé au T de référence sur les mêmes occurrences ; `entry_verdict` dit
+si le critère d'entrée du facteur est atteint (au moins `ENTRY_MIN_IN_FOREST` occurrences en forêt,
+gain d'AUC ≥ `ENTRY_MIN_AUC_GAIN`, T moyen aux occurrences qui ne baisse pas).
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ from rasterio.warp import transform as rio_transform
 from ..config import REPORTS_DIR, T_DIR, dept_dirs
 from ..scoring import NODATA_U8
 from ..species import load_palette, load_species, species_hash
+from ..storage import BucketLike
 from ..terrain import summary
 from .gbif import Occurrence, Rejected
 
@@ -35,6 +41,9 @@ BACKGROUND_RATIO = 10  # points de fond par occurrence
 BACKGROUND_MIN = 2000
 PH_QUANTILES = (1, 10, 90, 99)
 MAP_PX = 600
+ENTRY_MIN_IN_FOREST = 30  # en dessous, « non évalué »
+ENTRY_MIN_AUC_GAIN = 0.01
+REPORTS_PREFIX = "reports/"  # dans le bucket, quand le contrôle tourne sur le worker
 
 
 def auc(positives: np.ndarray, background: np.ndarray) -> float:
@@ -90,15 +99,22 @@ def background_t(t_path: Path, n: int, rng: np.random.Generator) -> np.ndarray:
     return v[rows[idx], cols[idx]] / 254.0
 
 
+def default_t_path(dept: str, species_id: str) -> Path:
+    return T_DIR / species_id / f"{dept}-{species_hash(species_id)}.tif"
+
+
 def evaluate(
     dept: str,
     species_id: str,
     occ: list[Occurrence],
     seed: int = 0,
     rejected: Rejected | None = None,
+    t_path: Path | None = None,
+    variant: str | None = None,
 ) -> dict[str, Any]:
-    """Toutes les mesures du rapport, sérialisables (le `.json` à côté du `.html`)."""
-    t_path = T_DIR / species_id / f"{dept}-{species_hash(species_id)}.tif"
+    """Toutes les mesures du rapport, sérialisables (le `.json` à côté du `.html`). `t_path` et
+    `variant` : le T d'une variante du fichier espèce, nommée dans le rapport."""
+    t_path = t_path or default_t_path(dept, species_id)
     if not t_path.exists():
         raise FileNotFoundError(f"T manquant : {t_path} (lancer `terrain --dept {dept}`)")
     ph_path = dept_dirs(dept)["grid"] / "ph.tif"
@@ -116,6 +132,8 @@ def evaluate(
         "species": species_id,
         "dept": dept,
         "t_hash": species_hash(species_id),
+        "t_file": str(t_path),
+        "variant": variant,
         "n_occurrences": len(occ),
         "precision": dict(Counter(o.precision for o in occ)),
         "rejected": asdict(rejected) if rejected else None,
@@ -140,20 +158,72 @@ def evaluate(
     }
 
 
-def write_report(
-    result: dict[str, Any], occ: list[Occurrence], out_dir: Path = REPORTS_DIR
-) -> Path:
-    out_dir.mkdir(parents=True, exist_ok=True)
+def entry_verdict(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    """Le critère d'entrée d'un facteur optionnel, mesuré sur les mêmes occurrences : assez de
+    points en forêt, gain d'AUC, T moyen aux occurrences qui ne baisse pas. Rien n'est décidé ici :
+    le bloc entre dans le référentiel par PR, si Adrien le retient."""
+    n = min(baseline["n_in_forest"], variant["n_in_forest"])
+    gain = variant["auc"] - baseline["auc"]
+    mean_ok = (variant["t_mean_occurrences"] or 0.0) >= (baseline["t_mean_occurrences"] or 0.0)
+    evaluated = n >= ENTRY_MIN_IN_FOREST
+    met = bool(evaluated and gain >= ENTRY_MIN_AUC_GAIN and mean_ok)
+    return {
+        "min_in_forest": ENTRY_MIN_IN_FOREST,
+        "min_auc_gain": ENTRY_MIN_AUC_GAIN,
+        "n_in_forest": int(n),
+        "auc_gain": float(gain),
+        "t_mean_not_lower": bool(mean_ok),
+        "evaluated": bool(evaluated),
+        "met": met,
+        "text": (
+            f"non évalué : moins de {ENTRY_MIN_IN_FOREST} occurrences en forêt"
+            if not evaluated
+            else ("critère d'entrée atteint" if met else "critère d'entrée non atteint")
+        ),
+    }
+
+
+def compare(baseline: dict[str, Any], variant: dict[str, Any]) -> dict[str, Any]:
+    """Le rapport de la variante enrichi de la référence et du verdict (le `.json` se suffit)."""
+    out = dict(variant)
+    out["baseline"] = {
+        k: baseline[k] for k in ("t_hash", "t_file", "auc", "t_mean_occurrences", "n_in_forest")
+    }
+    out["entry"] = entry_verdict(baseline, variant)
+    return out
+
+
+def report_stem(result: dict[str, Any]) -> str:
     stem = f"{result['species']}-{result['dept']}"
+    return f"{stem}-{result['variant']}" if result.get("variant") else stem
+
+
+def write_report(
+    result: dict[str, Any], occ: list[Occurrence], out_dir: Path | None = None
+) -> Path:
+    out_dir = out_dir or REPORTS_DIR  # lu à l'appel : les tests le détournent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = report_stem(result)
     (out_dir / f"{stem}.json").write_text(
         json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8"
     )
-    t_path = T_DIR / result["species"] / f"{result['dept']}-{result['t_hash']}.tif"
+    t_path = Path(result.get("t_file") or default_t_path(result["dept"], result["species"]))
     page = _html(result, _minimap(t_path, occ))
     path = out_dir / f"{stem}.html"
     path.write_text(page, encoding="utf-8")
     log.info("écrit %s (AUC %.3f)", path, result["auc"])
     return path
+
+
+def publish_reports(bucket: BucketLike, html_path: Path) -> list[str]:
+    """Dépose le rapport (`.html` et son `.json`) dans le bucket sous `reports/` ; renvoie les
+    clés. Le backoffice les liste dans la fiche de l'espèce."""
+    keys = []
+    for path in (html_path, html_path.with_suffix(".json")):
+        key = REPORTS_PREFIX + path.name
+        bucket.upload(path, key)
+        keys.append(key)
+    return keys
 
 
 # ---------------------------------------------------------------------- rendu
@@ -227,6 +297,18 @@ def _html(r: dict[str, Any], map_b64: str) -> str:
     month_names = ["J", "F", "M", "A", "M", "J", "J", "A", "S", "O", "N", "D"]
     months = [r["months"][str(m)] for m in range(1, 13)]
     lic = ", ".join(f"{html.escape(k or '?')} : {v}" for k, v in r["licenses"].items())
+    variant = ""
+    if r.get("variant"):
+        base, entry = r.get("baseline") or {}, r.get("entry") or {}
+        variant = (
+            f"<p><b>Variante {html.escape(str(r['variant']), quote=False)}</b> contre le T de référence "
+            f"{base.get('t_hash', '?')} sur les mêmes occurrences : AUC {_fmt(base.get('auc'))} → "
+            f"{r['auc']:.3f} ({entry.get('auc_gain', 0.0):+.3f}), T moyen aux occurrences "
+            f"{_fmt(base.get('t_mean_occurrences'))} → {_fmt(r['t_mean_occurrences'])}. "
+            f"<b>{html.escape(entry.get('text', ''), quote=False)}</b> (au moins {entry.get('min_in_forest')} "
+            f"occurrences en forêt, gain d'AUC ≥ {entry.get('min_auc_gain')}, T moyen qui ne baisse "
+            f"pas). Le fichier espèce n'est pas modifié : le bloc entre par PR.</p>"
+        )
     return f"""<!doctype html><html lang="fr"><head><meta charset="utf-8">
 <title>Contrôle {name} — {r["dept"]}</title>
 <style>body{{font:14px/1.4 system-ui,sans-serif;margin:24px;max-width:960px;color:#1a1a1a}}
@@ -235,7 +317,7 @@ td,th{{padding:3px 10px;border-bottom:1px solid #ddd;text-align:left}} .v{{font-
 .row{{display:flex;gap:32px;flex-wrap:wrap}} .cap{{color:#666;font-size:12px}}</style></head><body>
 <h1>Contrôle GBIF — {name}, département {r["dept"]}</h1>
 <p class="v">AUC = {r["auc"]:.3f} — {verdict}</p>
-<p>{r["n_occurrences"]} occurrences GBIF retenues ({_precision(r)}), dont {r["n_in_forest"]} en forêt BD Forêt ;
+{variant}<p>{r["n_occurrences"]} occurrences GBIF retenues ({_precision(r)}), dont {r["n_in_forest"]} en forêt BD Forêt ;
 fond : {r["n_background"]} pixels forestiers tirés au hasard. T moyen : {_fmt(r["t_mean_occurrences"])} aux occurrences
 contre {_fmt(r["t_mean_background"])} sur le fond. T = {r["t_hash"]}.</p>
 <div class="row"><div><h2>T aux occurrences</h2>{_bars(r["hist_occurrences"], "#1B6B3A")}<div class="cap">0 → 1 par dixième</div></div>

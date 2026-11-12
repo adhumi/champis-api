@@ -1025,3 +1025,146 @@ def test_load_env_does_not_override(tmp_path, monkeypatch):
     assert os.environ["AWS_S3_BUCKET_NAME"] == "depuis-environnement"
     assert os.environ["CHAMPIS_TEST_ONLY"] == "1"
     monkeypatch.delenv("CHAMPIS_TEST_ONLY")
+
+
+class _FakeGbifClient(_FakeGbif):
+    """Le même client, utilisable en `with httpx.Client(...) as http` par `cmd_check`."""
+
+    def __init__(self, records, **kwargs):
+        super().__init__(records)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_gbif_check_with_edge_variant(sandbox, tmp_path, monkeypatch, capsys):
+    """Test d'entrée d'un facteur (spec › Backoffice › Espèces, 12 nov. 2026) : `check --edge`
+    calcule un T variant hors de data/T, l'évalue sur les mêmes occurrences que la référence,
+    écrit la comparaison et le verdict, dépose les rapports dans le bucket ; le fichier espèce
+    n'est pas modifié."""
+    import httpx
+    from champis_pipeline import cli, config
+    from champis_pipeline.check import report, variant
+
+    shp, grid = sandbox["shp"], sandbox["grid"]
+    host_p, cover_p = rasterize.host_cover(DEPT, shp, grid)
+    rasterize.edge(DEPT, host_p, cover_p, grid)
+    rasterize.ph(DEPT, sandbox["ph"], grid)
+    rasterize.dem_products(DEPT, [sandbox["dem"]], grid)
+    terrain.compute(DEPT, "boletus_edulis")
+    monkeypatch.setattr(config, "VARIANTS_DIR", tmp_path / "T-variants")
+    monkeypatch.setattr(variant, "VARIANTS_DIR", tmp_path / "T-variants")
+    monkeypatch.setattr(report, "REPORTS_DIR", tmp_path / "reports")
+
+    # la variante : bloc edge_m et poids edge, les autres poids au prorata, l'original intact
+    spec = load_species("boletus_edulis")
+    trap = variant.parse_edge("0,0,100,400")
+    assert trap == {"min": 0.0, "opt_low": 0.0, "opt_high": 100.0, "max": 400.0}
+    v = variant.edge_variant(spec, trap, 0.1)
+    assert v["terrain"]["edge_m"] == trap and v["terrain"]["weights"]["edge"] == 0.1
+    assert sum(v["terrain"]["weights"].values()) == pytest.approx(1.0)
+    assert "edge_m" not in load_species("boletus_edulis")["terrain"]
+    assert variant.edge_tag(trap, 0.1) == "edge-0-0-100-400-w0.1"
+    for bad in ("0,0,100", "a,b,c,d", "10,0,100,400", "0,0,100,0"):
+        with pytest.raises(ValueError):
+            variant.parse_edge(bad)
+    with pytest.raises(ValueError):
+        variant.check_weight(0.9)
+    with pytest.raises(ValueError, match="vont ensemble"):
+        terrain.compute(DEPT, "boletus_edulis", spec=v)
+
+    # occurrences dans les 100 m autour de la coupe rase (932 000–932 500, 6 682 000–6 682 500) :
+    # la seule lisière du monde jouet (le bord du raster compte comme de la forêt), donc la
+    # variante doit gagner contre un fond presque entièrement au plafond de distance
+    rng = np.random.default_rng(2)
+    near_edge = []
+    for i in range(40):
+        along, out = rng.uniform(1_950, 2_550), rng.uniform(30, 90)
+        side = i % 4
+        if side == 0:
+            near_edge.append((930_000 + along, 6_680_000 + 2_500 + out))  # au nord
+        elif side == 1:
+            near_edge.append((930_000 + along, 6_680_000 + 2_000 - out))  # au sud
+        elif side == 2:
+            near_edge.append((930_000 + 2_500 + out, 6_680_000 + along))  # à l'est
+        else:
+            near_edge.append((930_000 + 2_000 - out, 6_680_000 + along))  # à l'ouest
+    records = _records(near_edge, 9)
+    monkeypatch.setattr(httpx, "Client", lambda **kw: _FakeGbifClient(records, **kw))
+    monkeypatch.setattr(gbif_module(), "GBIF_DIR", tmp_path / "gbif")
+
+    class Bucket:
+        def __init__(self):
+            self.uploaded: dict[str, int] = {}
+
+        def upload(self, path, key, progress=None):
+            self.uploaded[key] = Path(path).stat().st_size
+
+    bucket = Bucket()
+    monkeypatch.setattr(
+        "champis_pipeline.storage.S3Config.from_env", classmethod(lambda c: object())
+    )
+    monkeypatch.setattr("champis_pipeline.storage.Bucket", lambda cfg: bucket)
+
+    assert (
+        cli.main(
+            [
+                "check",
+                "--dept",
+                DEPT,
+                "--species",
+                "boletus_edulis",
+                "--edge",
+                "0,0,100,400",
+                "--edge-weight",
+                "0.1",
+                "--to-bucket",
+            ]
+        )
+        == 0
+    )
+    err = capsys.readouterr().err
+    assert "[4/4] dépôt des rapports" in err and "critère d'entrée" in err
+    reports = tmp_path / "reports"
+    base = json.loads((reports / f"boletus_edulis-{DEPT}.json").read_text(encoding="utf-8"))
+    var = json.loads(
+        (reports / f"boletus_edulis-{DEPT}-edge-0-0-100-400-w0.1.json").read_text(encoding="utf-8")
+    )
+    assert base["variant"] is None and var["variant"] == "edge-0-0-100-400-w0.1"
+    assert (
+        Path(var["t_file"]).is_relative_to(tmp_path / "T-variants") and Path(var["t_file"]).exists()
+    )
+    assert not list((config.T_DIR / "boletus_edulis").glob("*edge*"))  # rien dans data/T
+    assert var["baseline"]["auc"] == base["auc"] and var["n_in_forest"] == base["n_in_forest"]
+    assert var["auc"] > base["auc"] and var["entry"]["auc_gain"] == pytest.approx(
+        var["auc"] - base["auc"]
+    )
+    assert var["entry"]["evaluated"] and var["entry"]["met"] and "atteint" in var["entry"]["text"]
+    page = (reports / f"boletus_edulis-{DEPT}-edge-0-0-100-400-w0.1.html").read_text(
+        encoding="utf-8"
+    )
+    assert "Variante edge-0-0-100-400-w0.1" in page and "critère d'entrée atteint" in page
+    assert set(bucket.uploaded) == {
+        f"reports/boletus_edulis-{DEPT}.html",
+        f"reports/boletus_edulis-{DEPT}.json",
+        f"reports/boletus_edulis-{DEPT}-edge-0-0-100-400-w0.1.html",
+        f"reports/boletus_edulis-{DEPT}-edge-0-0-100-400-w0.1.json",
+    }
+    # trop peu de points : « non évalué », jamais « atteint »
+    few = report.entry_verdict({**base, "n_in_forest": 10}, {**var, "n_in_forest": 10})
+    assert not few["evaluated"] and not few["met"] and few["text"].startswith("non évalué")
+    # --edge sans poids : refusé avant tout calcul (ECHEC sur stderr, code 1)
+    assert (
+        cli.main(["check", "--dept", DEPT, "--species", "boletus_edulis", "--edge", "0,0,100,400"])
+        == 1
+    )
+    assert "vont ensemble" in capsys.readouterr().err
+
+
+def gbif_module():
+    from champis_pipeline.check import gbif
+
+    return gbif
