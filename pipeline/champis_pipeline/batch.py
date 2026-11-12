@@ -3,8 +3,10 @@
 Un processus par département (mémoire ~2 Go chacun, skill geo-pipeline), les erreurs n'arrêtent
 pas les autres, et `data/batch_status.json` garde l'état pour reprendre : un département « ok »
 dont les T de chaque espèce existent sous le hash courant n'est pas refait sans `--force`. Un
-fichier espèce modifié change ce hash : ses T manquent, le département est repris, et comme
-download et grid sont déjà sur disque seul le terrain est recalculé. Les étapes elles-mêmes restent idempotentes (fichiers présents =
+fichier espèce modifié change ce hash : ses T manquent, le département est repris, et si sa
+grille est complète sous les entrées courantes (`rasterize.grid_ready` : édition BD Forêt et
+empreinte de la table TFV notées dans `grid/<dept>/inputs.json`), seul le terrain est recalculé,
+sans retélécharger BD Forêt même après `--clean-raw`. Les étapes elles-mêmes restent idempotentes (fichiers présents =
 rien à faire), donc relancer après une coupure ne coûte que ce qui manque.
 """
 
@@ -82,6 +84,15 @@ def run_dept(dept: str, species: list[str] | None, force: bool) -> DeptResult:
 
     t0 = time.monotonic()
     try:
+        if not force and rasterize.grid_ready(dept):
+            # Grille complète et à jour : seul le terrain des espèces manque (nouvelle espèce,
+            # fichier modifié). Sans ce raccourci, `--clean-raw` faisait retélécharger BD Forêt
+            # et rasteriser host, cover et edge à chaque espèce.
+            todo = missing_t(dept, species)
+            for sid in todo:
+                terrain.compute(dept, sid, force)
+            msg = f"grille déjà sur disque, terrain seul : {len(todo)} espèce(s)"
+            return DeptResult(dept, True, msg, time.monotonic() - t0, datetime.now(UTC).isoformat())
         shp = download.bdforet(dept)
         grid = rasterize.dept_grid(shp)
         bbox = rasterize.grid_bbox_4326(grid)
@@ -89,6 +100,7 @@ def run_dept(dept: str, species: list[str] | None, force: bool) -> DeptResult:
         rasterize.edge(dept, host_p, cover_p, grid, force)
         rasterize.ph(dept, download.soilgrids_ph(bbox), grid, force)
         rasterize.dem_products(dept, download.copernicus_dem_tiles(bbox), grid, force)
+        rasterize.write_grid_stamp(dept)
         for sid in species or list_species():
             terrain.compute(dept, sid, force)
         msg = f"grille {grid.width}×{grid.height} px"

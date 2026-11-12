@@ -8,13 +8,14 @@ import json
 from pathlib import Path
 
 import pytest
-from champis_pipeline import batch, cli, download, rasterize, terrain, tiles, weather_grid
+from champis_pipeline import batch, cli, config, download, rasterize, terrain, tiles, weather_grid
 
 
 @pytest.fixture
 def calls(monkeypatch, tmp_path: Path) -> list[tuple]:
     """Doublures de toutes les étapes ; chaque appel est noté (nom, arguments utiles)."""
     seen: list[tuple] = []
+    monkeypatch.setattr(config, "GRID_DIR", tmp_path / "grid")  # empreinte de grille hors de data/
 
     class Grid:
         width, height = 3812, 4620
@@ -290,6 +291,56 @@ def test_run_dept_captures_failures_as_messages(monkeypatch, calls):
     r = batch.run_dept("39", None, force=True)
     assert not r.ok and r.message.startswith("ConnectionError: Géoplateforme injoignable")
     assert "Traceback" in r.message and r.finished.endswith("+00:00")
+
+
+def _ready_grid(dept: str) -> None:
+    """Les sept rasters (vides : seule leur présence compte) et l'empreinte des entrées."""
+    d = config.dept_dirs(dept)["grid"]
+    d.mkdir(parents=True, exist_ok=True)
+    for k in rasterize.GRID_RASTERS:
+        (d / f"{k}.tif").write_text("")
+    rasterize.write_grid_stamp(dept)
+
+
+def test_run_dept_with_a_ready_grid_only_computes_missing_terrain(monkeypatch, calls, tmp_path):
+    """Grille complète sous les entrées courantes : ni BD Forêt ni rasterisation, seulement le T des
+    espèces qui manquent. C'est le cas du bouton « Recalculer le terrain » d'une espèce après
+    `--clean-raw`, qui efface l'archive BD Forêt des départements déjà faits."""
+    from champis_pipeline.species import list_species, species_hash
+
+    monkeypatch.setattr(config, "T_DIR", tmp_path / "T-current")
+    done, new = list_species()[:2]
+    t = config.T_DIR / done / f"25-{species_hash(done)}.tif"
+    t.parent.mkdir(parents=True)
+    t.write_text("t")
+    _ready_grid("25")
+
+    r = batch.run_dept("25", [done, new], force=False)
+    assert r.ok and r.message == "grille déjà sur disque, terrain seul : 1 espèce(s)"
+    assert calls == [("terrain", "25", new, False)]
+
+
+def test_run_dept_redoes_the_grid_when_its_inputs_changed(monkeypatch, calls):
+    """Nouvelle édition BD Forêt (ou table TFV modifiée), `--force`, ou empreinte absente (grille
+    d'avant l'empreinte) : chaîne complète, puis empreinte réécrite."""
+    _ready_grid("25")
+    monkeypatch.setitem(config.BDFORET_EDITIONS, "25", "2099-01-01")
+    assert not rasterize.grid_ready("25")
+    r = batch.run_dept("25", ["a"], force=False)
+    assert r.ok and ("bdforet", "25") in calls and ("host_cover", "25", False) in calls
+    assert rasterize.grid_inputs("25")["bdforet"] == "2099-01-01"
+    stamp = config.dept_dirs("25")["grid"] / rasterize.GRID_STAMP
+    assert json.loads(stamp.read_text())["bdforet"] == "2099-01-01"
+
+    calls.clear()
+    assert rasterize.grid_ready("25")
+    batch.run_dept("25", ["a"], force=True)
+    assert ("bdforet", "25") in calls  # --force ne prend jamais le raccourci
+
+    calls.clear()
+    stamp.unlink()
+    batch.run_dept("25", ["a"], force=False)
+    assert ("bdforet", "25") in calls
 
 
 def test_parse_depts_all_and_padding():

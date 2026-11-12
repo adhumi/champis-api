@@ -53,6 +53,7 @@ def _grid(step: console.Step, dept: str, force: bool) -> None:
     rasterize.edge(dept, host_p, cover_p, grid, force)
     rasterize.ph(dept, download.soilgrids_ph(bbox), grid, force)
     rasterize.dem_products(dept, download.copernicus_dem_tiles(bbox), grid, force)
+    rasterize.write_grid_stamp(dept)
     step.note(f"host, cover, edge, ph, alt, slope, aspect · {grid.width}x{grid.height} px")
 
 
