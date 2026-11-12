@@ -29,6 +29,9 @@ def load_env() -> bool:
 RAW_DIR = DATA_DIR / "raw"
 GRID_DIR = DATA_DIR / "grid"
 T_DIR = DATA_DIR / "T"
+VARIANTS_DIR = (
+    DATA_DIR / "T-variants"
+)  # T d'un test d'entrée (check --edge), jamais dans les tuiles
 TILES_DIR = DATA_DIR / "tiles"
 REPORTS_DIR = ROOT / "reports"
 

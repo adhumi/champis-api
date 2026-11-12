@@ -80,10 +80,12 @@ def occurrences(
     name_la: str,
     bbox_4326: tuple[float, float, float, float],
     http: httpx.Client,
-    cache_dir: Path = GBIF_DIR,
+    cache_dir: Path | None = None,
     force: bool = False,
 ) -> tuple[list[Occurrence], Rejected]:
-    """Occurrences retenues dans l'emprise (w, s, e, n) et compteurs d'écartés ; cache si présent."""
+    """Occurrences retenues dans l'emprise (w, s, e, n) et compteurs d'écartés ; cache si présent
+    (`GBIF_DIR` par défaut, lu à l'appel)."""
+    cache_dir = cache_dir or GBIF_DIR
     w, s, e, n = bbox_4326
     cache = cache_dir / f"{species_id}_{w:.2f}_{s:.2f}_{e:.2f}_{n:.2f}.json"
     if cache.exists() and not force:

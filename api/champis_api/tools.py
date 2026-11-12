@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from champis_pipeline.batch import parse_depts
+from champis_pipeline.check.variant import WEIGHT_MAX, WEIGHT_MIN, parse_edge
 from champis_pipeline.species import list_species
 
 from . import jobs
@@ -56,6 +57,9 @@ class Tool:
 
 def _render_species() -> tuple[str, ...]:
     return (ALL, *list_species())
+
+
+EDGE_FIELDS = ("edge_min", "edge_opt_low", "edge_opt_high", "edge_max")
 
 
 TOOLS: dict[str, Tool] = {
@@ -208,6 +212,34 @@ TOOLS: dict[str, Tool] = {
         ),
         exclusive=True,
     ),
+    # 12 nov. 2026 (spec › Backoffice › Espèces) : le contrôle GBIF sur le worker, un département,
+    # avec en option la variante lisière du test d'entrée du facteur `edge_m`
+    "check": Tool(
+        "check",
+        PIPELINE,
+        "minutes par espèce (occurrences GBIF puis, avec la variante, un T de plus)",
+        "le T de l'espèce sur le volume (batch du département) ; réseau vers api.gbif.org ; bucket pour les rapports",
+        (
+            Field("dept", "choice", "département", "25", choices=tuple(parse_depts([ALL]))),
+            Field("species", "species", "espèces (ids ; vide = toutes, long)", ""),
+            Field(
+                "edge_min", "number", "variante lisière : min (m)", None, minimum=0, maximum=1000
+            ),
+            Field("edge_opt_low", "number", "opt_low (m)", None, minimum=0, maximum=1000),
+            Field("edge_opt_high", "number", "opt_high (m)", None, minimum=0, maximum=1000),
+            Field("edge_max", "number", "max (m)", None, minimum=0, maximum=1000),
+            Field(
+                "edge_weight",
+                "number",
+                "poids edge de la variante",
+                None,
+                minimum=WEIGHT_MIN,
+                maximum=WEIGHT_MAX,
+            ),
+            Field("force", "bool", "retélécharger les occurrences GBIF", False),
+            Field("to_bucket", "bool", "déposer les rapports dans le bucket (reports/)", True),
+        ),
+    ),
 }
 
 
@@ -286,6 +318,11 @@ def validate(kind: str, args: dict[str, Any] | None) -> dict[str, str]:
                 raise ToolError(f"{f.name} : espèce inconnue {', '.join(unknown)}")
             out[f.name] = " ".join(dict.fromkeys(ids))
         elif f.kind == "number":
+            if value is None or (isinstance(value, str) and not value.strip()):
+                if f.default is None:  # nombre optionnel : vide = non fourni
+                    out[f.name] = ""
+                    continue
+                raise ToolError(f"{f.name} : nombre attendu")
             try:
                 number = float(value)
             except (TypeError, ValueError) as e:
@@ -300,7 +337,23 @@ def validate(kind: str, args: dict[str, Any] | None) -> dict[str, str]:
             if value not in _choices(tool, f):
                 raise ToolError(f"{f.name} : valeur inconnue {value!r}")
             out[f.name] = value
+    if kind == "check":
+        _check_variant(out)
     return out
+
+
+def _check_variant(out: dict[str, str]) -> None:
+    """La variante lisière vient entière ou pas du tout : quatre bornes et un poids, le trapèze
+    validé comme par `check --edge`."""
+    given = [name for name in (*EDGE_FIELDS, "edge_weight") if out.get(name)]
+    if not given:
+        return
+    if len(given) != len(EDGE_FIELDS) + 1:
+        raise ToolError("variante lisière : les quatre bornes et le poids, ou rien")
+    try:
+        parse_edge(",".join(out[name] for name in EDGE_FIELDS))
+    except ValueError as e:
+        raise ToolError(str(e).replace("--edge", "variante lisière")) from e
 
 
 def command(kind: str, args: dict[str, Any] | None) -> list[str]:
@@ -313,6 +366,10 @@ def command(kind: str, args: dict[str, Any] | None) -> list[str]:
         argv = [sys.executable, "-m", tool.module, "-q", kind]
     for f in tool.fields:
         value = normalized[f.name]
+        if kind == "check" and f.name in (*EDGE_FIELDS, "edge_weight"):
+            continue  # assemblés plus bas en `--edge a,b,c,d --edge-weight w`
+        if f.kind == "number" and value == "":
+            continue  # nombre optionnel non fourni
         if f.kind == "bool":
             if value == "True":
                 argv.append(f.option())
@@ -327,4 +384,7 @@ def command(kind: str, args: dict[str, Any] | None) -> list[str]:
             argv += [f.option(), str(int(float(value)))]
         else:
             argv += [f.option(), value]
+    if kind == "check" and normalized.get("edge_weight"):
+        argv += ["--edge", ",".join(normalized[name] for name in EDGE_FIELDS)]
+        argv += ["--edge-weight", normalized["edge_weight"]]
     return argv

@@ -15,6 +15,10 @@ uv run champis-pipeline check --dept 25 [--species boletus_edulis] [--force]
 
 Sortie : `reports/<espèce>-<dept>.html` (lisible) et `.json` (chiffres), jamais commités. Réseau : `api.gbif.org` ; les occurrences sont mises en cache dans `data/raw/gbif/<espèce>_<bbox>.json`, `--force` retélécharge.
 
+**Depuis le backoffice** (12 nov. 2026, spec › Backoffice › Espèces) : outil `check` de la fiche de l'espèce, un département à la fois, sur le worker champis-jobs (son T du département vient d'un `batch` préalable) ; les rapports partent dans le bucket sous `reports/` (`--to-bucket`) et la fiche les liste avec leurs AUC.
+
+**Variante d'un facteur optionnel** (test d'entrée, skill `species-file`) : `--edge min,opt_low,opt_high,max --edge-weight w` calcule un second T de l'espèce **en mémoire** avec le bloc `edge_m` candidat (les autres poids réduits au prorata, somme 1), déposé dans `data/T-variants/` (jamais `data/T/` ni les tuiles), l'évalue sur les **mêmes occurrences** et écrit `reports/<espèce>-<dept>-edge-…-w….html` avec la comparaison et le verdict : au moins 30 occurrences en forêt (sinon « non évalué »), gain d'AUC ≥ 0,01, T moyen aux occurrences qui ne baisse pas. Le fichier espèce n'est jamais écrit : si le critère est atteint, le bloc entre dans le référentiel par PR, avec le résultat en référence.
+
 ## Ce que fait `check`
 
 1. **taxonKey** par `species/match` sur `names.la` (règne Fungi) ; nom inconnu = erreur, pas de repli.

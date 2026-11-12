@@ -21,6 +21,7 @@ import json
 from datetime import date, timedelta
 from typing import Any
 
+from champis_pipeline.check.report import REPORTS_PREFIX
 from champis_pipeline.species import (
     all_species_hash,
     group_hash,
@@ -98,7 +99,7 @@ def _concerns(job: dict[str, Any], sid: str, group_ids: list[str]) -> bool:
     """La tâche touche l'espèce : option `species` qui la nomme (ou vide = toutes) sur les
     étapes du pipeline, `render` de l'espèce ou de toutes, `weather-grid` toujours."""
     args = job.get("args") or {}
-    if job["kind"] in ("batch", "tiles", "publish"):
+    if job["kind"] in ("batch", "tiles", "publish", "check"):
         # `species` quand la tâche vient du backoffice, `args` (ligne de commande) depuis la CLI
         raw = args.get("species") or args.get("args", "")
         ids = raw.split() if isinstance(raw, str) else []
@@ -109,6 +110,45 @@ def _concerns(job: dict[str, Any], sid: str, group_ids: list[str]) -> bool:
     return job["kind"] == "weather-grid"
 
 
+def list_reports(bucket: BucketLike) -> list[dict[str, Any]]:
+    """Les rapports de contrôle GBIF du bucket (`reports/<espèce>-<dept>[-<variante>].html`, lot
+    du 12 nov. 2026), avec les chiffres de leur `.json` : AUC, et pour une variante la référence
+    et le verdict du critère d'entrée. Les plus récents en dernier (ordre des noms)."""
+    present = bucket.list(REPORTS_PREFIX)
+    out = []
+    for key, size in sorted(present.items()):
+        name = key[len(REPORTS_PREFIX) :]
+        if not name.endswith(".html"):
+            continue
+        data = bucket.get_json(REPORTS_PREFIX + name[: -len(".html")] + ".json") or {}
+        species = data.get("species")
+        dept = data.get("dept")
+        if not species:  # rapport sans fiche JSON : on lit le nom `<espèce>-<dept>[-variante]`
+            stem = name[: -len(".html")]
+            for sid in list_species():
+                if stem.startswith(sid + "-"):
+                    species, dept = sid, stem[len(sid) + 1 :].split("-")[0]
+                    break
+        if not species:
+            continue
+        out.append(
+            {
+                "name": name,
+                "key": key,
+                "bytes": size,
+                "species": species,
+                "dept": dept,
+                "variant": data.get("variant"),
+                "auc": data.get("auc"),
+                "n_in_forest": data.get("n_in_forest"),
+                "t_hash": data.get("t_hash"),
+                "baseline_auc": (data.get("baseline") or {}).get("auc"),
+                "entry": data.get("entry"),
+            }
+        )
+    return out
+
+
 def gather(
     settings: Settings,
     bucket: BucketLike | None,
@@ -117,10 +157,12 @@ def gather(
 ) -> dict[str, Any]:
     manifest: dict[str, Any] = {}
     renders: list[dict[str, Any]] = []
+    reports: list[dict[str, Any]] = []
     if bucket is not None:
         try:
             manifest = bucket.get_json(MANIFEST_KEY) or {}
             renders = render.list_renders(bucket)
+            reports = list_reports(bucket)
         except Exception:
             manifest = {}
     depts_by_hash = manifest.get("depts_by_hash", {})
@@ -187,6 +229,11 @@ def gather(
             for r in renders
             if r["species"] == sid
         ]
+        checks = [
+            {**r, "url": bucket.presign(r["key"], 3600) if bucket else None}
+            for r in reports
+            if r["species"] == sid
+        ]
         jobs_here = [
             {
                 "id": j["id"],
@@ -244,6 +291,7 @@ def gather(
                 if inv
                 else None,
                 "maps": maps,
+                "checks": checks,
                 "usage": {
                     "app": app_share,
                     "app_share": round(100 * app_share / total_app) if total_app else None,

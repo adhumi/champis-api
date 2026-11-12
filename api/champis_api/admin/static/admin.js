@@ -462,6 +462,27 @@ function renderSheet(d) {
   blocks.push(block(canPublish ? "ok" : "", "Publication", "les PMTiles du worker vers le bucket · d'abord « montrer seulement » et lire le journal · jamais --prune depuis une fiche", "Montrer seulement", () => launch("publish", { depts: "all", species: groupSpecies, per_dept: true, groups: true, prune: false, dry_run: true }), !canPublish));
   blocks.push(block(canPublish ? "ok" : "", "Publication réelle", `téléverse les tuiles du groupe ${sp.group.name} et réécrit le manifeste`, "Publier", async () => { if (confirm(`Publier les tuiles du groupe ${sp.group.name} dans le bucket ?`)) await launch("publish", { depts: "all", species: groupSpecies, per_dept: true, groups: true, prune: false, dry_run: false }); }, !canPublish));
   blocks.push(block(d.grid.current ? "ok" : "warn", "Grille météo", d.grid.current ? `à jour (empreinte ${d.grid.hash})` : `empreinte ${d.grid.hash || "absente"} ≠ ${d.grid.current_hash} : à refaire pour toutes les espèces, puis à committer`, "weather-grid", () => launch("weather-grid", { depts: "all", to_bucket: true }), !w));
+  /* Contrôle GBIF (12 nov. 2026) : l'AUC de T aux occurrences sur un département, et en option la
+     variante lisière du test d'entrée (quatre bornes en mètres et un poids) ; le fichier espèce
+     n'est jamais écrit, le bloc entre par PR si le critère est atteint. */
+  const checkDept = el("input", { class: "short", value: "25", size: 3, title: "département" });
+  const checkEdge = el("input", { class: "short", placeholder: "min,opt_low,opt_high,max", size: 18, title: "variante lisière : bornes en mètres, vide = sans variante" });
+  const checkWeight = el("input", { class: "short", placeholder: "poids", size: 5, title: "poids edge de la variante (0,01 à 0,5)" });
+  const checkDetail = el("span", {}, sp.checks.length
+    ? sp.checks.flatMap((r, i) => [i ? " · " : "", el("a", { href: r.url || "#", target: "_blank", rel: "noopener", text: `${r.dept}${r.variant ? " " + r.variant : ""} AUC ${r.auc == null ? "?" : r.auc.toFixed(3)}${r.entry ? ` (${r.entry.auc_gain >= 0 ? "+" : ""}${r.entry.auc_gain.toFixed(3)}, ${r.entry.met ? "critère atteint" : r.entry.evaluated ? "critère non atteint" : "non évalué"})` : ""}` })])
+    : ["aucun rapport dans le bucket"]);
+  const checkBlock = block(sp.checks.some((r) => r.entry && r.entry.met) ? "ok" : "", "Contrôle GBIF", checkDetail, "Contrôler", () => {
+    const bounds = checkEdge.value.trim().split(/[\s,]+/).filter(Boolean);
+    const args = { dept: checkDept.value.trim(), species: sp.id, force: false, to_bucket: true };
+    if (bounds.length || checkWeight.value.trim()) {
+      if (bounds.length !== 4 || !checkWeight.value.trim()) throw new Error("variante lisière : quatre bornes et un poids, ou rien");
+      [args.edge_min, args.edge_opt_low, args.edge_opt_high, args.edge_max] = bounds;
+      args.edge_weight = checkWeight.value.trim();
+    }
+    return launch("check", args);
+  }, !w);
+  checkBlock.append(el("span", { class: "meta" }, ["département ", checkDept, " · variante lisière ", checkEdge, " poids ", checkWeight]));
+  blocks.push(checkBlock);
   const mapDetail = sp.maps.length
     ? el("span", {}, sp.maps.flatMap((m, i) => [i ? " · " : "", mapLink(sp.id, m)]))
     : "aucune carte";

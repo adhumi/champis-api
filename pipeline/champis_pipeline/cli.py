@@ -213,32 +213,84 @@ def cmd_explain(args) -> None:
 
 
 def cmd_check(args) -> None:
-    """Contrôle GBIF : rapport HTML + JSON par espèce dans reports/ (réseau : api.gbif.org)."""
+    """Contrôle GBIF : rapport HTML + JSON par espèce dans reports/ (réseau : api.gbif.org).
+    Avec `--edge min,opt_low,opt_high,max --edge-weight w` : le même contrôle sur un T calculé
+    avec le bloc lisière candidat (spec › Backoffice › Espèces, 12 nov. 2026), comparé au T de
+    référence ; `--to-bucket` dépose les rapports sous `reports/` (depuis le worker)."""
     import httpx
     import rasterio
     from rasterio.warp import transform_bounds
 
-    from .check import gbif, report
-    from .config import T_DIR
-    from .species import load_species, species_hash
+    from . import terrain
+    from .check import gbif, report, variant
+    from .species import load_species
 
     species = _species(args)
-    steps = console.get().steps(len(species), f"check GBIF · {args.dept}")
+    edge = getattr(args, "edge", None)
+    weight = getattr(args, "edge_weight", None)
+    if (edge is None) != (weight is None):
+        raise SystemExit("--edge et --edge-weight vont ensemble")
+    trapezoid = variant.parse_edge(edge) if edge else None
+    if trapezoid:
+        variant.check_weight(weight)
+    to_bucket = bool(getattr(args, "to_bucket", False))
+    bucket = None
+    if to_bucket:
+        from .storage import Bucket, S3Config
+
+        cfg = S3Config.from_env()
+        if cfg is None:
+            raise SystemExit(NO_BUCKET)
+        bucket = Bucket(cfg)
+    per_species = 1 + (2 if trapezoid else 0) + to_bucket
+    steps = console.get().steps(per_species * len(species), f"check GBIF · {args.dept}")
     with httpx.Client(timeout=60.0, headers={"User-Agent": "champis-pipeline check"}) as http:
         for sid in species:
             with steps.step(f"check {sid}") as step:
-                t_path = T_DIR / sid / f"{args.dept}-{species_hash(sid)}.tif"
+                t_path = report.default_t_path(args.dept, sid)
                 with rasterio.open(t_path) as s:
                     bbox = transform_bounds(s.crs, "EPSG:4326", *s.bounds)
                 occ, rejected = gbif.occurrences(
                     sid, load_species(sid)["names"]["la"], bbox, http, force=args.force
                 )
                 result = report.evaluate(args.dept, sid, occ, rejected=rejected)
-                path = report.write_report(result, occ)
+                paths = [report.write_report(result, occ)]
                 step.note(
                     f"AUC {result['auc']:.3f} ({result['n_in_forest']}/{result['n_occurrences']} "
-                    f"occ. en forêt) -> {path}"
+                    f"occ. en forêt) -> {paths[0]}"
                 )
+            if trapezoid:
+                tag = variant.edge_tag(trapezoid, weight)
+                with steps.step(f"T variante {tag} {sid}") as step:
+                    spec = variant.edge_variant(load_species(sid), trapezoid, weight)
+                    v_path = terrain.compute(
+                        args.dept,
+                        sid,
+                        force=True,
+                        spec=spec,
+                        out=variant.variant_t_path(sid, args.dept, tag),
+                    )
+                    step.written(v_path)
+                with steps.step(f"check variante {sid}") as step:
+                    v_result = report.compare(
+                        result,
+                        report.evaluate(
+                            args.dept, sid, occ, rejected=rejected, t_path=v_path, variant=tag
+                        ),
+                    )
+                    paths.append(report.write_report(v_result, occ))
+                    entry = v_result["entry"]
+                    step.note(
+                        f"AUC {result['auc']:.3f} -> {v_result['auc']:.3f} "
+                        f"({entry['auc_gain']:+.3f}), T moyen aux occurrences "
+                        f"{result['t_mean_occurrences'] or 0:.3f} -> "
+                        f"{v_result['t_mean_occurrences'] or 0:.3f}, "
+                        f"{entry['n_in_forest']} occ. en forêt : {entry['text']} -> {paths[-1]}"
+                    )
+            if bucket is not None:
+                with steps.step(f"dépôt des rapports {sid} (reports/)") as step:
+                    keys = [k for p in paths for k in report.publish_reports(bucket, p)]
+                    step.note(" · ".join(keys))
 
 
 # ---------------------------------------------------------------------- lots et publication
@@ -460,6 +512,17 @@ def build_parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name, parents=[common], help=help_)
         p.add_argument("--dept", required=True)
         p.set_defaults(fn=fn)
+    chk = sub.choices["check"]
+    chk.add_argument(
+        "--edge",
+        help="variante lisière : trapèze edge_m en mètres `min,opt_low,opt_high,max` (avec --edge-weight)",
+    )
+    chk.add_argument(
+        "--edge-weight", type=float, help="poids du facteur edge de la variante (0,01 à 0,5)"
+    )
+    chk.add_argument(
+        "--to-bucket", action="store_true", help="déposer les rapports dans le bucket (reports/)"
+    )
     for name, fn, help_ in (
         ("tiles", cmd_tiles, "PMTiles T par espèce, A (altitude) et G par groupe dans data/tiles/"),
         ("weather-grid", cmd_weather_grid, "cellules météo 5 km : data/weather_grid.json"),

@@ -12,7 +12,7 @@ mesure minimale, les compteurs agrégés par jour (étape C, lot C2) ; `champis-
 [--species …] [--zoom 9] [--force]` — carte HD de la France par espèce dans le bucket (backoffice,
 lot BO3) ; `champis-api worker [--once]` — le service d'exécution `champis-jobs`, qui sert la file
 des tâches du backoffice ; `champis-api pipeline <étape> [options]` — une étape de
-champis-pipeline (batch, tiles, publish, weather-grid, status, soil-clim) inscrite dans le journal
+champis-pipeline (batch, tiles, publish, weather-grid, status, soil-clim, check) inscrite dans le journal
 des tâches (lot BO4).
 
 Affichage : module `champis_pipeline.console` (étapes, statut, journal dans data/logs/). Journal
