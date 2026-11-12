@@ -223,13 +223,16 @@ def cmd_check(args) -> None:
 
     from . import terrain
     from .check import gbif, report, variant
-    from .species import load_species
+    from .species import load_species, species_hash
 
     species = _species(args)
     edge = getattr(args, "edge", None)
     weight = getattr(args, "edge_weight", None)
     if (edge is None) != (weight is None):
         raise SystemExit("--edge et --edge-weight vont ensemble")
+    if bool(getattr(args, "dept", None)) == bool(getattr(args, "depts", None)):
+        raise SystemExit("--dept <code> ou --depts <codes ou all>, l'un des deux")
+    pooled = bool(getattr(args, "depts", None))
     trapezoid = variant.parse_edge(edge) if edge else None
     if trapezoid:
         variant.check_weight(weight)
@@ -242,40 +245,74 @@ def cmd_check(args) -> None:
         if cfg is None:
             raise SystemExit(NO_BUCKET)
         bucket = Bucket(cfg)
+    from .batch import DEPTS_ALL
+
+    where = " ".join(args.depts) if pooled else args.dept
     per_species = 1 + (2 if trapezoid else 0) + to_bucket
-    steps = console.get().steps(per_species * len(species), f"check GBIF · {args.dept}")
+    steps = console.get().steps(per_species * len(species), f"check GBIF · {where}")
     with httpx.Client(timeout=60.0, headers={"User-Agent": "champis-pipeline check"}) as http:
         for sid in species:
             with steps.step(f"check {sid}") as step:
-                t_path = report.default_t_path(args.dept, sid)
-                with rasterio.open(t_path) as s:
-                    bbox = transform_bounds(s.crs, "EPSG:4326", *s.bounds)
-                occ, rejected = gbif.occurrences(
-                    sid, load_species(sid)["names"]["la"], bbox, http, force=args.force
-                )
-                result = report.evaluate(args.dept, sid, occ, rejected=rejected)
+                if pooled and args.depts == ["all"]:  # ceux dont le T de l'espèce est là
+                    h = species_hash(sid)
+                    folder = report.default_t_path("00", sid).parent
+                    depts = sorted(
+                        q.stem[: -len(h) - 1]
+                        for q in (folder.glob(f"*-{h}.tif") if folder.is_dir() else [])
+                    )
+                    if not depts:
+                        raise SystemExit(f"aucun T de {sid} sur le volume")
+                    skipped = sum(1 for d in DEPTS_ALL if d not in depts)
+                else:  # codes normalisés (`1` → `01`, `2a` → `2A`) ; le T présent fait foi
+                    depts = [d.upper().zfill(2) for d in args.depts] if pooled else [args.dept]
+                    skipped = 0
+                occ_by_dept: dict[str, list] = {}
+                rejected = gbif.Rejected()
+                for d in depts:  # les occurrences de chaque emprise ; cache GBIF par emprise
+                    t_path = report.default_t_path(d, sid)
+                    if not t_path.exists():
+                        raise FileNotFoundError(
+                            f"T manquant : {t_path} (lancer `batch` ou `terrain --dept {d}`)"
+                        )
+                    with rasterio.open(t_path) as s:
+                        bbox = transform_bounds(s.crs, "EPSG:4326", *s.bounds)
+                    occ_d, rej_d = gbif.occurrences(
+                        sid, load_species(sid)["names"]["la"], bbox, http, force=args.force
+                    )
+                    occ_by_dept[d] = occ_d
+                    rejected = gbif.merge_rejected(rejected, rej_d)
+                result = report.evaluate_pooled(depts, sid, occ_by_dept, rejected=rejected)
+                occ = report.pooled_occurrences(depts, occ_by_dept)
                 paths = [report.write_report(result, occ)]
                 step.note(
                     f"AUC {result['auc']:.3f} ({result['n_in_forest']}/{result['n_occurrences']} "
-                    f"occ. en forêt) -> {paths[0]}"
+                    f"occ. en forêt, {len(depts)} département(s)"
+                    f"{f', {skipped} sans T' if skipped else ''}) -> {paths[0]}"
                 )
             if trapezoid:
                 tag = variant.edge_tag(trapezoid, weight)
                 with steps.step(f"T variante {tag} {sid}") as step:
                     spec = variant.edge_variant(load_species(sid), trapezoid, weight)
-                    v_path = terrain.compute(
-                        args.dept,
-                        sid,
-                        force=True,
-                        spec=spec,
-                        out=variant.variant_t_path(sid, args.dept, tag),
-                    )
-                    step.written(v_path)
+                    v_paths = {}
+                    for d in depts:
+                        v_paths[d] = terrain.compute(
+                            d,
+                            sid,
+                            force=True,
+                            spec=spec,
+                            out=variant.variant_t_path(sid, d, tag),
+                        )
+                    step.note(f"{len(v_paths)} raster(s) dans {variant.VARIANTS_DIR}")
                 with steps.step(f"check variante {sid}") as step:
                     v_result = report.compare(
                         result,
-                        report.evaluate(
-                            args.dept, sid, occ, rejected=rejected, t_path=v_path, variant=tag
+                        report.evaluate_pooled(
+                            depts,
+                            sid,
+                            occ_by_dept,
+                            rejected=rejected,
+                            t_paths=v_paths,
+                            variant=tag,
                         ),
                     )
                     paths.append(report.write_report(v_result, occ))
@@ -510,9 +547,14 @@ def build_parser() -> argparse.ArgumentParser:
         ("all", cmd_all, "download, grid, terrain, tiles, weather-grid sur un département"),
     ):
         p = sub.add_parser(name, parents=[common], help=help_)
-        p.add_argument("--dept", required=True)
+        p.add_argument("--dept", required=name != "check")
         p.set_defaults(fn=fn)
     chk = sub.choices["check"]
+    chk.add_argument(
+        "--depts",
+        nargs="+",
+        help="contrôle groupé sur plusieurs départements (codes, ou `all` = ceux dont le T est là)",
+    )
     chk.add_argument(
         "--edge",
         help="variante lisière : trapèze edge_m en mètres `min,opt_low,opt_high,max` (avec --edge-weight)",

@@ -15,17 +15,24 @@ CEPE = "boletus_edulis"
 def test_check_tool_is_in_the_catalogue_and_builds_its_command():
     assert "check" in jobs.KINDS and "check" in jobs.PIPELINE_KINDS
     described = {t["kind"]: t for t in tools.describe()}
-    dept = next(f for f in described["check"]["fields"] if f["name"] == "dept")
-    assert "84" in dept["choices"] and "2A" in dept["choices"] and dept["default"] == "25"
-    # sans variante : juste le département, l'espèce et le dépôt des rapports
-    argv = tools.command("check", {"dept": "84", "species": CEPE})
+    depts = next(f for f in described["check"]["fields"] if f["name"] == "depts")
+    assert depts["kind"] == "depts" and depts["default"] == "25"
+    # sans variante : les départements (contrôle groupé), l'espèce et le dépôt des rapports
+    argv = tools.command("check", {"depts": "84", "species": CEPE})
     assert argv[2:6] == ["champis_api.cli", "-q", "pipeline", "check"]
-    assert argv[6:] == ["--dept", "84", "--species", CEPE, "--to-bucket"]
+    assert argv[6:] == ["--depts", "84", "--species", CEPE, "--to-bucket"]
+    assert tools.command("check", {"depts": "12 65 2a", "species": CEPE})[6:10] == [
+        "--depts",
+        "12",
+        "65",
+        "2A",
+    ]
+    assert tools.command("check", {"depts": "all", "species": CEPE})[6:8] == ["--depts", "all"]
     # avec la variante : `--edge a,b,c,d --edge-weight w`
     argv = tools.command(
         "check",
         {
-            "dept": "84",
+            "depts": "84",
             "species": CEPE,
             "edge_min": "0",
             "edge_opt_low": "0",
@@ -37,7 +44,7 @@ def test_check_tool_is_in_the_catalogue_and_builds_its_command():
         },
     )
     assert argv[6:] == [
-        "--dept",
+        "--depts",
         "84",
         "--species",
         CEPE,
@@ -47,18 +54,18 @@ def test_check_tool_is_in_the_catalogue_and_builds_its_command():
         "--edge-weight",
         "0.1",
     ]
-    normalized = tools.validate("check", {"dept": "84"})
+    normalized = tools.validate("check", {"depts": "84"})
     assert normalized["edge_min"] == "" and normalized["edge_weight"] == ""
 
 
 def test_check_variant_comes_whole_or_not_at_all():
     with pytest.raises(tools.ToolError, match="quatre bornes et le poids"):
-        tools.validate("check", {"dept": "84", "edge_min": "0", "edge_weight": "0.1"})
+        tools.validate("check", {"depts": "84", "edge_min": "0", "edge_weight": "0.1"})
     with pytest.raises(tools.ToolError, match="croissantes"):
         tools.validate(
             "check",
             {
-                "dept": "84",
+                "depts": "84",
                 "edge_min": "50",
                 "edge_opt_low": "0",
                 "edge_opt_high": "100",
@@ -70,7 +77,7 @@ def test_check_variant_comes_whole_or_not_at_all():
         tools.validate(
             "check",
             {
-                "dept": "84",
+                "depts": "84",
                 "edge_min": "0",
                 "edge_opt_low": "0",
                 "edge_opt_high": "100",
@@ -78,8 +85,8 @@ def test_check_variant_comes_whole_or_not_at_all():
                 "edge_weight": "0.9",
             },
         )
-    with pytest.raises(tools.ToolError, match="valeur inconnue"):
-        tools.validate("check", {"dept": "20"})
+    with pytest.raises(tools.ToolError, match="département inconnu"):
+        tools.validate("check", {"depts": "20"})
 
 
 def test_reports_of_the_bucket_are_listed_per_species():
