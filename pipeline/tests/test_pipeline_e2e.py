@@ -424,6 +424,38 @@ def test_alt_layer_matches_weather_grid_classes(sandbox):
     assert any(tiles.alt_class_center(k) in c["alt_classes"] for c in cells)
 
 
+def test_elev_layer_carries_the_pixel_altitude_in_20_m_steps(sandbox):
+    """La couche E (spec › Scoring › Interpolation entre classes d'altitude, 13 nov. 2026) porte
+    l'altitude du pixel par pas de 20 m, à côté de A, depuis le même `alt.tif`."""
+    import io
+
+    import mercantile
+    from PIL import Image
+    from pmtiles.reader import MmapSource, Reader
+    from rasterio.warp import transform as rio_transform
+
+    rasterize.host_cover(DEPT, sandbox["shp"], sandbox["grid"])
+    rasterize.dem_products(DEPT, [sandbox["dem"]], sandbox["grid"])
+    pm = tiles.build_elev([DEPT])
+    assert pm.name.startswith("E-20m-d") and pm.exists()
+    assert tiles.build_elev([DEPT]) == pm  # idempotent
+    assert tiles.build_elev_dept(DEPT, [DEPT]) == pm  # un seul département : déjà son jeu
+
+    x, y = 930_000 + 2_500, 6_680_000 + 7_500  # centre de la hêtraie
+    (lon,), (lat,) = rio_transform(CRS_CALC, "EPSG:4326", [x], [y])
+    t = mercantile.tile(lon, lat, 15)
+    with open(pm, "rb") as f:
+        img = Image.open(io.BytesIO(Reader(MmapSource(f)).get(15, t.x, t.y))).convert("LA")
+    b = mercantile.bounds(t)
+    px = int((lon - b.west) / (b.east - b.west) * 256)
+    py = int((b.north - lat) / (b.north - b.south) * 256)
+    k, alpha = img.getpixel((px, py))
+    with rasterio.open(sandbox["tmp"] / "grid" / DEPT / "alt.tif") as s:
+        alt_m = next(s.sample([(x, y)]))[0]
+    assert alpha == 255 and k == alt_m // 20
+    assert k != alt_m // 300  # plus fin que la classe de la couche A
+
+
 def test_weather_grid(sandbox):
     shp, grid = sandbox["shp"], sandbox["grid"]
     rasterize.host_cover(DEPT, shp, grid)
@@ -620,11 +652,19 @@ def test_cli_tiles_and_weather_grid_accept_all(monkeypatch):
         tiles, "build_alt", lambda depts, force, jobs: seen.append(("A", depts, jobs))
     )
     monkeypatch.setattr(
+        tiles, "build_elev", lambda depts, force, jobs: seen.append(("E", depts, jobs))
+    )
+    monkeypatch.setattr(
         weather_grid, "build", lambda depts, species: seen.append(("W", depts, species))
     )
     assert cli.main(["tiles", "--depts", "all", "--species", "x", "--jobs", "3"]) == 0
     assert cli.main(["weather-grid", "--depts", "1", "2a"]) == 0
-    assert seen == [("T", "x", DEPTS_ALL, 3), ("A", DEPTS_ALL, 3), ("W", ["01", "2A"], None)]
+    assert seen == [
+        ("T", "x", DEPTS_ALL, 3),
+        ("A", DEPTS_ALL, 3),
+        ("E", DEPTS_ALL, 3),
+        ("W", ["01", "2A"], None),
+    ]
 
 
 def test_cli_status_on_stderr_and_failure_code(capsys, monkeypatch):
@@ -633,13 +673,15 @@ def test_cli_status_on_stderr_and_failure_code(capsys, monkeypatch):
 
     monkeypatch.setattr(tiles, "build", lambda sid, depts, force, jobs: None)
     monkeypatch.setattr(tiles, "build_alt", lambda depts, force, jobs: None)
+    monkeypatch.setattr(tiles, "build_elev", lambda depts, force, jobs: None)
     assert cli.main(["tiles", "--depts", "25", "--species", "x"]) == 0
     out, err = capsys.readouterr()
     assert out == ""
     lines = err.splitlines()
     assert lines[0].startswith("tiles · 1 département(s) · 1 espèce(s)")
-    assert lines[1] == "[1/2] tiles T x" and lines[2].split()[0] == "ok"
-    assert lines[3] == "[2/2] tiles A (classes d'altitude)"
+    assert lines[1] == "[1/3] tiles T x" and lines[2].split()[0] == "ok"
+    assert lines[3] == "[2/3] tiles A (classes d'altitude)"
+    assert lines[5] == "[3/3] tiles E (altitude fine)"
     assert lines[-1].startswith("tuiles prêtes en ") and "journal : " in lines[-1]
 
     def boom(sid, depts, force, jobs):
@@ -922,13 +964,14 @@ def test_publish_uploads_once_and_builds_manifest(tmp_path):
 
     names = publish.expected_names(["25"], ["boletus_edulis"])
     assert names[0].startswith("T-boletus_edulis-") and names[1].startswith("A-300m-d")
+    assert names[2].startswith("E-20m-d")  # altitude fine, à côté de A (13 nov. 2026)
     for n in names:
         (tmp_path / n).write_bytes(b"x" * 100)
     bucket = _FakeBucket()
     m = publish.publish(bucket, ["25"], ["boletus_edulis"], tiles_dir=tmp_path)
     assert sorted(bucket.uploads) == sorted("tiles/" + n for n in names)
-    assert bucket.progress == 200  # barre globale : octets remontés par le callback
-    assert [t["kind"] for t in m["tiles"]] == ["A", "T"]  # tri par nom
+    assert bucket.progress == 300  # barre globale : octets remontés par le callback
+    assert [t["kind"] for t in m["tiles"]] == ["A", "E", "T"]  # tri par nom
     t = next(t for t in m["tiles"] if t["kind"] == "T")
     assert (
         t["species"] == "boletus_edulis" and t["bytes"] == 100 and t["key"] == "tiles/" + names[0]
@@ -948,7 +991,7 @@ def test_publish_uploads_once_and_builds_manifest(tmp_path):
     for n in names2:
         (tmp_path / n).write_bytes(b"y" * 50)
     m = publish.publish(bucket, ["25", "39"], ["boletus_edulis"], tiles_dir=tmp_path)
-    assert len(m["tiles"]) == 4 and len(m["depts_by_hash"]) == 2
+    assert len(m["tiles"]) == 6 and len(m["depts_by_hash"]) == 2
     m = publish.publish(bucket, ["25", "39"], ["boletus_edulis"], tiles_dir=tmp_path, prune=True)
     assert sorted(t["name"] for t in m["tiles"]) == sorted(names2)
     assert list(m["depts_by_hash"].values()) == [["25", "39"]]
@@ -965,7 +1008,7 @@ def test_publish_per_dept_adds_one_set_per_department(tmp_path):
 
     depts, species = ["25", "39"], ["boletus_edulis"]
     names = {n for s in publish.dept_sets(depts, True) for n in publish.expected_names(s, species)}
-    assert len(names) == 6  # (T + A) × (France, 25, 39)
+    assert len(names) == 9  # (T + A + E) × (France, 25, 39)
     for n in names:
         (tmp_path / n).write_bytes(b"z" * 10)
     bucket = _FakeBucket()
@@ -973,20 +1016,20 @@ def test_publish_per_dept_adds_one_set_per_department(tmp_path):
     assert sorted(bucket.uploads) == sorted("tiles/" + n for n in names)
     assert m["depts_by_hash"] == {_h(depts): ["25", "39"], _h(["25"]): ["25"], _h(["39"]): ["39"]}
     by_name = {t["name"]: t for t in m["tiles"]}
-    assert len(by_name) == 6
+    assert len(by_name) == 9
     dept_of = {t["name"]: t.get("dept") for t in m["tiles"]}
-    assert sorted(d for d in dept_of.values() if d) == ["25", "25", "39", "39"]
+    assert sorted(d for d in dept_of.values() if d) == ["25", "25", "25", "39", "39", "39"]
     france = [t for t in m["tiles"] if "dept" not in t]
-    assert len(france) == 2 and {t["depts_hash"] for t in france} == {_h(depts)}
+    assert len(france) == 3 and {t["depts_hash"] for t in france} == {_h(depts)}
     # prune garde tous les jeux publiés par cet appel, et rien d'autre
     stale = "tiles/T-boletus_edulis-00000000-p1.0.0-dabcdef.pmtiles"
     bucket.objects[stale] = b"old"
     m = publish.publish(bucket, depts, species, tiles_dir=tmp_path, prune=True, per_dept=True)
     assert stale not in bucket.objects
-    assert len(m["tiles"]) == 6 and len(m["depts_by_hash"]) == 3
+    assert len(m["tiles"]) == 9 and len(m["depts_by_hash"]) == 3
     # sans per_dept et avec prune : les jeux par département disparaissent
     m = publish.publish(bucket, depts, species, tiles_dir=tmp_path, prune=True)
-    assert len(m["tiles"]) == 2 and list(m["depts_by_hash"]) == [_h(depts)]
+    assert len(m["tiles"]) == 3 and list(m["depts_by_hash"]) == [_h(depts)]
 
 
 def test_s3_config_from_env_accepts_railway_generic_names(monkeypatch):

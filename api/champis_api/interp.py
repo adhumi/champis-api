@@ -5,8 +5,12 @@ La valeur d'une cellule est celle de son centre ; entre les centres, `f = M_eff 
 en bilinéaire dans la grille Lambert-93 de 5 km. Les poids sont renormalisés sur les coins qui ont
 une valeur, et la cellule qui contient le point doit en avoir une (sinon : pas de météo).
 
-Référence des portages Swift (`ChampisScoring`) et JavaScript (`site.js`), validés par
-`shared/vectors/interp.json`. La projection est la formule directe (GRS80), sans pyproj, pour que
+Entre deux classes d'altitude de 300 m, la même valeur est interpolée linéairement selon
+l'altitude du pixel (`between_classes`, spec › Scoring › Interpolation entre classes d'altitude) :
+d'abord dans chaque cellule, puis entre les cellules.
+
+Référence des portages Swift (`ChampisScoring`) et JavaScript (`web/field.js` du site), validés par
+`shared/vectors/interp.json` et `alt.json`. La projection est la formule directe (GRS80), sans pyproj, pour que
 les trois langages fassent le même calcul.
 """
 
@@ -15,6 +19,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
+from itertools import pairwise
 
 CELL_M = 5000.0
 
@@ -85,3 +90,25 @@ def interpolate(c: Corners, values: Mapping[str, float | None]) -> float | None:
             num += w * val
             den += w
     return num / den
+
+
+def elevation(index: int, step_m: float) -> float:
+    """Altitude (m) au milieu de la tranche d'indice `index` de la couche E (pas `step_m`,
+    `palette.json › elev_encoding`)."""
+    return (index + 0.5) * step_m
+
+
+def between_classes(alt_m: float, values: Mapping[float, float | None]) -> float | None:
+    """Valeur à l'altitude `alt_m` d'une cellule dont `values` donne `M_eff × Φ` au centre de
+    chaque classe d'altitude (m) : linéaire entre les deux centres qui encadrent `alt_m`, à plat
+    en dessous du premier et au-dessus du dernier. Une classe sans valeur (`None`) est ignorée ;
+    `None` si aucune n'en a."""
+    points = sorted((c, v) for c, v in values.items() if v is not None)
+    if not points:
+        return None
+    if alt_m <= points[0][0]:
+        return points[0][1]
+    for (c0, v0), (c1, v1) in pairwise(points):
+        if alt_m <= c1:
+            return v0 + (alt_m - c0) / (c1 - c0) * (v1 - v0)
+    return points[-1][1]

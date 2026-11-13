@@ -92,7 +92,7 @@ def cmd_all(args) -> None:
     """download → grid → terrain → tiles → weather-grid, sur un département."""
     species = _species(args)
     depts = [args.dept]
-    n = 2 + len(species) + (len(species) + 1) + 1
+    n = 2 + len(species) + (len(species) + 2) + 1
     steps = console.get().steps(n, f"all --dept {args.dept} · {len(species)} espèce(s)")
     with steps.step(f"download {args.dept}") as step:
         _download(step, args.dept)
@@ -134,6 +134,8 @@ def _tiles(
             step.written(tiles.build(sid, depts, force, jobs))
     with steps.step("tiles A (classes d'altitude)") as step:
         step.written(tiles.build_alt(depts, force, jobs))  # couche A, commune à toutes les espèces
+    with steps.step("tiles E (altitude fine)") as step:
+        step.written(tiles.build_elev(depts, force, jobs))  # même source que A, pas de 20 m
     for gid, part, ids in groups:
         # un PMTiles par groupe, empilé depuis les MBTiles de travail des T : rien n'est re-rendu
         with steps.step(f"tiles G {gid}" + (f" ({part})" if part > 1 else "")) as step:
@@ -144,6 +146,7 @@ def _tiles(
             with steps.step(f"tiles département {d}") as step:
                 out = [tiles.build_dept(sid, d, depts, force, jobs) for sid in species]
                 out.append(tiles.build_alt_dept(d, depts, force, jobs))
+                out.append(tiles.build_elev_dept(d, depts, force, jobs))
                 out += [
                     tiles.build_group_dept(gid, ids, d, depts, part, force, jobs)
                     for gid, part, ids in groups
@@ -158,7 +161,7 @@ def cmd_tiles(args) -> None:
     species = _species(args)
     per_dept = bool(getattr(args, "per_dept", False)) and len(depts) > 1
     groups = _group_sets(species, bool(getattr(args, "groups", False)))
-    n = len(species) + 1 + len(groups) + (len(depts) if per_dept else 0)
+    n = len(species) + 2 + len(groups) + (len(depts) if per_dept else 0)
     steps = console.get().steps(
         n,
         f"tiles · {len(depts)} département(s) · {len(species)} espèce(s)"

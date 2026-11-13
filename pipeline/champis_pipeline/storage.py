@@ -34,6 +34,7 @@ _T_NAME = re.compile(
     r"^T-(?P<species>[a-z_]+)-(?P<hash>[0-9a-f]{8})-p(?P<version>[\d.]+)-d(?P<dh>[0-9a-f]{6})\.pmtiles$"
 )
 _A_NAME = re.compile(r"^A-(?P<class_m>\d+)m-d(?P<dh>[0-9a-f]{6})\.pmtiles$")
+_E_NAME = re.compile(r"^E-(?P<step_m>\d+)m-d(?P<dh>[0-9a-f]{6})\.pmtiles$")
 _G_NAME = re.compile(
     r"^G-(?P<group>[a-z_]+)-(?P<hash>[0-9a-f]{8})-p(?P<version>[\d.]+)-d(?P<dh>[0-9a-f]{6})"
     r"(?:-(?P<part>[2-9]|[1-9]\d+))?\.pmtiles$"
@@ -144,7 +145,7 @@ class Bucket:
 
 
 def parse_tile_name(name: str) -> dict[str, Any] | None:
-    """`T-<espèce>-<hash>-p<version>-d<dh>.pmtiles`, `A-<classe>m-d<dh>.pmtiles` ou
+    """`T-<espèce>-<hash>-p<version>-d<dh>.pmtiles`, `A-<classe>m-d<dh>.pmtiles`, `E-<pas>m-d<dh>.pmtiles` ou
     `G-<groupe>-<hash>-p<version>-d<dh>[-<partie>].pmtiles` → champs (`part` seulement s'il y en a
     une ; les espèces d'un G, dans l'ordre des canaux, viennent de `build_manifest`)."""
     m = _T_NAME.match(name)
@@ -159,6 +160,9 @@ def parse_tile_name(name: str) -> dict[str, Any] | None:
     m = _A_NAME.match(name)
     if m:
         return {"kind": "A", "class_m": int(m["class_m"]), "depts_hash": m["dh"]}
+    m = _E_NAME.match(name)
+    if m:
+        return {"kind": "E", "step_m": int(m["step_m"]), "depts_hash": m["dh"]}
     m = _G_NAME.match(name)
     if m:
         info = {

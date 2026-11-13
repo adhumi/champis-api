@@ -334,6 +334,36 @@ def interp_vectors() -> list[dict[str, Any]]:
     return out
 
 
+def alt_vectors() -> list[dict[str, Any]]:
+    """Interpolation de `M_eff × Φ` entre classes d'altitude d'une cellule (spec › Scoring ›
+    Interpolation entre classes d'altitude, 13 nov. 2026) : altitude du pixel lue dans la couche E
+    (`index` × pas, milieu de la tranche), valeur linéaire entre les deux centres de classe qui
+    l'encadrent, à plat au-delà ; une classe absente de `values` n'a pas de valeur."""
+    step = float(load_palette()["elev_encoding"]["step_m"])
+    cells: list[dict[str, float]] = [
+        {"150": 0.2, "450": 0.8, "750": 0.5},
+        {"450": 0.9},
+        {"150": 0.1, "750": 0.7},  # la classe 450 manque : linéaire de 150 à 750
+        {"1050": 0.0, "1350": 1.0, "1650": 0.25, "1950": 0.25},
+        {},
+    ]
+    indices = [0, 3, 7, 8, 14, 15, 22, 29, 30, 37, 44, 52, 60, 67, 75, 90, 97, 120, 254]
+    out = []
+    for values in cells:
+        for index in indices:
+            alt = interp.elevation(index, step)
+            got = interp.between_classes(alt, {float(k): v for k, v in values.items()})
+            out.append(
+                {
+                    "index": index,
+                    "step_m": step,
+                    "values": values,
+                    "expected": {"alt_m": alt, "value": None if got is None else _r(got)},
+                }
+            )
+    return out
+
+
 def build() -> dict[str, dict[str, Any]]:
     meta = _meta()
     return {
@@ -343,6 +373,7 @@ def build() -> dict[str, dict[str, Any]]:
         "group.json": {"generated_by": meta, "cases": group_vectors()},
         "palette.json": {"generated_by": meta, "cases": palette_vectors()},
         "interp.json": {"generated_by": meta, "cases": interp_vectors()},
+        "alt.json": {"generated_by": meta, "cases": alt_vectors()},
     }
 
 

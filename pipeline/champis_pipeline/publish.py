@@ -28,7 +28,7 @@ from .storage import (
     group_key,
     parse_tile_name,
 )
-from .tiles import ALT_CLASS_M, _depts_hash, group_tag, t_tag
+from .tiles import ALT_CLASS_M, ELEV_STEP_M, _depts_hash, group_tag, t_tag
 
 log = logging.getLogger(__name__)
 
@@ -49,10 +49,11 @@ def partial_groups(species: list[str]) -> list[str]:
 
 
 def expected_names(depts: list[str], species: list[str], groups: bool = False) -> list[str]:
-    """PMTiles du jeu `depts` : T par espèce, A, puis (avec `groups`) un G par groupe complet."""
+    """PMTiles du jeu `depts` : T par espèce, A, E, puis (avec `groups`) un G par groupe complet."""
     dh = _depts_hash(depts)
     names = [f"T-{t_tag(sid, depts)}.pmtiles" for sid in species]
     names.append(f"A-{ALT_CLASS_M}m-d{dh}.pmtiles")
+    names.append(f"E-{ELEV_STEP_M}m-d{dh}.pmtiles")
     if groups:
         names += [
             f"G-{group_tag(gid, ids, depts, part)}.pmtiles"

@@ -355,7 +355,7 @@ def test_publish_lists_groups_with_their_channel_order(tmp_path: Path, caplog):
     ]
     assert publish.expected_names(depts, species) == names[: -len(g_names)]  # sans --groups
     # un groupe partiel n'a pas de G ; un groupe entier, si
-    assert publish.expected_names(depts, ["boletus_edulis"], groups=True)[-1].startswith("A-")
+    assert publish.expected_names(depts, ["boletus_edulis"], groups=True)[-1].startswith("E-")
     assert publish.partial_groups(["boletus_edulis", *GIROLLES]) == ["cepes"]
     assert publish.complete_group_sets(["boletus_edulis", *GIROLLES]) == [("girolles", 1, GIROLLES)]
 
@@ -405,9 +405,9 @@ def test_status_counts_groups_when_asked(sandbox):
         p = config.TILES_DIR / n
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(b"x")
-    assert status.dept_status("25", [*CEPES, *GIROLLES], {}).tiles_expected == 9
+    assert status.dept_status("25", [*CEPES, *GIROLLES], {}).tiles_expected == 10  # 8 T + A + E
     with_g = status.dept_status("25", [*CEPES, *GIROLLES], {}, groups=True)
-    assert (with_g.tiles, with_g.tiles_expected) == (11, 11)
+    assert (with_g.tiles, with_g.tiles_expected) == (12, 12)
     s = status.set_status(["25"], [*CEPES, *GIROLLES], groups=True)
     assert s.expected == names and s.local == names
 
@@ -420,6 +420,10 @@ def test_cli_tiles_groups_builds_each_complete_group(monkeypatch, capsys, tmp_pa
     out.write_bytes(b"xyz")
     monkeypatch.setattr(tiles, "build", lambda sid, depts, force, jobs: seen.append(("T", sid)))
     monkeypatch.setattr(tiles, "build_alt", lambda depts, force, jobs: seen.append(("A",)))
+    monkeypatch.setattr(tiles, "build_elev", lambda depts, force, jobs: seen.append(("E",)))
+    monkeypatch.setattr(
+        tiles, "build_elev_dept", lambda d, depts, force, jobs: seen.append(("Ed", d)) or out
+    )
     monkeypatch.setattr(
         tiles,
         "build_group",
@@ -444,8 +448,8 @@ def test_cli_tiles_groups_builds_each_complete_group(monkeypatch, capsys, tmp_pa
     err = capsys.readouterr().err
     assert (
         "· 2 groupe(s)" in err
-        and "[10/13] tiles G cepes" in err
-        and "[11/13] tiles G girolles" in err
+        and "[11/14] tiles G cepes" in err
+        and "[12/14] tiles G girolles" in err
     )
     assert ("G", "cepes", CEPES, ["25", "39"], 1, 2) in seen
     assert ("G", "girolles", GIROLLES, ["25", "39"], 1, 2) in seen
@@ -455,14 +459,14 @@ def test_cli_tiles_groups_builds_each_complete_group(monkeypatch, capsys, tmp_pa
         ("Gd", "cepes", "39", 1),
         ("Gd", "girolles", "39", 1),
     ]
-    assert "11 fichiers · 33 o" in err  # par département : 8 T + A + 2 G
+    assert "12 fichiers · 36 o" in err  # par département : 8 T + A + E + 2 G
 
     # une espèce seule avec --groups : avertissement, pas de G
     seen.clear()
     assert cli.main(["tiles", "--depts", "25", "--species", "boletus_edulis", "--groups"]) == 0
     err = capsys.readouterr().err
     assert "groupe cepes incomplet" in err and not any(c[0] == "G" for c in seen)
-    assert "[1/2] tiles T boletus_edulis" in err
+    assert "[1/3] tiles T boletus_edulis" in err
 
 
 def test_a_five_species_group_gets_two_files_only_when_whole():
