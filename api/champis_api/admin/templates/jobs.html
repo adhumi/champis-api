@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Tâches{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">Journal des exécutions : crons Railway (<code>cron</code>), outils lancés ici (<code>admin</code>), CLI sur un poste (<code>cli</code>).</p>{% endblock %}
+{% block actions %}<a class="btn btn-primary" href="/admin/tools">Lancer un outil</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body border-bottom">
+    <form id="jobs-filters" class="row g-2" method="get" action="/admin/jobs" hx-get="/admin/jobs" hx-target="#jobs-table" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, change, input changed delay:300ms from:#jobs-q">
+      <div class="col-12 col-md-3"><label class="form-label" for="jobs-q">Recherche</label><input class="form-control" id="jobs-q" type="search" name="q" value="{{ lst.params.q }}" placeholder="espèce, département, résumé, identifiant"></div>
+      <div class="col-6 col-md-3"><label class="form-label" for="jobs-kind">Sorte</label>
+        <select class="form-select" id="jobs-kind" name="kind"><option value="">toutes</option>{% for k, label in kinds.items() %}<option value="{{ k }}"{{ ' selected' if lst.params.kind == k }}>{{ label }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="jobs-status">État</label>
+        <select class="form-select" id="jobs-status" name="status"><option value="">tous</option>{% for s in statuses %}<option value="{{ s }}"{{ ' selected' if lst.params.status == s }}>{{ s }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="jobs-origin">Origine</label>
+        <select class="form-select" id="jobs-origin" name="origin"><option value="">toutes</option>{% for o in origins %}<option value="{{ o }}"{{ ' selected' if lst.params.origin == o }}>{{ o }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2 d-flex align-items-end gap-2"><button class="btn btn-primary" type="submit">Filtrer</button><a class="btn" href="/admin/jobs">Effacer</a></div>
+    </form>
+  </div>
+  {% include "partials/_jobs_table.html" %}
+</div>
+{% endblock %}

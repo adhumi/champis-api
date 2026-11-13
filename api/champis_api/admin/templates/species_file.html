@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}{{ f.names.fr if f.names else data.id }} : fichier{% endblock %}
+{% block crumbs %}<ol class="breadcrumb mb-1" aria-label="Fil d'Ariane"><li class="breadcrumb-item"><a href="/admin/species">Espèces</a></li><li class="breadcrumb-item"><a href="/admin/species/{{ data.id }}">{{ f.names.fr if f.names else data.id }}</a></li><li class="breadcrumb-item active" aria-current="page">Fichier</li></ol>{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0"><code>species/{{ data.id }}.json</code> tel que le référentiel le porte, en lecture seule : il se modifie par PR dans <code>adhumi/champis</code>.</p>{% endblock %}
+{% block actions %}<a class="btn" href="https://github.com/adhumi/champis/blob/main/species/{{ data.id }}.json" rel="noopener">Voir sur GitHub</a>{% endblock %}
+{% block content %}
+{% set t = f.terrain or {} %}{% set p = f.phenology or {} %}{% set a = f.about %}
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">En-tête</h2></div>
+  <dl class="card-body row mb-0">
+    <dt class="col-sm-3 fw-normal text-secondary">id</dt><dd class="col-sm-9"><code>{{ f.id }}</code></dd>
+    <dt class="col-sm-3 fw-normal text-secondary">schéma</dt><dd class="col-sm-9">version {{ f.schema_version }} · empreinte <code>{{ data.hash }}</code></dd>
+    {% if f.group %}<dt class="col-sm-3 fw-normal text-secondary">groupe</dt><dd class="col-sm-9">{{ f.group.fr or f.group.id }} (<code>{{ f.group.id }}</code>)</dd>{% endif %}
+    {% if f.names %}<dt class="col-sm-3 fw-normal text-secondary">noms</dt><dd class="col-sm-9">{{ f.names.fr }} · <em>{{ f.names.la }}</em></dd>{% endif %}
+    {% if f.notes %}<dt class="col-sm-3 fw-normal text-secondary">notes</dt><dd class="col-sm-9">{{ f.notes }}</dd>{% endif %}
+  </dl>
+</div>
+
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Terrain → potentiel T</h2><div class="card-actions text-secondary">T = hôte × Σ poids × facteur ; altitude hors [min, max] → T = 0</div></div>
+  <div class="card-body">
+    {% if s.terrain.hosts %}<h3>Hôtes <small class="text-secondary fw-normal">poids 0–1 par hôte BD Forêt, default pour une clé absente</small> {{ m.refs(s.terrain.refs.hosts, s.refs) }}</h3>{{ m.bars(s.terrain.hosts) }}{% endif %}
+    {% if s.terrain.cover %}<h3 class="mt-3">Couvert {{ m.refs(s.terrain.refs.cover, s.refs) }}</h3>{{ m.bars(s.terrain.cover) }}{% endif %}
+    {% if s.terrain.trapezoids %}<dl class="params mt-3">{% for z in s.terrain.trapezoids %}<dt>{{ z.label }}</dt><dd>{{ m.trapezoid(z.trapezoid) }} {{ m.refs(z.refs, s.refs) }}</dd>{% endfor %}</dl>{% endif %}
+    {% if s.terrain.aspect %}<h3 class="mt-3">Exposition {{ m.refs(s.terrain.refs.aspect, s.refs) }}</h3>{{ m.bars(s.terrain.aspect) }}{% endif %}
+    {% if s.terrain.weights %}<h3 class="mt-3">Poids <small class="text-secondary fw-normal">somme {{ s.terrain.weights_sum | num }}</small> {{ m.refs(s.terrain.refs.weights, s.refs) }}</h3>{{ m.bars(s.terrain.weights) }}{% endif %}
+    {{ m.params(s.terrain.params) }}
+  </div>
+</div>
+
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Phénologie → fenêtre Φ</h2><div class="card-actions text-secondary">0 hors saison, plancher 0,25 en saison, 1 au pic, rampes linéaires</div></div>
+  <div class="card-body">
+    <dl class="params">
+      {% if p.season %}<dt>saison</dt><dd>{{ p.season.start }} → {{ p.season.end }}</dd>{% endif %}
+      {% if p.peak %}<dt>pic</dt><dd>{{ p.peak.start }} → {{ p.peak.end }}</dd>{% endif %}
+      {% if p.ramp_days is defined %}<dt>rampe</dt><dd>{{ p.ramp_days | num(0) }} jours</dd>{% endif %}
+      {% if p.secondary_peak %}<dt>pic secondaire</dt><dd>{{ p.secondary_peak.start }} → {{ p.secondary_peak.end }}, Φ = {{ p.secondary_peak.phi | num }}</dd>{% endif %}
+      {% if p.altitude_shift %}{% set sh = p.altitude_shift %}<dt>décalage en altitude</dt><dd>référence {{ sh.reference_m | num(0) }} m · début {{ sh.start_days_per_100m | num }} j et fin {{ sh.end_days_per_100m | num }} j par 100 m · au plus ±{{ sh.max_days | num(0) }} j</dd>{% endif %}
+      {% if p.refs %}<dt>références</dt><dd>{{ m.refs(p.refs, s.refs) }}</dd>{% endif %}
+    </dl>
+    {% if s.phenology.chart %}{% set c = s.phenology.chart %}
+    <svg class="phi" viewBox="0 0 {{ c.w }} {{ c.h }}" role="img" aria-label="Fenêtre Φ jour par jour sur une année">
+      {% for l in c.levels %}<line class="{{ 'axis' if l.axis else 'grid' }}" x1="{{ c.x1 }}" y1="{{ l.y }}" x2="{{ c.x2 }}" y2="{{ l.y }}"/>{% endfor %}
+      {% for mo in c.months %}<line class="grid" x1="{{ mo.x }}" y1="{{ mo.y1 }}" x2="{{ mo.x }}" y2="{{ mo.y2 }}"/><text x="{{ mo.x + 2 }}" y="{{ c.h - 5 }}">{{ mo.label }}</text>{% endfor %}
+      {% for curve in c.curves %}<path class="line line{{ loop.index0 }}" d="{{ curve.d }}"/>{% endfor %}
+    </svg>
+    <p class="text-secondary">{% for curve in c.curves %}<span class="legend line{{ loop.index0 }}">à {{ curve.altitude_m | num(0) }} m</span> {% endfor %}</p>
+    {% endif %}
+    {{ m.params(s.phenology.params) }}
+  </div>
+</div>
+
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Météo → indice M</h2></div>
+  {% if s.weather.factors %}
+  <div class="table-responsive"><table class="table card-table">
+    <thead><tr><th>facteur</th><th>paramètres</th><th>réf.</th></tr></thead>
+    <tbody>
+    {% for w in s.weather.factors %}
+    <tr><td><strong>{{ w.label }}</strong>{% if w.label != w.key %}<div class="text-secondary"><code>{{ w.key }}</code></div>{% endif %}</td>
+      <td>{% if w.trapezoid %}{{ m.trapezoid(w.trapezoid) }}{% elif w.params is not none %}{{ m.params(w.params) }}{% else %}{{ w.text }}{% endif %}</td>
+      <td>{{ m.refs(w.refs, s.refs) }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ m.empty("Bloc weather absent") }}{% endif %}
+  {% if s.weather.weights %}<div class="card-body"><h3>Poids</h3>{{ m.bars(s.weather.weights) }}</div>{% endif %}
+</div>
+
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Fiche en mots</h2><div class="card-actions text-secondary">exclue de l'empreinte : la relire ne régénère rien</div></div>
+  {% if a %}
+  <div class="card-body">
+    <dl class="params">
+      {% for key, label in (("summary", "résumé"), ("habitat", "habitat"), ("season", "saison")) %}{% if a[key] %}<dt>{{ label }}</dt><dd>{{ a[key] }}</dd>{% endif %}{% endfor %}
+      {% if a.refs %}<dt>références</dt><dd>{{ m.refs(a.refs, s.refs) }}</dd>{% endif %}
+    </dl>
+    <h3>Confusions</h3>
+    {% if a.confusions %}<ul>{% for c in a.confusions %}<li>{% if c is mapping %}<strong>{{ c.name or c.fr or c.id or '' }}</strong>{% if c.la %} <em>({{ c.la }})</em>{% endif %}{% for k, val in c.items() if k not in ('name', 'fr', 'id', 'la') %} · <span class="text-secondary">{{ k }} :</span> {{ val }}{% endfor %}{% else %}{{ c }}{% endif %}</li>{% endfor %}</ul>
+    {% else %}<p class="text-secondary">aucune</p>{% endif %}
+    <h3>Photo</h3>
+    {% if a.photo %}<dl class="params">{% if a.photo is mapping %}{% for k, val in a.photo.items() %}<dt>{{ k }}</dt><dd>{% if val is string and val.startswith('http') %}<a href="{{ val }}" rel="noopener">{{ val }}</a>{% else %}{{ val }}{% endif %}</dd>{% endfor %}{% else %}<dt>photo</dt><dd>{{ a.photo }}</dd>{% endif %}</dl>
+    {% else %}<p class="text-secondary">aucune (null)</p>{% endif %}
+    {{ m.params(s.about_params) }}
+  </div>
+  {% else %}{{ m.empty("Bloc about absent", "Sans fiche en mots, l'espèce n'est pas complète et n'est pas servie aux clients.") }}{% endif %}
+</div>
+
+{% set ill = data.illustration %}
+<div class="card mb-3" id="illustration"><div class="card-header"><h2 class="card-title">Illustration</h2><div class="card-actions text-secondary">requise pour une espèce complète</div></div>
+  <div class="card-body">
+    {% if ill.present %}<figure><img class="illustration" src="/admin/api/species/{{ data.id }}/illustration" alt="Illustration de {{ data.id }}" loading="lazy"><figcaption class="text-secondary"><code>{{ ill.file }}</code> · {{ ill.bytes | size }}</figcaption></figure>
+    {% else %}<p class="text-secondary">Aucune planche dans le référentiel : l'espèce n'est pas complète tant qu'elle manque. Aquarelle à générer d'après le prompt ci-dessous, puis à déposer en <code>shared/illustrations/{{ data.id }}.jpg</code>.</p>{% endif %}
+    {% if ill.prompt %}
+    {% for title, text in (("Prompt complet (Midjourney, paramètres compris)", ill.prompt.midjourney), ("Prompt sans paramètres (Gemini, avec l'image de style jointe)", ill.prompt.full)) %}
+    <h3>{{ title }} <button class="btn btn-sm" type="button" data-js data-copy="prompt-{{ loop.index }}">Copier</button></h3>
+    <pre class="prompt" id="prompt-{{ loop.index }}">{{ text }}</pre>
+    {% endfor %}
+    <details><summary class="text-secondary">Les trois blocs séparés</summary>
+      {% for title, text in (("Style (commun)", ill.prompt.style), ("Composition (commune)", ill.prompt.composition), ("Sujet (cette espèce)", ill.prompt.subject)) %}
+      <h3 class="mt-2">{{ title }} <button class="btn btn-sm" type="button" data-js data-copy="block-{{ loop.index }}">Copier</button></h3>
+      <pre class="prompt" id="block-{{ loop.index }}">{{ text }}</pre>
+      {% endfor %}
+    </details>
+    {% else %}<p class="text-secondary m-0">Aucun prompt pour cette espèce dans <code>shared/illustrations/PROMPTS.md</code> : y ajouter un bloc sujet.</p>{% endif %}
+  </div>
+</div>
+
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Références</h2><div class="card-actions text-secondary">{{ s.ref_rows | length }} sources</div></div>
+  {% if s.ref_rows %}<div class="table-responsive"><table class="table card-table"><tbody>{% for k, text in s.ref_rows %}<tr><td class="w-1"><code>{{ k }}</code></td><td>{{ text }}</td></tr>{% endfor %}</tbody></table></div>
+  {% else %}{{ m.empty("Aucune référence") }}{% endif %}
+</div>
+
+{% if s.extra %}
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Autres champs</h2><div class="card-actions text-secondary">inconnus de cette page, montrés tels quels</div></div>
+  <div class="card-body"><pre>{{ s.extra | tojson_pretty }}</pre></div>
+</div>
+{% endif %}
+{% endblock %}

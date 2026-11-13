@@ -6,6 +6,11 @@ clé d'admin : rien n'est stocké côté serveur, changer la clé déconnecte to
 SameSite=Strict, limité à `/admin`, 30 jours. Les routes refusent toute requête dont l'`Origin`
 n'est pas celle de l'API : une page tierce ne peut ni lire ni agir, et `Authorization` n'entre pas
 dans les en-têtes CORS autorisés. Les actions (`POST`) exigent en plus `X-Champis-Admin: 1`.
+
+Pages rendues par le serveur (lot BO6, `pages.py`) : un `<form>` ne peut pas poser d'en-tête, ses
+`POST` portent donc un champ caché `csrf`, HMAC du cookie de session par la même clé dérivée
+(`csrf_token`) ; l'API JSON garde son en-tête. Les messages d'une redirection (`flash`) voyagent
+dans un cookie signé de la même façon, lu une fois.
 """
 
 from __future__ import annotations
@@ -52,6 +57,37 @@ def key_matches(key: str, given: str | None) -> bool:
     return hmac.compare_digest(key.encode("utf-8"), given.encode("utf-8"))
 
 
+def csrf_token(key: str, session: str | None) -> str:
+    """Jeton des formulaires : lié au cookie de session (vide avec un `Bearer`), jamais stocké."""
+    msg = b"csrf:" + (session or "").encode("utf-8")
+    return hmac.new(_derived(key), msg, hashlib.sha256).hexdigest()[:40]
+
+
+def csrf_valid(key: str, session: str | None, given: str | None) -> bool:
+    return bool(given) and hmac.compare_digest(csrf_token(key, session), given or "")
+
+
+def sign(key: str, text: str) -> str:
+    """`<signature>.<texte>` pour le cookie des messages : rien d'autre que nous ne l'écrit."""
+    sig = hmac.new(_derived(key), b"flash:" + text.encode("utf-8"), hashlib.sha256).hexdigest()[:24]
+    return f"{sig}.{text}"
+
+
+def unsign(key: str, value: str | None) -> str | None:
+    if not value or "." not in value:
+        return None
+    sig, text = value.split(".", 1)
+    return text if hmac.compare_digest(sign(key, text).split(".", 1)[0], sig) else None
+
+
+def logged_in(request: Request, key: str) -> bool:
+    """Cookie valide ou `Bearer` : la session d'une page comme d'un appel JSON."""
+    header = request.headers.get("authorization", "")
+    if header.startswith("Bearer ") and key_matches(key, header[7:].strip()):
+        return True
+    return token_valid(key, request.cookies.get(COOKIE))
+
+
 def enabled(request: Request) -> str:
     """La clé configurée, ou 404 : sans clé le backoffice n'existe pas."""
     key = getattr(request.app.state, "settings", None)
@@ -74,12 +110,8 @@ def same_origin(request: Request) -> None:
 
 def authenticated(request: Request, key: Annotated[str, Depends(enabled)]) -> None:
     same_origin(request)
-    auth = request.headers.get("authorization", "")
-    if auth.startswith("Bearer ") and key_matches(key, auth[7:].strip()):
-        return
-    if token_valid(key, request.cookies.get(COOKIE)):
-        return
-    raise HTTPException(401, "clé requise")
+    if not logged_in(request, key):
+        raise HTTPException(401, "clé requise")
 
 
 def action(request: Request, _: Annotated[None, Depends(authenticated)]) -> None:

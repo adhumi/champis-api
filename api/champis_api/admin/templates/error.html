@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<div class="empty">
+  <div class="empty-header">{{ status_code | default('') }}</div>
+  <p class="empty-title">{{ title }}</p>
+  {% if detail %}<p class="empty-subtitle text-secondary">{{ detail }}</p>{% endif %}
+  {% if logged %}<div class="empty-action"><a class="btn btn-primary" href="/admin/health">Revenir à la santé</a></div>{% endif %}
+</div>
+{% endblock %}

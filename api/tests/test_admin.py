@@ -70,7 +70,10 @@ async def test_without_a_key_the_backoffice_does_not_exist(grid, client, store):
 
 @pytest.mark.asyncio
 async def test_login_cookie_bearer_origin_and_logout(admin: httpx.AsyncClient):
+    # sans session, la page d'entrée mène à la connexion (pages : test_admin_pages.py)
     r = await admin.get("/admin")
+    assert r.status_code == 303 and r.headers["location"] == "/admin/login"
+    r = await admin.get("/admin/login")
     assert r.status_code == 200 and "backoffice" in r.text
     assert r.headers["x-robots-tag"].startswith("noindex")
     for name in ("admin.js", "admin.css"):

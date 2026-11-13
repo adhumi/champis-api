@@ -1,0 +1,82 @@
+{# Briques communes des pages : rien n'est calculé ici, tout vient de `views.py`. #}
+
+{% macro csrf_field(csrf) %}<input type="hidden" name="csrf" value="{{ csrf }}">{% endmacro %}
+
+{% macro badge(text, color) %}<span class="badge bg-{{ color or 'secondary' }}-lt">{{ text }}</span>{% endmacro %}
+
+{% macro status(s) %}{{ badge(s, status_colors.get(s)) }}{% endmacro %}
+
+{% macro state(s) %}{{ badge(states.get(s, s), state_colors.get(s)) }}{% endmacro %}
+
+{% macro dot(kind) %}<span class="status-dot {{ {'ok': 'bg-green', 'warn': 'bg-orange', 'error': 'bg-red'}.get(kind, 'bg-secondary') }}" title="{{ {'ok': 'à jour', 'warn': 'à faire', 'error': 'en échec'}.get(kind, 'inconnu') }}"></span>{% endmacro %}
+
+{# En-tête de colonne triable : un vrai lien, que htmx transforme en échange du seul tableau. #}
+{% macro th(lst, column, label, class="") %}
+<th class="{{ class }}"><a class="table-sort-link" href="{{ lst.sort_url(column) }}" hx-get="{{ lst.sort_url(column) }}" hx-push-url="true">{{ label }}{% if lst.arrow(column) %} <span aria-hidden="true">{{ lst.arrow(column) }}</span><span class="visually-hidden">(tri {{ 'décroissant' if lst.desc else 'croissant' }})</span>{% endif %}</a></th>
+{% endmacro %}
+
+{# Tri et sens courants, rattachés au formulaire de filtres : filtrer garde le tri, même sans JS. #}
+{% macro sort_state(lst, form_id) %}
+{% if lst.query().get('sort') %}
+<input type="hidden" name="sort" value="{{ lst.sort }}" form="{{ form_id }}">
+<input type="hidden" name="dir" value="{{ 'desc' if lst.desc else 'asc' }}" form="{{ form_id }}">
+{% endif %}
+{% endmacro %}
+
+{% macro pagination(lst, page, noun) %}
+<div class="card-footer d-flex align-items-center flex-wrap gap-2">
+  <p class="m-0 text-secondary">{% if page.total %}{{ page.first }}–{{ page.last }} sur {{ page.total | n }} {{ noun }}{% else %}0 {{ noun }}{% endif %}</p>
+  {% if page.pages > 1 %}
+  <ul class="pagination m-0 ms-auto">
+    <li class="page-item {{ 'disabled' if page.page == 1 }}"><a class="page-link" {% if page.page > 1 %}href="{{ lst.url(page=page.page - 1) }}" hx-get="{{ lst.url(page=page.page - 1) }}" hx-push-url="true"{% endif %} rel="prev">Précédente</a></li>
+    {% for p in page.window %}
+    <li class="page-item {{ 'active' if p == page.page }}"><a class="page-link" href="{{ lst.url(page=p) }}" hx-get="{{ lst.url(page=p) }}" hx-push-url="true" {% if p == page.page %}aria-current="page"{% endif %}>{{ p }}</a></li>
+    {% endfor %}
+    <li class="page-item {{ 'disabled' if page.page == page.pages }}"><a class="page-link" {% if page.page < page.pages %}href="{{ lst.url(page=page.page + 1) }}" hx-get="{{ lst.url(page=page.page + 1) }}" hx-push-url="true"{% endif %} rel="next">Suivante</a></li>
+  </ul>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro empty(title, text="", url="", label="") %}
+<div class="empty">
+  <p class="empty-title">{{ title }}</p>
+  {% if text %}<p class="empty-subtitle text-secondary">{{ text }}</p>{% endif %}
+  {% if url %}<div class="empty-action"><a class="btn btn-primary" href="{{ url }}">{{ label }}</a></div>{% endif %}
+</div>
+{% endmacro %}
+
+{# Liste filtrée sans résultat, liste vide, ou source injoignable : trois messages différents. #}
+{% macro empty_list(lst, total, noun, nothing, problem="") %}
+{% if problem %}{{ empty("Liste indisponible", problem) }}
+{% elif total and lst.filtered %}{{ empty("Aucun résultat", "Aucune de ces " ~ total ~ " " ~ noun ~ " ne correspond aux filtres.", lst.path, "Effacer les filtres") }}
+{% else %}{{ empty(nothing[0], nothing[1]) }}{% endif %}
+{% endmacro %}
+
+{% macro alert(level, text) %}
+<div class="alert alert-{{ {'error': 'danger', 'warn': 'warning', 'warning': 'warning', 'success': 'success', 'ok': 'success'}.get(level, 'info') }}" role="{{ 'alert' if level in ('error', 'warn', 'warning') else 'status' }}">{{ text }}</div>
+{% endmacro %}
+
+{% macro spark(s) %}
+<svg class="spark" viewBox="0 0 {{ s.w }} {{ s.h }}" preserveAspectRatio="none" role="img" aria-label="une barre par jour">
+{% for b in s.bars %}<rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.w }}" height="{{ b.h }}"{% if b.empty %} class="empty"{% endif %}><title>{{ b.title }}</title></rect>{% endfor %}
+</svg>
+{% endmacro %}
+
+{% macro trapezoid(t) %}
+<span class="trapwrap"><svg class="trap" viewBox="0 0 {{ t.w }} {{ t.h }}" aria-hidden="true"><line class="axis" x1="{{ t.x1 }}" y1="{{ t.bottom }}" x2="{{ t.x2 }}" y2="{{ t.bottom }}"/><polygon points="{{ t.points }}"/></svg> <span class="text-secondary">{{ t.label }}</span></span>
+{% endmacro %}
+
+{% macro bars(rows, wide=false) %}
+<div class="bars{{ ' wide' if wide or rows | length > 12 }}">
+{% for r in rows %}<span>{{ r.key }}</span><div class="bar"><div style="width:{{ r.pct }}%"></div></div><span class="pct">{{ r.value | num }}</span>{% endfor %}
+</div>
+{% endmacro %}
+
+{% macro refs(keys, dict) %}{% for k in keys or [] %}<abbr class="ref" title="{{ dict.get(k, 'référence absente du fichier') }}">{{ k }}</abbr> {% endfor %}{% endmacro %}
+
+{% macro params(rows) %}
+{% if rows %}<dl class="params">
+{% for p in rows %}<dt>{{ p.key }}</dt><dd>{% if p.trapezoid %}{{ trapezoid(p.trapezoid) }}{% elif p.raw is defined %}<code>{{ p.raw | tojson }}</code>{% else %}{{ p.text }}{% endif %}</dd>{% endfor %}
+</dl>{% endif %}
+{% endmacro %}

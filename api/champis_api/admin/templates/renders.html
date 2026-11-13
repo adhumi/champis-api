@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Cartes HD{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">Cartes de France du potentiel toute saison présentes dans le bucket. Une carte se génère depuis la page de son espèce.</p>{% endblock %}
+{% block actions %}<a class="btn btn-primary" href="/admin/tools/render?species=all">Générer toutes les cartes</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body border-bottom">
+    <form id="renders-filters" class="row g-2" method="get" action="/admin/renders" hx-get="/admin/renders" hx-target="#renders-table" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, change, input changed delay:300ms from:#renders-q">
+      <div class="col-12 col-md-5"><label class="form-label" for="renders-q">Recherche</label><input class="form-control" id="renders-q" type="search" name="q" value="{{ lst.params.q }}" placeholder="espèce"></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="renders-zoom">Niveau</label>
+        <select class="form-select" id="renders-zoom" name="zoom"><option value="">tous</option>{% for z in zooms %}<option value="{{ z }}"{{ ' selected' if lst.params.zoom == z | string }}>{{ z }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-3"><label class="form-label" for="renders-set">Jeu</label>
+        <select class="form-select" id="renders-set" name="set"><option value="">tous</option><option value="courant"{{ ' selected' if lst.params.set == 'courant' }}>jeu courant</option><option value="ancien"{{ ' selected' if lst.params.set == 'ancien' }}>ancien jeu</option></select></div>
+      <div class="col-12 col-md-2 d-flex align-items-end gap-2"><button class="btn btn-primary" type="submit">Filtrer</button><a class="btn" href="/admin/renders">Effacer</a></div>
+    </form>
+  </div>
+  {% include "partials/_renders_table.html" %}
+</div>
+{% endblock %}

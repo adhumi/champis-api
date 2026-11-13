@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Espèces{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">{{ 'Jeu publié du ' ~ (d.manifest_generated | when) if d.manifest_generated else 'Aucun jeu publié' }} · {{ 'volume du worker relevé ' ~ (d.inventory_at | ago(now)) if d.inventory_at else 'worker muet : état du volume inconnu' }} · grille météo {{ 'à jour' if d.grid.current else 'à refaire' }}</p>{% endblock %}
+{% block actions %}<a class="btn" href="/admin/tools/render?species=all">Générer toutes les cartes HD</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body border-bottom">
+    <form id="species-filters" class="row g-2" method="get" action="/admin/species" hx-get="/admin/species" hx-target="#species-table" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, change, input changed delay:300ms from:#species-q">
+      <div class="col-12 col-md-4"><label class="form-label" for="species-q">Recherche</label><input class="form-control" id="species-q" type="search" name="q" value="{{ lst.params.q }}" placeholder="nom, latin, identifiant, groupe"></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="species-state">État</label>
+        <select class="form-select" id="species-state" name="state"><option value="">tous</option>{% for k, label in states.items() %}<option value="{{ k }}"{{ ' selected' if lst.params.state == k }}>{{ label }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="species-group">Groupe</label>
+        <select class="form-select" id="species-group" name="group"><option value="">tous</option>{% for gid, gname in groups %}<option value="{{ gid }}"{{ ' selected' if lst.params.group == gid }}>{{ gname }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="species-complete">Fiche</label>
+        <select class="form-select" id="species-complete" name="complete"><option value="">toutes</option><option value="oui"{{ ' selected' if lst.params.complete == 'oui' }}>complète</option><option value="non"{{ ' selected' if lst.params.complete == 'non' }}>incomplète</option></select></div>
+      <div class="col-6 col-md-2 d-flex align-items-end gap-2"><button class="btn btn-primary" type="submit">Filtrer</button><a class="btn" href="/admin/species">Effacer</a></div>
+    </form>
+  </div>
+  {% include "partials/_species_table.html" %}
+</div>
+{% endblock %}

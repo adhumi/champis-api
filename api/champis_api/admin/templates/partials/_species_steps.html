@@ -1,0 +1,32 @@
+{% import "partials/_macros.html" as m %}
+{# Suivi : tant qu'une tâche de l'espèce tourne, htmx relit ce bloc ; à la fin, la page se recharge. #}
+<div id="species-live" class="card mb-3"{% if sp.jobs %} hx-get="/admin/species/{{ sp.id }}?zoom={{ zoom }}&amp;live=1" hx-trigger="every 5s" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <div class="card-header"><h2 class="card-title">Étapes {{ m.state(sp.state) }}</h2>
+    {% if sp.jobs %}<div class="card-actions"><a class="btn btn-sm" href="/admin/species/{{ sp.id }}?zoom={{ zoom }}">Rafraîchir</a></div>{% endif %}
+  </div>
+  {% if sp.jobs %}
+  <div class="card-body border-bottom">
+    {% for j in sp.jobs %}<div>{{ m.status(j.status) }} <a href="/admin/jobs/{{ j.id }}">{{ j.kind | kind_label }}</a>{% if j.step_name %} <span class="text-secondary">· {{ j.step_name }}</span>{% endif %}</div>{% endfor %}
+    <p class="text-secondary m-0 mt-1">Une étape à la fois : les boutons se rallument quand la tâche est finie.</p>
+  </div>
+  {% endif %}
+  <div class="list-group list-group-flush">
+    {% for s in steps %}
+    <div class="list-group-item">
+      <div class="row g-2 align-items-center">
+        <div class="col-auto">{{ m.dot(s.dot) }}</div>
+        <div class="col"><strong>{{ s.title }}</strong><div class="text-secondary">{{ s.detail }}</div>{% if s.disabled and not sp.jobs %}<div class="text-secondary"><small>Bouton éteint : {{ s.disabled }}.</small></div>{% endif %}</div>
+        <div class="col-12 col-md-auto d-flex gap-2">
+          <form method="post" action="/admin/tools/{{ s.kind }}">
+            {{ m.csrf_field(csrf) }}
+            <input type="hidden" name="back" value="/admin/species/{{ sp.id }}">
+            {% for name, value in s.args.items() %}{% for one in (value.split() if name == 'species' and s.kind != 'render' else [value]) %}<input type="hidden" name="{{ name }}" value="{{ one }}">{% endfor %}{% endfor %}
+            <button class="btn btn-primary" type="submit"{{ ' disabled' if s.disabled }}>{{ s.label }}</button>
+          </form>
+          <a class="btn" href="/admin/tools/{{ s.kind }}?{{ s.args | urlencode }}" title="Ouvrir le formulaire de l'outil avec ces options">Options</a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>

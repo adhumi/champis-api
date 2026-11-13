@@ -1,0 +1,10 @@
+{% import "partials/_macros.html" as m %}
+<div id="tools-queue" class="card mb-3"{% if queue %} hx-get="/admin/tools" hx-trigger="every 5s" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <div class="card-header"><h2 class="card-title">File d'attente</h2><div class="card-actions"><a href="/admin/jobs">Tout le journal</a></div></div>
+  {% if queue %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr><th>tâche</th><th>origine</th><th>état</th><th>depuis</th><th>dernier mot</th></tr></thead>
+    <tbody>{% for j in queue %}<tr><td><a href="/admin/jobs/{{ j.id }}">{{ j.kind | kind_label }}</a></td><td>{{ j.origin }}</td><td>{{ m.status(j.status) }}</td><td>{{ (j.started_at or j.created_at) | ago(now) }}</td><td class="text-secondary">{{ j | last_word }}</td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% else %}<div class="card-body text-secondary">Rien en file ni en cours.</div>{% endif %}
+</div>

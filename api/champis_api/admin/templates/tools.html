@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Outils{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">Chaque outil est une commande <code>champis-api</code> ou <code>champis-pipeline</code> aux options bornées, lancée par le service <code>champis-jobs</code> sur son volume, une tâche à la fois.</p>{% endblock %}
+{% block content %}
+{% if workers %}
+{% set w = workers[0] %}
+{{ m.alert("ok", "Service " ~ w.name ~ " : battement " ~ (w.heartbeat_at | ago(now)) ~ (", " ~ ((w.disk_free_mb * 1000000) | size) ~ " libres" if w.disk_free_mb is not none else "") ~ (", une tâche en cours" if w.current_job else ", libre")) }}
+{% else %}{{ m.alert("warn", "Aucun service d'exécution n'a encore battu : une tâche lancée attendra qu'il démarre.") }}{% endif %}
+{% include "partials/_queue.html" %}
+<div class="row row-cards">
+  {% for t in tools %}
+  {% set busy = queue | selectattr('kind', 'equalto', t.kind) | first %}
+  <div class="col-md-6 col-xl-4"><div class="card h-100">
+    <div class="card-body">
+      <h2 class="card-title">{{ t.label }}</h2>
+      <p class="text-secondary mb-1">{{ t.duration }}</p>
+      <p class="text-secondary mb-0"><small>{{ t.needs }}{% if t.exclusive %} · une seule à la fois{% endif %}{% if t.min_free_gb %} · {{ t.min_free_gb | num }} Go libres requis{% endif %}</small></p>
+    </div>
+    <div class="card-footer d-flex align-items-center gap-2">
+      <code>{{ t.kind }}</code>
+      {% if busy %}<a class="ms-auto" href="/admin/jobs/{{ busy.id }}">{{ m.status(busy.status) }}</a>{% endif %}
+      <a class="btn btn-primary {{ '' if busy else 'ms-auto' }}" href="/admin/tools/{{ t.kind }}">Ouvrir</a>
+    </div>
+  </div></div>
+  {% endfor %}
+</div>
+{% endblock %}

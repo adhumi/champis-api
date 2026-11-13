@@ -1,0 +1,36 @@
+{% import "partials/_macros.html" as m %}
+{% set active = job.status in v.ACTIVE %}
+<div id="job-live"{% if active %} hx-get="/admin/jobs/{{ job.id }}" hx-trigger="every 3s" hx-target="this" hx-swap="outerHTML"{% endif %}>
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+        {{ m.status(job.status) }}
+        <span>{{ v.fmt_duration(job.started_at, job.finished_at, now) if job.started_at else 'en attente du worker' }}</span>
+        {% if job.worker %}<span class="text-secondary">· sur {{ job.worker }}</span>{% endif %}
+        {% if job.exit_code is not none %}<span class="text-secondary">· code {{ job.exit_code }}</span>{% endif %}
+        {% if job.cancel_requested and active %}<span class="text-secondary">· annulation demandée</span>{% endif %}
+        <span class="ms-auto d-flex gap-2">
+          {% if active %}<a class="btn btn-sm" href="/admin/jobs/{{ job.id }}">Rafraîchir</a>{% endif %}
+          {% if active and not job.cancel_requested %}
+          <form method="post" action="/admin/jobs/{{ job.id }}/cancel" hx-post="/admin/jobs/{{ job.id }}/cancel" hx-target="#job-live" hx-swap="outerHTML" hx-confirm="Annuler cette tâche ? Les étapes faites restent faites ; relancer reprendra là où ça s'est arrêté.">
+            {{ m.csrf_field(csrf) }}
+            <button class="btn btn-sm btn-outline-danger" type="submit">Annuler cette tâche</button>
+          </form>
+          {% endif %}
+        </span>
+      </div>
+      {% set pct = v.job_percent(job) %}
+      <div class="progress mb-2" role="progressbar" aria-label="Avancement" aria-valuenow="{{ pct | round | int }}" aria-valuemin="0" aria-valuemax="100"><div class="progress-bar{{ ' bg-red' if job.status == 'failed' else ' bg-green' if job.status == 'ok' else '' }}" style="width:{{ pct | round(1) }}%"></div></div>
+      <p class="text-secondary m-0">{{ v.job_progress_text(job) or job.summary or '' }}</p>
+      {% if job.summary %}<p class="m-0 mt-1"><strong>{{ job.summary }}</strong></p>{% endif %}
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Événements</h2></div>
+    {% if events %}
+    <div class="table-responsive"><table class="table card-table table-sm events">
+      <tbody>{% for e in events %}<tr class="{{ 'text-red' if e.level == 'error' else 'text-orange' if e.level in ('warn', 'warning') else '' }}"><td class="w-1 text-nowrap text-secondary">{{ e.at | clock }}</td><td>{{ e.text }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+    {% else %}{{ m.empty("Aucun événement", "La tâche n'a encore rien écrit." if active else "Cette tâche n'a rien écrit dans le journal.") }}{% endif %}
+  </div>
+</div>

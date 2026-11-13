@@ -1,0 +1,25 @@
+{% import "partials/_macros.html" as m %}
+<div id="species-table" hx-target="this" hx-swap="outerHTML">
+  {{ m.sort_state(lst, "species-filters") }}
+  {% if page.items %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr>
+      {{ m.th(lst, "name", "espèce") }}{{ m.th(lst, "group", "groupe") }}{{ m.th(lst, "state", "état") }}{{ m.th(lst, "complete", "fiche") }}{{ m.th(lst, "usage", "usage " ~ d.usage_days ~ " j (espèce et groupe)") }}
+    </tr></thead>
+    <tbody>
+    {% for sp in page.items %}
+    <tr>
+      <td><a href="/admin/species/{{ sp.id }}"><strong>{{ sp.name }}</strong></a><div class="text-secondary"><em>{{ sp.latin }}</em></div></td>
+      <td>{{ sp.group.name }}</td>
+      <td>{{ m.state(sp.state) }}</td>
+      <td>{{ m.badge(v.completeness_text(sp.completeness), 'green' if sp.completeness.complete else 'orange') }}</td>
+      <td class="text-secondary">{% if sp.usage.app_share is none and sp.usage.web_share is none %}·{% else %}{{ '·' if sp.usage.app_share is none else sp.usage.app_share ~ ' %' }} app · {{ '·' if sp.usage.web_share is none else sp.usage.web_share ~ ' %' }} site{% endif %}</td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ m.pagination(lst, page, "espèces") }}
+  {% else %}
+  {{ m.empty_list(lst, total, "espèces", ("Aucune espèce", "Le référentiel ne contient aucun fichier species/*.json.")) }}
+  {% endif %}
+</div>

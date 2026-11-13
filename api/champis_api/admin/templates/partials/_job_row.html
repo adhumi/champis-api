@@ -1,0 +1,14 @@
+{% import "partials/_macros.html" as m %}
+<tr id="job-row-{{ j.id }}">
+  <td><a href="/admin/jobs/{{ j.id }}"><strong>{{ j.kind | kind_label }}</strong></a><div class="text-secondary"><small>{{ v.job_args_text(j) }}</small></div></td>
+  <td>{{ j.origin }}</td>
+  <td>{{ m.status(j.status) }}{% if j.cancel_requested and j.status == 'running' %} <small class="text-secondary">annulation demandée</small>{% endif %}</td>
+  <td class="text-nowrap">{{ (j.started_at or j.created_at) | when }}</td>
+  <td class="text-nowrap">{{ v.fmt_duration(j.started_at, j.finished_at, now) if j.started_at else '—' }}</td>
+  <td class="text-secondary">{{ j | last_word }}</td>
+  <td>{% if j.status in v.ACTIVE and not j.cancel_requested %}
+    <form method="post" action="/admin/jobs/{{ j.id }}/cancel" hx-post="/admin/jobs/{{ j.id }}/cancel" hx-target="#job-row-{{ j.id }}" hx-swap="outerHTML" hx-confirm="Annuler cette tâche ? Les étapes faites restent faites.">
+      {{ m.csrf_field(csrf) }}<input type="hidden" name="next" value="{{ here }}">
+      <button class="btn btn-sm btn-outline-danger" type="submit">Annuler</button>
+    </form>{% endif %}</td>
+</tr>

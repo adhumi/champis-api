@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Sorties à committer{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">Ce que le pipeline produit sur le worker et qui est versionné dans champis-api (<code>data/weather_grid.json</code>) : à télécharger, puis à committer depuis un poste.</p>{% endblock %}
+{% block content %}
+<div class="card">
+  {% if rows %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr><th>fichier</th><th>produit le</th><th>taille</th><th>commande</th><th>sha256</th><th class="w-1"></th></tr></thead>
+    <tbody>{% for a in rows %}<tr><td><strong>{{ a.name }}</strong></td><td>{{ a.generated | when if a.generated else '—' }}</td><td>{{ a.bytes | size }}</td><td class="text-secondary"><code>{{ a.command or '' }}</code></td><td class="text-secondary"><code>{{ (a.sha256 or '')[:12] }}</code></td><td><a class="btn btn-sm" href="/admin/artifacts/open?key={{ a.key | urlencode }}">Télécharger</a></td></tr>{% endfor %}</tbody>
+  </table></div>
+  {% elif problem %}{{ m.empty("Liste indisponible", problem) }}
+  {% else %}{{ m.empty("Aucune sortie", "L'outil « grille météo » dépose weather_grid.json ici quand il tourne sur le worker.", "/admin/tools/weather-grid", "Ouvrir l'outil") }}{% endif %}
+</div>
+{% endblock %}

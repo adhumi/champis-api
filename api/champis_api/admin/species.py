@@ -110,7 +110,7 @@ def _concerns(job: dict[str, Any], sid: str, group_ids: list[str]) -> bool:
     return job["kind"] == "weather-grid"
 
 
-def list_reports(bucket: BucketLike) -> list[dict[str, Any]]:
+def list_reports(bucket: BucketLike, only: str | None = None) -> list[dict[str, Any]]:
     """Les rapports de contrôle GBIF du bucket (`reports/<espèce>-<dept>[-<variante>].html`, lot
     du 12 nov. 2026), avec les chiffres de leur `.json` : AUC, et pour une variante la référence
     et le verdict du critère d'entrée. Les plus récents en dernier (ordre des noms)."""
@@ -118,7 +118,7 @@ def list_reports(bucket: BucketLike) -> list[dict[str, Any]]:
     out = []
     for key, size in sorted(present.items()):
         name = key[len(REPORTS_PREFIX) :]
-        if not name.endswith(".html"):
+        if not name.endswith(".html") or (only and not name.startswith(only + "-")):
             continue
         data = bucket.get_json(REPORTS_PREFIX + name[: -len(".html")] + ".json") or {}
         species = data.get("species")
@@ -154,7 +154,11 @@ def gather(
     bucket: BucketLike | None,
     store: Store | None,
     workers: list[dict[str, Any]] | None = None,
+    only: str | None = None,
+    with_reports: bool = True,
 ) -> dict[str, Any]:
+    """`only` : une seule espèce (sa page du backoffice, sans lire les rapports des autres) ;
+    `with_reports=False` : la liste, qui ne les montre pas."""
     manifest: dict[str, Any] = {}
     renders: list[dict[str, Any]] = []
     reports: list[dict[str, Any]] = []
@@ -162,7 +166,7 @@ def gather(
         try:
             manifest = bucket.get_json(MANIFEST_KEY) or {}
             renders = render.list_renders(bucket)
-            reports = list_reports(bucket)
+            reports = list_reports(bucket, only) if with_reports else []
         except Exception:
             manifest = {}
     depts_by_hash = manifest.get("depts_by_hash", {})
@@ -188,6 +192,8 @@ def gather(
     current_grid = grid_hash(settings)
     out = []
     for sid in list_species():
+        if only and sid != only:
+            continue
         spec = load_species(sid)
         h = species_hash(sid)
         gid = spec["group"]["id"]

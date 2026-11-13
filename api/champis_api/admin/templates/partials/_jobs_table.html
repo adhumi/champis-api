@@ -1,0 +1,14 @@
+{% import "partials/_macros.html" as m %}
+{# Tant qu'une tâche de la page tourne, htmx relit la table ; sinon elle ne bouge pas. #}
+<div id="jobs-table" hx-target="this" hx-swap="outerHTML"{% if live %} hx-get="{{ lst.url() }}" hx-trigger="every 5s"{% endif %}>
+  {{ m.sort_state(lst, "jobs-filters") }}
+  {% if page.items %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr>{{ m.th(lst, "kind", "tâche") }}{{ m.th(lst, "origin", "origine") }}{{ m.th(lst, "status", "état") }}{{ m.th(lst, "created_at", "début") }}<th>durée</th><th>dernier mot</th><th class="w-1"></th></tr></thead>
+    <tbody>{% for j in page.items %}{% include "partials/_job_row.html" %}{% endfor %}</tbody>
+  </table></div>
+  {{ m.pagination(lst, page, "tâches") }}
+  {% else %}
+  {{ m.empty_list(lst, 1 if lst.filtered else 0, "tâches", ("Aucune tâche inscrite", "Les crons et les outils lancés d'ici s'inscrivent dans ce journal dès leur première exécution.")) }}
+  {% endif %}
+</div>

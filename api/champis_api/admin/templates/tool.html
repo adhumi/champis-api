@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}{{ tool.label }}{% endblock %}
+{% block crumbs %}<ol class="breadcrumb mb-1" aria-label="Fil d'Ariane"><li class="breadcrumb-item"><a href="/admin/tools">Outils</a></li><li class="breadcrumb-item active" aria-current="page">{{ tool.kind }}</li></ol>{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">{{ tool.duration }} · {{ tool.needs }}{% if tool.exclusive %} · une seule à la fois{% endif %}{% if tool.min_free_gb %} · {{ tool.min_free_gb | num }} Go libres requis{% endif %}</p>{% endblock %}
+{% block content %}
+{% if errors %}
+<div class="alert alert-danger" role="alert">
+  <strong>{{ form_error or "Le formulaire n'a pas été envoyé : corrige les champs en rouge." }}</strong>
+  {% if busy %} <a class="alert-link" href="/admin/jobs/{{ busy.id }}">Voir la tâche en cours</a>.{% endif %}
+</div>
+{% elif busy and tool.exclusive %}{{ m.alert("warn", "Une tâche de cette sorte est déjà " ~ busy.status ~ " : le lancement sera refusé tant qu'elle n'est pas finie.") }}
+{% endif %}
+{% if not workers %}{{ m.alert("warn", "Aucun service d'exécution n'a encore battu : la tâche attendra qu'il démarre.") }}{% endif %}
+<form class="card" method="post" action="/admin/tools/{{ tool.kind }}" novalidate>
+  {{ m.csrf_field(csrf) }}
+  <div class="card-body">
+    {% for f in tool.fields %}
+    {% set err = errors.get(f.name) %}
+    {% set id = 'f-' ~ f.name %}
+    <div class="mb-3">
+      {% if f.kind == 'bool' %}
+      <label class="form-check"><input class="form-check-input{{ ' is-invalid' if err }}" type="checkbox" name="{{ f.name }}" value="true"{{ ' checked' if values[f.name] }}><span class="form-check-label">{{ f.label }}</span></label>
+      {% elif f.kind == 'species' %}
+      <fieldset{% if err %} aria-describedby="{{ id }}-err"{% endif %}>
+        <legend class="form-label">{{ f.label }}</legend>
+        <div class="species-choices">
+          {% for group, members in species_choices | groupby('group') %}
+          <div><div class="text-secondary"><small>{{ group }}</small></div>
+            {% for sp in members %}<label class="form-check"><input class="form-check-input" type="checkbox" name="{{ f.name }}" value="{{ sp.id }}"{{ ' checked' if sp.id in values[f.name] }}><span class="form-check-label">{{ sp.name }}</span></label>{% endfor %}
+          </div>
+          {% endfor %}
+        </div>
+        <div class="form-hint">Aucune case cochée = toutes les espèces.</div>
+      </fieldset>
+      {% elif f.kind == 'choice' %}
+      <label class="form-label" for="{{ id }}">{{ f.label }}</label>
+      <select class="form-select{{ ' is-invalid' if err }}" id="{{ id }}" name="{{ f.name }}"{% if err %} aria-describedby="{{ id }}-err"{% endif %}>{% for c in f.choices or [] %}<option value="{{ c }}"{{ ' selected' if values[f.name] == c }}>{{ c }}</option>{% endfor %}</select>
+      {% elif f.kind == 'number' %}
+      <label class="form-label" for="{{ id }}">{{ f.label }}</label>
+      <input class="form-control{{ ' is-invalid' if err }}" id="{{ id }}" name="{{ f.name }}" type="number" step="any" inputmode="decimal" value="{{ values[f.name] }}"{% if f.min is not none %} min="{{ f.min | num(4) | replace(',', '.') }}"{% endif %}{% if f.max is not none %} max="{{ f.max | num(4) | replace(',', '.') }}"{% endif %}{% if err %} aria-describedby="{{ id }}-err"{% endif %}>
+      {% if f.min is not none and f.max is not none %}<div class="form-hint">de {{ f.min | num }} à {{ f.max | num }}{{ ' ; vide = non fourni' if f.default is none }}</div>{% endif %}
+      {% else %}
+      <label class="form-label" for="{{ id }}">{{ f.label }}</label>
+      <input class="form-control{{ ' is-invalid' if err }}" id="{{ id }}" name="{{ f.name }}" type="text" value="{{ values[f.name] }}" placeholder="all, ou 25 39 70" autocapitalize="off"{% if err %} aria-describedby="{{ id }}-err"{% endif %}>
+      <div class="form-hint">Codes séparés par des espaces, ou <code>all</code>.</div>
+      {% endif %}
+      {% if err %}<div class="invalid-feedback d-block" id="{{ id }}-err">{{ err }}</div>{% endif %}
+    </div>
+    {% else %}
+    <p class="text-secondary m-0">Cet outil n'a aucune option.</p>
+    {% endfor %}
+  </div>
+  <div class="card-footer d-flex gap-2">
+    <a class="btn" href="/admin/tools">Retour aux outils</a>
+    <button class="btn btn-primary ms-auto" type="submit">Lancer</button>
+  </div>
+</form>
+{% endblock %}
