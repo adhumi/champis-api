@@ -24,6 +24,7 @@ from champis_pipeline.species import (
     load_species,
 )
 
+from . import interp
 from .scoring import (
     DailySeries,
     group_score,
@@ -283,6 +284,56 @@ def palette_vectors() -> list[dict[str, Any]]:
     ]
 
 
+def interp_vectors() -> list[dict[str, Any]]:
+    """Interpolation bilinéaire de `M_eff × Φ` entre cellules météo (spec › Scoring ›
+    Interpolation de la météo entre cellules, 13 nov. 2026) : coins et poids d'un point, puis
+    valeur selon les coins qui en ont une (`None` = cellule sans météo, absente de `values`).
+    Points à l'écart des centres et des bords de cellule, où un arrondi changerait de coin ;
+    de l'ouest à l'est de la France pour la convergence des méridiens."""
+    points = [
+        (47.1234, 6.3187),
+        (47.1081, 6.3412),
+        (42.7313, -0.4127),
+        (48.3907, -4.4321),
+        (43.7204, 7.2513),
+        (50.6311, 3.0544),
+        (45.7712, 3.0001),
+        (41.9203, 8.7377),
+    ]
+    # valeurs des coins SO, SE, NO, NE ; None = sans météo
+    patterns: list[tuple[float | None, ...]] = [
+        (0.8, 0.1, 0.4, 0.6),
+        (0.5, 0.5, 0.5, 0.5),
+        (0.0, 1.0, 0.0, 1.0),
+        (0.72, None, 0.31, 0.05),
+        (None, None, 0.9, None),
+        (None, 0.2, None, 0.7),
+        (0.3, None, None, None),
+        (None, None, None, None),
+        (0.123456789, 0.987654321, None, 0.555555555),
+    ]
+    out = []
+    for lat, lon in points:
+        c = interp.corners(lat, lon)
+        for pat in patterns:
+            values = {cid: v for cid, v in zip(c.ids, pat, strict=True) if v is not None}
+            got = interp.interpolate(c, values)
+            out.append(
+                {
+                    "lat": lat,
+                    "lon": lon,
+                    "values": values,
+                    "expected": {
+                        "containing": c.containing,
+                        "ids": list(c.ids),
+                        "weights": [_r(w) for w in c.weights],
+                        "value": None if got is None else _r(got),
+                    },
+                }
+            )
+    return out
+
+
 def build() -> dict[str, dict[str, Any]]:
     meta = _meta()
     return {
@@ -291,6 +342,7 @@ def build() -> dict[str, dict[str, Any]]:
         "m.json": {"generated_by": meta, "cases": m_vectors()},
         "group.json": {"generated_by": meta, "cases": group_vectors()},
         "palette.json": {"generated_by": meta, "cases": palette_vectors()},
+        "interp.json": {"generated_by": meta, "cases": interp_vectors()},
     }
 
 
