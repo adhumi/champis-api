@@ -4,8 +4,10 @@ Service FastAPI : scoring météo `M × Φ` par cellule, indice par département
 
 ```bash
 uv run champis-pipeline weather-grid --depts 25        # produit data/weather_grid.json
-uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/docs
+uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/health
 ```
+
+Pas de documentation interactive : `/docs`, `/redoc` et `/openapi.json` ne sont pas servis (décision du 13 nov. 2026) ; les routes sont décrites plus bas.
 
 Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, journal dans `data/logs/`, `-v`/`-q`) ; `make warm`, `make seed`, `make publish-seed`, `make notify` les lancent.
 

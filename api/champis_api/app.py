@@ -190,7 +190,12 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             store.close()
         cache.close()
 
-    app = FastAPI(title="Champis API", lifespan=lifespan)
+    # Pas de documentation interactive ni de schéma OpenAPI servis (décision du 13 nov. 2026) :
+    # `/docs`, `/redoc` et `/openapi.json` répondent 404, en production comme en développement ;
+    # le contrat des routes est décrit dans `api/README.md`.
+    app = FastAPI(
+        title="Champis API", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None
+    )
     # Le backoffice (`/admin`) lit la clé et l'heure de démarrage ici ; `settings` reste la seule
     # source de configuration, les routeurs ne relisent pas l'environnement.
     app.state.settings = settings

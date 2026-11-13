@@ -55,6 +55,13 @@ async def test_health_and_species(api):
 
 
 @pytest.mark.asyncio
+async def test_openapi_and_interactive_docs_are_not_served(api):
+    """Décision du 13 nov. 2026 : ni schéma OpenAPI ni pages de documentation sur le service."""
+    for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+        assert (await api.get(path)).status_code == 404, path
+
+
+@pytest.mark.asyncio
 async def test_weather_shape(api):
     r = await api.get("/weather", params={"cell": CELL, "species": "boletus_edulis"})
     assert r.status_code == 200, r.text
