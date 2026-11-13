@@ -1229,7 +1229,10 @@ async def test_field_reads_the_bbox_in_one_sql_query(api, grid, client):
     finally:
         client.cache.db.set_trace_callback(None)
     assert r.status_code == 200 and len(r.json()["cells"]) == 2
-    assert len(statements) == 1 and "cell_field" in statements[0]
+    # une seule lecture du champ ; les deux autres lisent la version du précalcul (table `meta`,
+    # par clé) pour le cache en mémoire du champ (13 nov. 2026)
+    assert len([q for q in statements if "cell_field" in q]) == 1
+    assert len(statements) == 3 and all("FROM meta" in q for q in statements[:2])
     assert "cell_weather" not in statements[0]  # jamais les onze jours détaillés
 
 
@@ -1336,6 +1339,9 @@ async def test_rebuild_cell_field_migrates_a_cache_from_before_the_table(api, gr
     reference = sorted(cache.db.execute("SELECT * FROM cell_field").fetchall())
     cache.db.execute("DELETE FROM cell_field")
     cache.db.commit()
+    # écriture hors des méthodes du cache : on la signale comme elles le font, sans quoi le champ
+    # gardé en mémoire (`field_cache`) servirait encore l'ancien
+    cache.field_generation += 1
     assert (await api.get("/weather/field", params={**BBOX_FR, "day": J})).json()["cells"] == []
     status = cache.cell_field_status()
     assert status.present and not status.current and status.field_rows == 0

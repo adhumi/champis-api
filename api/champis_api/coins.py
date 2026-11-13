@@ -24,12 +24,12 @@ from datetime import date
 
 from champis_pipeline.species import load_palette, load_species
 
-from . import counts, interp
+from . import counts, interp, offload
 from .apns import ApnsClient
 from .grid import Cell, WeatherGrid
 from .scoring import palette_class
 from .store import Coin, Store
-from .weather_client import OpenMeteoClient
+from .weather_client import CellRaw, OpenMeteoClient
 from .weather_service import HistoryTooShortError, SeriesGapError, cell_weather, days_around
 
 log = logging.getLogger(__name__)
@@ -228,8 +228,16 @@ async def weather_for(
         return {}
     species = sorted({sid for c in coins for sid in c.t})
     res = await client.fetch_cells_partial(list(cells.values()))
+    # le calcul (jusqu'à cinq cellules par coin, ≈ 14 ms par cellule et par espèce) dans un fil,
+    # hors de la boucle d'événements (13 nov. 2026)
+    return await offload.run(_score_cells, cells, res.raws, species, today)
+
+
+def _score_cells(
+    cells: dict[str, Cell], raws: dict[str, CellRaw], species: list[str], today: date
+) -> dict[str, dict]:
     out = {}
-    for cid, raw in res.raws.items():
+    for cid, raw in raws.items():
         try:
             # détail pour les phrases du jour de la fiche (étape B2) : quelques coins par appareil
             out[cid] = cell_weather(cells[cid], raw, species, today, detail=True)

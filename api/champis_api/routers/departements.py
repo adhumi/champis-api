@@ -11,11 +11,12 @@ from typing import Annotated, Any
 
 from champis_pipeline import SCORING_VERSION
 from champis_pipeline.species import all_species_hash
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
+from .. import offload
 from ..cache import WeatherCache
-from ..catalog import served_species
 from ..departements import shape_response
+from .query import Species
 
 router = APIRouter(prefix="/departements", tags=["departements"])
 
@@ -24,20 +25,10 @@ def _cache(request: Request) -> WeatherCache:
     return request.app.state.champis.cache
 
 
-def _species(species: Annotated[list[str] | None, Query()] = None) -> list[str]:
-    known = served_species()  # catalogue : complètes et tuiles publiées (9 nov. 2026)
-    if not species:
-        return known
-    unknown = [s for s in species if s not in known]
-    if unknown:
-        raise HTTPException(404, f"espèce(s) inconnue(s) : {unknown}")
-    return species
-
-
 @router.get("")
 async def get_departements(
     cache: Annotated[WeatherCache, Depends(_cache)],
-    species: Annotated[list[str], Depends(_species)],
+    species: Species,
     day: date | None = None,
 ) -> dict[str, Any]:
     """Par département : indice `I = Σ T × M_eff × Φ / Σ T` par espèce et par jour (J−3 → J+7, ou
@@ -47,11 +38,17 @@ async def get_departements(
     if meta is None:
         raise HTTPException(503, "indice par département pas encore calculé : pré-chauffe requise")
     computed_at, today = meta
-    rows = cache.dept_index(species, day)
+    # lecture et mise en forme (jusqu'à ≈ 30 000 lignes : départements × espèces × onze jours)
+    # dans un fil, hors de la boucle d'événements (13 nov. 2026)
+    departements = await offload.run(_shaped, cache, species, day)
     return {
         "today": today,
         "computed_at": computed_at,
         "scoring_version": SCORING_VERSION,
         "species_hash": all_species_hash(),
-        "departements": shape_response(rows, species),
+        "departements": departements,
     }
+
+
+def _shaped(cache: WeatherCache, species: list[str], day: date | None) -> dict[str, Any]:
+    return shape_response(cache.dept_index(species, day), species)

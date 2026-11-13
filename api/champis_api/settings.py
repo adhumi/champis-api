@@ -72,6 +72,10 @@ class Settings:
         else None
     )
     tile_cache_mb: int = int(os.environ.get("CHAMPIS_TILE_CACHE_MB", "2048"))
+    # Champ compact de `/weather/field` gardé en mémoire tant que le précalcul n'a pas changé
+    # (13 nov. 2026), par worker : France entière ≈ 4 Mo pour une espèce, ≈ 8 Mo pour cinq,
+    # ≈ 33 Mo pour les 27. 0 = pas de cache, chaque requête relit son emprise.
+    field_cache_mb: int = int(os.environ.get("CHAMPIS_FIELD_CACHE_MB", "64"))
     # Observations et coins : Postgres Railway (DATABASE_URL injectée par le service Postgres) ;
     # sans Postgres, une base SQLite locale pour le développement. Vide = endpoints en 503.
     database_url: str = os.environ.get("CHAMPIS_DATABASE_URL") or os.environ.get(

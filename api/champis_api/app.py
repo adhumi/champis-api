@@ -19,7 +19,7 @@ import asyncio
 import logging
 import os
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -41,6 +41,7 @@ from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
 from .departements import compute as compute_dept_index
+from .field_cache import MB, FieldCache
 from .grid import WeatherGrid
 from .locks import file_lock, try_lock
 from .ratelimit import RateLimitMiddleware
@@ -61,6 +62,7 @@ RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
 # La page de carte du site appelle `GET /tiles` une fois à l'ouverture : c'est elle que la mesure
 # minimale compte (étape C2), reconnue à l'en-tête Origin du site ; l'app iOS n'en envoie pas.
 MAP_OPEN_PATH = "/tiles"
+GZIP_LEVEL = 6
 UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")  # leurs propres handlers
 SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
 LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
@@ -79,6 +81,8 @@ class State:
     )
     store: Store | None = None  # observations et coins (Postgres) ; None = endpoints en 503
     apns: ApnsClient | None = None  # notifications « mes coins » ; None = jamais envoyées
+    # champ compact de `/weather/field` gardé en mémoire, par worker (`CHAMPIS_FIELD_CACHE_MB`)
+    field_cache: FieldCache = field(default_factory=FieldCache)
 
 
 def _configure_logging() -> None:
@@ -168,6 +172,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
                 tile_cache=tile_cache,
                 store=store,
                 apns=apns,
+                field_cache=FieldCache(settings.field_cache_mb * MB),
             )
             warmer = OpenMeteoClient(http, cache, min_interval_s=WARM_INTERVAL_S, api_key=key)
 
@@ -212,8 +217,12 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     app.state.settings = settings
     app.state.started_at = datetime.now(UTC)
     # `/weather/bbox` sur une emprise large pèse plusieurs Mo en JSON très répétitif, dix fois
-    # moins une fois compressé (décision du 2 nov. 2026).
-    app.add_middleware(GZipMiddleware, minimum_size=1024)
+    # moins une fois compressé (décision du 2 nov. 2026). Niveau 6, celui de zlib, et non le 9
+    # par défaut de Starlette (13 nov. 2026) : sur la grille réelle la compression était le
+    # premier poste de CPU de ces routes (2,6 s pour les 30 Mo d'une emprise de 4 700 cellules à
+    # cinq espèces, 0,5 s au niveau 6) pour 7 % d'octets en moins. Les grandes réponses sont
+    # compressées dans un fil par le middleware, pas dans la boucle d'événements.
+    app.add_middleware(GZipMiddleware, minimum_size=1024, compresslevel=GZIP_LEVEL)
     # Le site vit sur champis.app, l'API sur api.champis.app (découpage du 6 nov. 2026) : les
     # requêtes Range du lecteur PMTiles du navigateur doivent passer et lire leurs en-têtes.
     app.add_middleware(
