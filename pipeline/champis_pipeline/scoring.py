@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from .species import ASPECT_CLASSES, COVER_CLASSES, host_vocabulary
+from .species import ASPECT_CLASSES, COVER_CLASSES, host_vocabulary, topo_host_vocabulary
 
 PH_FLOOR = 0.15
 MISSING_FACTOR = 0.5
@@ -53,10 +53,17 @@ def terrain_factors(
     slope_deg: NDArray[np.uint8],
     aspect: NDArray[np.uint8],
     edge_px: NDArray[np.uint8] | None = None,
+    host_topo: NDArray[np.uint8] | None = None,
+    cover_topo: NDArray[np.uint8] | None = None,
+    water_px: NDArray[np.uint8] | None = None,
 ) -> dict[str, NDArray[np.float64]]:
     """Chaque facteur de T séparément (host, cover, ph, altitude, slope, aspect, et `edge` si
-    l'espèce a le bloc optionnel `edge_m`), même codage que `terrain_potential`. Sert au calcul de
-    T et au diagnostic (`champis-pipeline explain`)."""
+    l'espèce a le bloc optionnel `edge_m`, `water` si elle a `water_m`), même codage que
+    `terrain_potential`. Sert au calcul de T et au diagnostic (`champis-pipeline explain`).
+
+    Hôtes hors forêt (palier 3, 12 nov. 2026) : si l'espèce a `hosts_topo`, les pixels sans
+    polygone BD Forêt mais avec une zone BD TOPO dont l'hôte est nommé prennent ce poids et le
+    couvert BD TOPO ; `nodata` dit où T n'a pas de sens (ni forêt, ni hôte hors forêt nommé)."""
     t = species["terrain"]
     if "default" not in t["hosts"]:
         raise ValueError(f"{species['id']}: hosts.default manquant")
@@ -68,6 +75,29 @@ def terrain_factors(
     f_host = np.where(valid_host, host_w[np.minimum(host, len(host_w) - 1)], 0.0)
     valid_cover = cover < len(cover_w)
     f_cover = np.where(valid_cover, cover_w[np.minimum(cover, len(cover_w) - 1)], MISSING_FACTOR)
+    nodata = host == NODATA_U8
+    if "hosts_topo" in t:
+        if host_topo is None or cover_topo is None:
+            raise ValueError(
+                f"{species['id']}: terrain.hosts_topo demande host_topo.tif et cover_topo.tif"
+            )
+        topo_w = _lookup(t["hosts_topo"], topo_host_vocabulary(), np.nan)
+        named = (host_topo < len(topo_w)) & ~np.isnan(
+            topo_w[np.minimum(host_topo, len(topo_w) - 1)]
+        )
+        on_topo = nodata & named  # hors BD Forêt, sur une zone BD TOPO dont l'hôte est nommé
+        f_host = np.where(on_topo, topo_w[np.minimum(host_topo, len(topo_w) - 1)], f_host)
+        valid_cover_topo = cover_topo < len(cover_w)
+        f_cover = np.where(
+            on_topo,
+            np.where(
+                valid_cover_topo,
+                cover_w[np.minimum(cover_topo, len(cover_w) - 1)],
+                MISSING_FACTOR,
+            ),
+            f_cover,
+        )
+        nodata = nodata & ~on_topo
     valid_ph = ph10 != NODATA_U8
     f_ph = np.where(valid_ph, np.maximum(trapezoid(ph10 / 10.0, t["ph"]), PH_FLOOR), MISSING_FACTOR)
     valid_alt = alt_m != NODATA_U16
@@ -89,7 +119,17 @@ def terrain_factors(
         "altitude": f_alt,
         "slope": f_slope,
         "aspect": f_aspect,
+        "nodata": nodata,
     }
+    if "water_m" in t:  # distance à l'eau (facteur optionnel, palier 3, 12 nov. 2026)
+        if water_px is None:
+            raise ValueError(f"{species['id']}: terrain.water_m demande le raster water.tif")
+        valid_water = water_px != NODATA_U8
+        out["water"] = np.where(
+            valid_water,
+            trapezoid(water_px.astype(np.float64) * EDGE_PX_M, t["water_m"]),
+            MISSING_FACTOR,
+        )
     if "edge_m" in t:  # distance à la lisière (facteur optionnel, palier 2, 9 nov. 2026)
         if edge_px is None:
             raise ValueError(f"{species['id']}: terrain.edge_m demande le raster edge.tif")
@@ -111,8 +151,12 @@ def terrain_potential(
     slope_deg: NDArray[np.uint8],
     aspect: NDArray[np.uint8],
     edge_px: NDArray[np.uint8] | None = None,
+    host_topo: NDArray[np.uint8] | None = None,
+    cover_topo: NDArray[np.uint8] | None = None,
+    water_px: NDArray[np.uint8] | None = None,
 ) -> NDArray[np.float32]:
-    """T pour un bloc de pixels. Entrées = codes des rasters du pipeline (voir skill geo-pipeline).
+    """T pour un bloc de pixels, NaN là où T n'a pas de sens (ni forêt, ni hôte hors forêt nommé :
+    `nodata` de `terrain_factors`). Entrées = codes des rasters du pipeline (skill geo-pipeline).
 
     - host : index dans host_vocabulary(), 255 = hors forêt / nodata → T = 0
     - cover : index dans COVER_CLASSES, 255 = inconnu → facteur 0,5
@@ -121,10 +165,25 @@ def terrain_potential(
     - slope_deg : degrés, 255 = inconnu → 0,5
     - aspect : index dans ASPECT_CLASSES (8 = flat), 255 = inconnu → 0,5
     - edge_px : distance à la lisière en pixels de 25 m (facteur optionnel `edge_m`), 255 → 0,5
+    - host_topo, cover_topo : zones BD TOPO hors BD Forêt (bloc optionnel `hosts_topo`)
+    - water_px : distance à l'eau en pixels de 25 m (facteur optionnel `water_m`), 255 → 0,5
     """
     t = species["terrain"]
-    f = terrain_factors(species, host, cover, ph10, alt_m, slope_deg, aspect, edge_px)
+    f = terrain_factors(
+        species,
+        host,
+        cover,
+        ph10,
+        alt_m,
+        slope_deg,
+        aspect,
+        edge_px,
+        host_topo,
+        cover_topo,
+        water_px,
+    )
     result = f["host"] * weighted_sum(species, f)
+    result = np.where(f["nodata"], np.nan, result)
     # règle dure : altitude connue et strictement hors [min, max] → 0
     alt_f = alt_m.astype(np.float64)
     valid_alt = alt_m != NODATA_U16
@@ -146,17 +205,19 @@ def weighted_sum(species: dict[str, Any], f: dict[str, NDArray[np.float64]]) -> 
     )
     if "edge" in f:
         total = total + w.get("edge", 0.0) * f["edge"]
+    if "water" in f:
+        total = total + w.get("water", 0.0) * f["water"]
     return total
 
 
 def encode_u8(
     t: NDArray[np.float32], nodata_mask: NDArray[np.bool_] | None = None
 ) -> NDArray[np.uint8]:
-    """T ∈ [0, 1] → uint8 0–254 ; 255 = nodata."""
-    out = np.rint(t * 254.0).astype(np.uint8)
-    if nodata_mask is not None:
-        out = np.where(nodata_mask, NODATA_U8, out).astype(np.uint8)
-    return out
+    """T ∈ [0, 1] → uint8 0–254 ; 255 = nodata (masque donné, et tout NaN)."""
+    nan = np.isnan(t)
+    out = np.rint(np.where(nan, 0.0, t) * 254.0).astype(np.uint8)
+    mask = nan if nodata_mask is None else (nan | nodata_mask)
+    return np.where(mask, NODATA_U8, out).astype(np.uint8)
 
 
 def decode_u8(v: NDArray[np.uint8]) -> NDArray[np.float32]:

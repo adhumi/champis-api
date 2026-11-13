@@ -33,6 +33,10 @@ def compute(
     names = ["host", "cover", "ph", "alt", "slope", "aspect"]
     if "edge_m" in sp["terrain"]:  # distance à la lisière, seulement si l'espèce l'emploie
         names.append("edge")
+    if "hosts_topo" in sp["terrain"]:  # hôtes hors forêt BD TOPO (palier 3), idem
+        names += ["host_topo", "cover_topo"]
+    if "water_m" in sp["terrain"]:  # distance à l'eau (palier 3), idem
+        names.append("water")
     srcs = {k: g / f"{k}.tif" for k in names}
     missing = [k for k, p in srcs.items() if not p.exists()]
     if missing:
@@ -65,8 +69,11 @@ def compute(
                 handles["slope"].read(1, window=w),
                 handles["aspect"].read(1, window=w),
                 handles["edge"].read(1, window=w) if "edge" in handles else None,
+                handles["host_topo"].read(1, window=w) if "host_topo" in handles else None,
+                handles["cover_topo"].read(1, window=w) if "cover_topo" in handles else None,
+                handles["water"].read(1, window=w) if "water" in handles else None,
             )
-            dst.write(encode_u8(t, nodata_mask=(host == NODATA_U8)), 1, window=w)
+            dst.write(encode_u8(t, nodata_mask=np.isnan(t)), 1, window=w)
     for h in handles.values():
         h.close()
     log.info("écrit %s", out)

@@ -50,8 +50,10 @@ def test_vineyard_and_cedar_are_not_good():
     assert T(AEREUS, host="autre_conifere", ph=7.5, alt=600) < 0.15
 
 
-def test_outside_forest_nodata_is_zero():
-    assert T(EDULIS, host="nodata") == 0.0
+def test_outside_forest_is_without_data():
+    """Hors forêt, T n'a pas de sens : NaN, encodé en nodata dans le raster (palier 3, 12 nov. 2026 :
+    une espèce qui nomme des hôtes hors forêt a des valeurs là où BD TOPO en donne, pas les autres)."""
+    assert np.isnan(T(EDULIS, host="nodata"))
 
 
 def test_ph_floor_keeps_calcareous_beech_alive():

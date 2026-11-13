@@ -53,6 +53,16 @@ def host_index(host: str) -> int:
     return host_vocabulary().index(host)
 
 
+def topo_host_vocabulary() -> list[str]:
+    """Hôtes hors forêt (BD TOPO, palier 3, 12 nov. 2026), vocabulaire à part : l'index dans cette
+    liste est le code du raster host_topo.tif. Jamais de `default` : une espèce les nomme."""
+    return [k for k in load_mapping().get("topo_hosts", {}) if k != "description"]
+
+
+def topo_host_index(host: str) -> int:
+    return topo_host_vocabulary().index(host)
+
+
 @cache
 def load_species(species_id: str) -> dict[str, Any]:
     return _read(SPECIES_DIR / f"{species_id}.json")

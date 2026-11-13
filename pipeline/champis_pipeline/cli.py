@@ -40,8 +40,9 @@ def _download(step: console.Step, dept: str) -> None:
     download.soilgrids_ph(bbox)
     dem = download.copernicus_dem_tiles(bbox)
     n_dem = len(dem) if isinstance(dem, list | tuple) else 1
+    download.bdtopo(dept, rasterize.grid_bounds(grid))
     step.note(
-        f"BD Forêt {shp.name} · SoilGrids · DEM {n_dem} dalle(s) · grille {grid.width}x{grid.height} px"
+        f"BD Forêt {shp.name} · SoilGrids · DEM {n_dem} dalle(s) · BD TOPO · grille {grid.width}x{grid.height} px"
     )
 
 
@@ -53,8 +54,17 @@ def _grid(step: console.Step, dept: str, force: bool) -> None:
     rasterize.edge(dept, host_p, cover_p, grid, force)
     rasterize.ph(dept, download.soilgrids_ph(bbox), grid, force)
     rasterize.dem_products(dept, download.copernicus_dem_tiles(bbox), grid, force)
+    topo = download.bdtopo(
+        dept, rasterize.grid_bounds(grid)
+    )  # palier 3 : hôtes hors forêt, distance à l'eau
+    rasterize.topo(dept, topo["zone_de_vegetation"], host_p, grid, force)
+    rasterize.water(
+        dept, topo["troncon_hydrographique"], topo["surface_hydrographique"], grid, force
+    )
     rasterize.write_grid_stamp(dept)
-    step.note(f"host, cover, edge, ph, alt, slope, aspect · {grid.width}x{grid.height} px")
+    step.note(
+        f"host, cover, edge, ph, alt, slope, aspect, host_topo, cover_topo, water · {grid.width}x{grid.height} px"
+    )
 
 
 def _terrain(steps: console.Steps, dept: str, species: list[str], force: bool) -> None:

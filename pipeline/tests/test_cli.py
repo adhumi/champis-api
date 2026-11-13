@@ -35,6 +35,7 @@ def calls(monkeypatch, tmp_path: Path) -> list[tuple]:
     )
     monkeypatch.setattr(rasterize, "dept_grid", lambda shp: Grid())
     monkeypatch.setattr(rasterize, "grid_bbox_4326", lambda grid: (5.7, 46.5, 7.1, 47.6))
+    monkeypatch.setattr(rasterize, "grid_bounds", lambda grid: (900e3, 6.6e6, 1e6, 6.7e6))
     monkeypatch.setattr(
         rasterize,
         "host_cover",
@@ -47,6 +48,28 @@ def calls(monkeypatch, tmp_path: Path) -> list[tuple]:
         rasterize,
         "edge",
         lambda dept, host_p, cover_p, grid, force: seen.append(("edge", dept, force)),
+    )
+    monkeypatch.setattr(
+        download,
+        "bdtopo",
+        lambda dept, bbox: (
+            seen.append(("bdtopo", dept))
+            or {
+                "zone_de_vegetation": tmp_path / "vegetation.geojson",
+                "troncon_hydrographique": tmp_path / "troncons.geojson",
+                "surface_hydrographique": tmp_path / "surfaces.geojson",
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        rasterize,
+        "topo",
+        lambda dept, veg, host_p, grid, force: seen.append(("topo", dept, force)),
+    )
+    monkeypatch.setattr(
+        rasterize,
+        "water",
+        lambda dept, lines, polys, grid, force: seen.append(("water", dept, force)),
     )
     monkeypatch.setattr(
         rasterize, "ph", lambda dept, src, grid, force: seen.append(("ph", dept, force))
@@ -96,14 +119,18 @@ def test_all_runs_the_five_stages_in_order(calls, capsys):
     assert names == [
         "bdforet",
         "soilgrids",
-        "dem",  # download
+        "dem",
+        "bdtopo",  # download
         "bdforet",
         "host_cover",
         "edge",
         "soilgrids",
         "ph",
         "dem",
-        "dem_products",  # grid
+        "dem_products",
+        "bdtopo",
+        "topo",
+        "water",  # grid
         "terrain",
         "terrain",
         "tiles",
@@ -119,7 +146,7 @@ def test_all_runs_the_five_stages_in_order(calls, capsys):
     assert lines[0] == "all --dept 25 · 2 espèce(s)"
     assert lines[1] == "[1/8] download 25"
     assert (
-        "BD Forêt FORMATION_VEGETALE.shp · SoilGrids · DEM 1 dalle(s) · grille 3812x4620 px"
+        "BD Forêt FORMATION_VEGETALE.shp · SoilGrids · DEM 1 dalle(s) · BD TOPO · grille 3812x4620 px"
         in lines[2]
     )
     assert "[8/8] weather-grid" in err and lines[-1].startswith("25 prêt en ")
@@ -127,11 +154,12 @@ def test_all_runs_the_five_stages_in_order(calls, capsys):
 
 def test_download_grid_and_terrain_commands(calls, capsys):
     assert cli.main(["download", "--dept", "39"]) == 0
-    assert [c[0] for c in calls] == ["bdforet", "soilgrids", "dem"]
+    assert [c[0] for c in calls] == ["bdforet", "soilgrids", "dem", "bdtopo"]
     calls.clear()
     assert cli.main(["grid", "--dept", "39", "--force"]) == 0
     assert ("host_cover", "39", True) in calls and ("dem_products", "39", True) in calls
     assert ("edge", "39", True) in calls
+    assert ("topo", "39", True) in calls and ("water", "39", True) in calls
     calls.clear()
     assert cli.main(["terrain", "--dept", "39", "--species", "x"]) == 0
     assert calls == [("terrain", "39", "x", False)]
