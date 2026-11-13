@@ -126,7 +126,7 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 
 **Notification** (`champis_api.coins.notify_all` ; service cron `champis-api notify --pull`, ou tâche intégrée à `CHAMPIS_NOTIFY_HOURS` en repli, ou `champis-api notify` à la main) : après la pré-chauffe du matin, une seule notification par appareil, récapitulative, envoyée seulement si au moins un coin est « bon » ou « excellent » (seuil lu dans `shared/palette.json`). Un jeton refusé par APNs (`Unregistered`, `BadDeviceToken`) est retiré, on n'insiste pas. L'app ne fait aucun rafraîchissement en arrière-plan.
 
-**Protection** (service public) : seau à jetons par IP et par worker (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
+**Protection** (service public) : seau à jetons par IP et par worker (l'adresse est celle que pose l'edge Railway, `X-Real-IP`, à défaut le dernier élément de `X-Forwarded-For`, jamais une valeur fournie par le client ; dictionnaires bornés à 50 000 adresses, un seau redevenu plein est oublié ; correctif du 13 nov. 2026), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
 
 ## Backoffice `/admin` (spec › Backoffice, 7 et 8 nov. 2026 ; lot BO1)
 

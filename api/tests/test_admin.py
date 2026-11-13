@@ -4,6 +4,7 @@ Tâches rendent ce que la spec décrit ; les compteurs 429 et 5xx se remplissent
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -122,9 +123,15 @@ async def test_login_attempts_are_limited_per_ip(admin: httpx.AsyncClient):
     assert r.status_code == 429 and "retry-after" in r.headers
     # une autre adresse n'est pas touchée
     r = await admin.post(
-        "/admin/login", json={"key": KEY}, headers={**ACTION, "X-Forwarded-For": "5.6.7.8"}
+        "/admin/login", json={"key": KEY}, headers={**ACTION, "X-Real-IP": "5.6.7.8"}
     )
     assert r.status_code == 204
+    # les seaux de connexion se purgent seuls : une minute plus tard, il n'en reste aucun d'ancien
+    buckets = admin._transport.app.state.admin_login_buckets
+    assert len(buckets.buckets) == 2
+    buckets.clock = lambda: time.monotonic() + 120.0
+    buckets.take("9.9.9.9")
+    assert list(buckets.buckets) == ["9.9.9.9"]
 
 
 # ------------------------------------------------------------------ pages

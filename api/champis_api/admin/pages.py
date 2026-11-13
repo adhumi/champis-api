@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .. import jobs, render, tools
-from ..ratelimit import TokenBuckets, client_ip
+from ..ratelimit import TokenBuckets, client_ip, scope_headers
 from . import auth, health, views
 from . import router as api
 
@@ -139,6 +139,8 @@ def _is_htmx(request: Request) -> bool:
 
 
 def _login_buckets(request: Request) -> TokenBuckets:
+    """Essais de connexion par adresse ; `TokenBuckets` oublie seul les seaux redevenus pleins et
+    borne leur nombre (ils n'étaient jamais purgés avant le 13 nov. 2026)."""
     buckets = getattr(request.app.state, "admin_login_buckets", None)
     if buckets is None:
         buckets = request.app.state.admin_login_buckets = TokenBuckets(LOGIN_PER_MINUTE)
@@ -378,7 +380,7 @@ async def login(request: Request, key: auth.Enabled) -> Response:
         form = await read_form(request)
         given, next_ = form.get("key"), safe_next(form.get("next"))
     ctx = Ctx(request, key, logged=False)
-    wait = _login_buckets(request).take(client_ip(dict(request.headers), request.client))
+    wait = _login_buckets(request).take(client_ip(scope_headers(request.scope), request.client))
     if wait > 0:
         retry = {"Retry-After": str(int(wait + 1))}
         if as_json:
