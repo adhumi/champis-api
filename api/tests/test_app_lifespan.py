@@ -159,3 +159,53 @@ async def test_notify_scheduler_survives_a_failing_notification(monkeypatch, cap
     assert any("notification des coins en échec" in r.message for r in caplog.records)
     assert all(0 < s <= 24 * 3600 + 1 for s in sleeps)
     assert sleeps[1] >= 24 * 3600 - timedelta(hours=1).total_seconds() or sleeps[1] > 0
+
+
+# ------------------------------------------------------------------ journaux sans secrets
+
+
+def test_logging_never_writes_outbound_urls_or_their_secrets():
+    """Correctif du 13 nov. 2026 : la racine à INFO laissait httpx écrire chaque adresse sortante
+    (clé Open-Meteo en `apikey=`, signature des adresses présignées, jeton APNs). Après
+    `_configure_logging()`, un appel httpx n'écrit plus rien, et ce qui passerait quand même
+    (avertissement, exception) sort masqué."""
+    import io
+
+    from champis_pipeline.redact import QUIET_LOGGERS
+
+    root = logging.getLogger()
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setLevel(logging.DEBUG)
+    root.addHandler(handler)
+    before = root.level
+    try:
+        logging.getLogger("httpx").setLevel(logging.NOTSET)  # comme avant le correctif
+        app_module._configure_logging()
+        root.setLevel(logging.INFO)
+        transport = httpx.MockTransport(lambda request: httpx.Response(200, json={}))
+        with httpx.Client(transport=transport) as http:
+            r = http.get(
+                "https://customer-api.open-meteo.com/v1/forecast",
+                params={"latitude": "47.1", "apikey": "CLE-SECRETE"},
+            )
+        assert "apikey=CLE-SECRETE" in str(r.request.url)  # la clé part bien dans l'adresse…
+        assert buf.getvalue() == ""  # … et rien n'est journalisé
+        for name in QUIET_LOGGERS:
+            assert logging.getLogger(name).getEffectiveLevel() == logging.WARNING, name
+        # un message au-dessus du seuil qui cite une adresse : secrets masqués par le filtre
+        logging.getLogger("httpx").warning("échec : %s", r.request.url)
+        logging.getLogger("champis_api.apns").warning(
+            "APNs injoignable : %s", "https://api.push.apple.com/3/device/0a1b2c3d4e5f6071"
+        )
+        try:
+            raise RuntimeError("https://b.test/k?X-Amz-Signature=abcdef0123456789&X-Amz-Expires=60")
+        except RuntimeError:
+            logging.getLogger("champis_api.routers.tiles").exception("relais")
+        out = buf.getvalue()
+        assert "apikey=***" in out and "/3/device/***" in out and "X-Amz-Signature=***" in out
+        assert "apikey=" in out and "CLE-SECRETE" not in out
+        assert "0a1b2c3d4e5f6071" not in out and "abcdef0123456789" not in out
+    finally:
+        root.removeHandler(handler)
+        root.setLevel(before)

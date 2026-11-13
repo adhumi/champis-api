@@ -25,6 +25,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import httpx
+from champis_pipeline import redact
 from champis_pipeline.species import species_groups
 from champis_pipeline.storage import Bucket, BucketLike
 from fastapi import FastAPI
@@ -60,6 +61,7 @@ RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
 # La page de carte du site appelle `GET /tiles` une fois à l'ouverture : c'est elle que la mesure
 # minimale compte (étape C2), reconnue à l'en-tête Origin du site ; l'app iOS n'en envoie pas.
 MAP_OPEN_PATH = "/tiles"
+UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")  # leurs propres handlers
 SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
 LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
 
@@ -80,11 +82,20 @@ class State:
 
 
 def _configure_logging() -> None:
-    """Uvicorn ne règle que ses propres loggers : sans ceci, les INFO de champis_api sont muets."""
+    """Uvicorn ne règle que ses propres loggers : sans ceci, les INFO de champis_api sont muets.
+
+    La racine à INFO ouvrait aussi ceux de httpx, qui écrit l'adresse complète de chaque requête
+    sortante : la clé Open-Meteo (`apikey=`), la signature des adresses présignées du bucket, le
+    jeton d'appareil dans l'adresse d'APNs. Correctif du 13 nov. 2026 : les clients HTTP et S3
+    restent sous WARNING, et un filtre masque ces secrets sur tous les handlers, pour ce qui
+    passerait quand même (message d'une exception, niveau rétabli pour un diagnostic).
+    """
     root = logging.getLogger()
     if not root.handlers:
         logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     logging.getLogger("champis_api").setLevel(logging.INFO)
+    redact.quiet_libraries()
+    redact.install(root, *(logging.getLogger(name) for name in UVICORN_LOGGERS))
 
 
 def create_app(settings: Settings | None = None, state: State | None = None) -> FastAPI:

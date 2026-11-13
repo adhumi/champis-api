@@ -33,6 +33,8 @@ from typing import IO, Any, Protocol
 
 from tqdm import tqdm as _tqdm
 
+from .redact import QUIET_LOGGERS, redact
+
 KEEP_LOGS = 50
 
 # séquences ANSI (SGR) : pas de dépendance, pas de détection fine du terminal
@@ -129,7 +131,11 @@ class Console:
         """Une ligne sur le terminal (`text`, colorée) et dans le journal (`plain`, sans couleur).
 
         `important=False` : masquée par `--quiet` à l'écran, gardée dans le journal.
+        Les secrets connus (clé `apikey=` d'Open-Meteo, signature d'une adresse présignée, jeton
+        APNs) sont masqués ici, donc partout, `-v` compris (`champis_pipeline.redact`).
         """
+        text = redact(text)
+        plain = redact(plain) if plain is not None else None
         if self._log_file is not None:
             self._log_file.write((plain if plain is not None else text) + "\n")
             self._log_file.flush()
@@ -141,7 +147,7 @@ class Console:
     def log_only(self, plain: str) -> None:
         """Dans le journal seulement (entête, trace)."""
         if self._log_file is not None:
-            self._log_file.write(plain + "\n")
+            self._log_file.write(redact(plain) + "\n")
             self._log_file.flush()
 
     def close(self) -> None:
@@ -156,6 +162,7 @@ class Console:
         journal et le puits est débranché : la commande continue."""
         if self.sink is None or self._sink_failed:
             return
+        args = tuple(redact(a) if isinstance(a, str) else a for a in args)
         try:
             getattr(self.sink, method)(*args)
         except Exception as e:  # jamais bloquant
@@ -382,9 +389,10 @@ def setup(
         root.removeHandler(h)
     root.addHandler(_current.logging_handler())
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
-    if not verbose:  # bibliothèques bavardes : rien sous WARNING
-        for name in ("httpx", "httpcore", "botocore", "boto3", "urllib3", "rasterio", "fiona"):
-            logging.getLogger(name).setLevel(logging.WARNING)
+    # Bibliothèques bavardes : rien sous WARNING, sauf avec `-v`, qui rétablit leurs journaux
+    # bruts (adresses de chaque requête comprises : `Console.write` en masque les secrets).
+    for name in (*QUIET_LOGGERS, "rasterio", "fiona"):
+        logging.getLogger(name).setLevel(logging.NOTSET if verbose else logging.WARNING)
     if log_path is not None:
         _current.log_only(
             f"# {command} · {datetime.now().isoformat(timespec='seconds')} · {' '.join(sys.argv[1:])}"
