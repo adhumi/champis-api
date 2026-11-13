@@ -197,6 +197,11 @@ def test_tile_names_parse_and_manifest_marks_single_department_sets():
         "scoring_version": "1.0.0",
         "depts_hash": "a1b2c3",
     }
+    assert parse_tile_name("E-20m-da1b2c3.pmtiles") == {
+        "kind": "E",
+        "step_m": 20,
+        "depts_hash": "a1b2c3",
+    }
     assert parse_tile_name("A-300m-da1b2c3.pmtiles") == {
         "kind": "A",
         "class_m": 300,

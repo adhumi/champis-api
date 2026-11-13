@@ -95,6 +95,14 @@ def calls(monkeypatch, tmp_path: Path) -> list[tuple]:
         tiles, "build_alt", lambda depts, force, jobs: seen.append(("tiles_alt", depts, jobs))
     )
     monkeypatch.setattr(
+        tiles, "build_elev", lambda depts, force, jobs: seen.append(("tiles_elev", depts, jobs))
+    )
+    monkeypatch.setattr(
+        tiles,
+        "build_elev_dept",
+        lambda d, depts, force, jobs: seen.append(("tiles_elev_dept", d)) or shp,
+    )
+    monkeypatch.setattr(
         tiles,
         "build_dept",
         lambda sid, d, depts, force, jobs: seen.append(("tiles_dept", sid, d)) or shp,
@@ -136,6 +144,7 @@ def test_all_runs_the_five_stages_in_order(calls, capsys):
         "tiles",
         "tiles",
         "tiles_alt",
+        "tiles_elev",
         "weather_grid",
     ]
     assert ("terrain", "25", "a", False) in calls and ("tiles", "b", ["25"], None) in calls
@@ -144,12 +153,12 @@ def test_all_runs_the_five_stages_in_order(calls, capsys):
     assert out == ""
     lines = err.splitlines()
     assert lines[0] == "all --dept 25 · 2 espèce(s)"
-    assert lines[1] == "[1/8] download 25"
+    assert lines[1] == "[1/9] download 25"
     assert (
         "BD Forêt FORMATION_VEGETALE.shp · SoilGrids · DEM 1 dalle(s) · BD TOPO · grille 3812x4620 px"
         in lines[2]
     )
-    assert "[8/8] weather-grid" in err and lines[-1].startswith("25 prêt en ")
+    assert "[9/9] weather-grid" in err and lines[-1].startswith("25 prêt en ")
 
 
 def test_download_grid_and_terrain_commands(calls, capsys):
@@ -177,21 +186,24 @@ def test_tiles_per_dept_counts_steps(calls, capsys):
     assert names == [
         "tiles",
         "tiles_alt",
+        "tiles_elev",
         "tiles_dept",
         "tiles_alt_dept",
+        "tiles_elev_dept",
         "tiles_dept",
         "tiles_alt_dept",
+        "tiles_elev_dept",
     ]
     err = capsys.readouterr().err
     assert (
-        "[1/4] tiles T x" in err
-        and "[3/4] tiles département 25" in err
-        and "[4/4] tiles département 39" in err
+        "[1/5] tiles T x" in err
+        and "[4/5] tiles département 25" in err
+        and "[5/5] tiles département 39" in err
     )
     calls.clear()
     # un seul département : son jeu est déjà le jeu complet, pas d'extraction
     assert cli.main(["tiles", "--depts", "25", "--species", "x", "--per-dept"]) == 0
-    assert [c[0] for c in calls] == ["tiles", "tiles_alt"]
+    assert [c[0] for c in calls] == ["tiles", "tiles_alt", "tiles_elev"]
 
 
 def test_summary_and_explain_print_data_on_stdout(monkeypatch, capsys):

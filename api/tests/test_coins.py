@@ -125,6 +125,21 @@ def test_score_coins_interpolates_between_cell_centres(grid):
     assert score_coins([coin], grid, {"c_0935_6680": east}, TODAY)[0].today is None
 
 
+def test_score_coins_interpolates_between_altitude_classes(grid):
+    """Spec › Scoring › Interpolation entre classes d'altitude (13 nov. 2026) : un coin à 900 m,
+    entre les classes 450 et 1350 de sa cellule, prend la valeur à mi-chemin ; au centre d'une
+    classe (app qui ne lit que la couche A), la valeur de la classe."""
+    weather = {"c_0930_6680": {"species": {"boletus_edulis": _row(0.8)}}}  # 450 : 0,8 ; 1350 : 0,4
+
+    def at(alt):
+        coin = Coin("1", USER, "Pente", 47.12, 6.31, "cepes", alt, {"boletus_edulis": 1.0})
+        return score_coins([coin], grid, weather, TODAY)[0].today
+
+    assert at(450) == pytest.approx(0.8) and at(1350) == pytest.approx(0.4)
+    assert at(900) == pytest.approx(0.6)
+    assert at(100) == pytest.approx(0.8) and at(2500) == pytest.approx(0.4)
+
+
 def test_score_coins_reports_a_better_coming_day(grid):
     coin = Coin("1", USER, "Combe", 47.12, 6.31, "cepes", 450, {"boletus_edulis": 1.0})
     rows = _row(0.3)

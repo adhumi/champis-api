@@ -91,3 +91,14 @@ def test_interp_vectors():
             assert got is None, c
         else:
             assert abs(got - exp["value"]) <= TOL, c
+
+
+def test_alt_vectors():
+    for c in _load("alt.json")["cases"]:
+        alt = interp.elevation(c["index"], c["step_m"])
+        assert alt == c["expected"]["alt_m"], c
+        got = interp.between_classes(alt, {float(k): v for k, v in c["values"].items()})
+        if c["expected"]["value"] is None:
+            assert got is None, c
+        else:
+            assert abs(got - c["expected"]["value"]) <= TOL, c

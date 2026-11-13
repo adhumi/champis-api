@@ -10,8 +10,9 @@ lot 1, 1er nov. 2026).
 Score d'un coin = max sur ses espèces de `T_e × M_eff_e × Φ_e` (règle 9), avec `T_e` lu par l'app
 dans les tuiles au moment où le coin est créé, et `M_eff × Φ` interpolé au point du coin entre les
 centres des cellules météo qui l'encadrent (`champis_api.interp`, spec › Scoring › Interpolation
-de la météo entre cellules, 13 nov. 2026), chaque cellule pour sa classe d'altitude la plus proche
-de celle du coin. Les phrases du jour restent celles de la cellule qui contient le coin. Hors
+de la météo entre cellules, 13 nov. 2026), chaque cellule à l'altitude du coin, interpolée entre
+ses deux classes d'altitude qui l'encadrent (`alt_class` porte l'altitude du pixel quand l'app lit
+la couche E, sinon le centre de sa classe). Les phrases du jour restent celles de la cellule qui contient le coin. Hors
 grille : cellule la plus proche, sans interpolation. Les seuils (« bon » = 0,55…) viennent de la palette, jamais du code.
 """
 
@@ -75,17 +76,23 @@ def _cells_of(coin: Coin, grid: WeatherGrid) -> tuple[Cell | None, interp.Corner
 
 
 def _factor(w: dict | None, cell: Cell | None, sid: str, day: str, alt_m: float) -> float | None:
-    """`M_eff × Φ` d'une cellule pour une espèce et un jour, à sa classe la plus proche du coin."""
+    """`M_eff × Φ` d'une cellule pour une espèce et un jour, à l'altitude du coin : interpolé
+    entre les deux classes de la cellule qui l'encadrent (spec › Scoring › Interpolation entre
+    classes d'altitude, 13 nov. 2026). Une app qui n'envoie que le centre de la classe retrouve
+    la valeur de cette classe."""
     if w is None or cell is None:
         return None
     rows = w["species"].get(sid)
     if not rows:
         return None
     row = next((r for r in rows if r["date"] == day), None)
-    alt = nearest_alt_class(cell, alt_m)
-    if row is None or alt not in row["by_alt"]:
+    if row is None:
         return None
-    return row["by_alt"][alt]["M_eff"] * row["by_alt"][alt]["phi"]
+    values = {}
+    for center in cell.alt_classes:
+        cls = row["by_alt"].get(str(int(center)))
+        values[center] = None if cls is None else cls["M_eff"] * cls["phi"]
+    return interp.between_classes(alt_m, values)
 
 
 def score_coins(

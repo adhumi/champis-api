@@ -48,7 +48,7 @@ class _Broken:
 
 def test_dept_status_counts_what_is_on_disk(data: Path):
     empty = status.dept_status("25", SPECIES, batch_status={})
-    assert empty.cells() == ["25", "-", "0/6", "0/2", "-", "0/3", "incomplet"]
+    assert empty.cells() == ["25", "-", "0/6", "0/2", "-", "0/4", "incomplet"]
     assert not empty.ready
 
     _touch(config.RAW_DIR / "25" / "bdforet" / "extracted" / "x" / "FORMATION_VEGETALE.shp")
@@ -59,13 +59,13 @@ def test_dept_status_counts_what_is_on_disk(data: Path):
     names = publish.expected_names(["25"], SPECIES)
     _touch(config.TILES_DIR / names[0])
     full = status.dept_status("25", SPECIES, batch_status={"25": {"ok": True}, "39": {"ok": False}})
-    assert full.cells() == ["25", "oui", "6/6", "2/2", "ok", "1/3", "prêt"]
+    assert full.cells() == ["25", "oui", "6/6", "2/2", "ok", "1/4", "prêt"]
     assert status.dept_status("39", SPECIES, batch_status={"39": {"ok": False}}).batch == "ECHEC"
 
     text = status.table([full.cells(), empty.cells()], status.COLUMNS)
     lines = text.splitlines()
     assert lines[0].split() == [*status.COLUMNS[:5], "tuiles", "dept", "état"]
-    assert lines[2].startswith("25    oui  6/6   2/2  ok     1/3          prêt")
+    assert lines[2].startswith("25    oui  6/6   2/2  ok     1/4          prêt")
 
 
 def test_set_status_local_and_bucket(data: Path):
@@ -134,8 +134,8 @@ def test_publish_plan_and_dry_run(data: Path, capsys, monkeypatch):
 
     p = publish.plan(bucket, ["25"], SPECIES, prune=True)
     assert p.already == [names[0]]
-    assert p.todo == [names[1], names[2]]  # taille différente, absent
-    assert p.todo_bytes == 101 + 102
+    assert p.todo == [names[1], names[2], names[3]]  # taille différente, absents (A, E)
+    assert p.todo_bytes == 101 + 102 + 103
     assert p.stale == [TILES_PREFIX + other]
     assert publish.plan(bucket, ["25"], SPECIES, prune=False).stale == []
     with pytest.raises(FileNotFoundError):
@@ -158,7 +158,7 @@ def test_publish_plan_and_dry_run(data: Path, capsys, monkeypatch):
     err = capsys.readouterr().err
     assert (
         "DRY RUN" in err
-        and "2 à téléverser" in err
+        and "3 à téléverser" in err
         and "1 déjà là" in err
         and "1 à supprimer" in err
     )

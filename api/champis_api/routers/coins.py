@@ -36,7 +36,8 @@ class CoinIn(BaseModel):
     lat: float = Field(ge=41.0, le=51.5)
     lon: float = Field(ge=-5.5, le=10.0)
     target: str  # espèce ou groupe que l'utilisateur a choisi d'afficher
-    alt_class: int = Field(ge=0, le=5000)  # centre de la classe d'altitude du pixel (m)
+    # altitude du pixel (m) lue dans la couche E, ou centre de sa classe de 300 m (couche A)
+    alt_class: int = Field(ge=0, le=5000)
     t: dict[str, float] = Field(min_length=1)  # espèce → T du pixel, lu dans les tuiles
 
     @model_validator(mode="after")

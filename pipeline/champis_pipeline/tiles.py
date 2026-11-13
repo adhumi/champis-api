@@ -13,6 +13,12 @@ k de la classe [300k, 300k+300[ m, centre 300k+150 = la classe que l'API renvoie
 depuis `alt.tif` sur toute l'emprise. Les clients y lisent la classe du pixel pour choisir
 M_eff et Φ (spec : Points ouverts › classe d'altitude du pixel).
 
+Sa jumelle fine, `E` = altitude du pixel par pas de 20 m (gris = indice k de [20k, 20k+20[ m,
+même encodage et même chaîne que `A`, le pas vient de `palette.json › elev_encoding`), sert à
+interpoler `M_eff × Φ` entre deux classes de 300 m au lieu de sauter d'une classe à l'autre (spec ›
+Scoring › Interpolation entre classes d'altitude, 13 nov. 2026). Publiée à côté de `A`, que les
+versions installées de l'app continuent de lire.
+
 Troisième couche, un fichier par groupe d'affichage : `G` = PNG RGBA dont le canal i porte
 T × 254 de la i-ème espèce du groupe (ordre alphabétique des identifiants), 255 = sans donnée
 pour ce canal ; l'alpha est un canal de données, jamais une transparence. Construit en empilant
@@ -54,7 +60,7 @@ from . import SCORING_VERSION
 from .config import CRS_TILES, T_DIR, TILES_DIR, dept_dirs
 from .progress import tqdm
 from .scoring import NODATA_U16
-from .species import GROUP_CHANNELS, group_hash, species_hash
+from .species import GROUP_CHANNELS, group_hash, load_palette, species_hash
 from .weather_grid import ALT_CLASS_M
 
 log = logging.getLogger(__name__)
@@ -63,6 +69,8 @@ MIN_ZOOM = 6
 MAX_ZOOM = 15
 TILE = 256
 NODATA = 255
+# Pas (m) de la couche E, partagé avec les clients ; 254 tranches de 20 m couvrent 5 080 m.
+ELEV_STEP_M = int(load_palette()["elev_encoding"]["step_m"])
 # Version du rendu : entre dans l'empreinte `d<…>` du nom (`_depts_hash`, donc un nouveau jeu à
 # chaque correctif) et dans les métadonnées (`champis_render`) de chaque PMTiles, comparée par
 # `_done`. À incrémenter à chaque correctif qui change les pixels sans changer l'espèce, le
@@ -133,6 +141,20 @@ def build_alt(depts: list[str], force: bool = False, jobs: int | None = None) ->
     )
 
 
+def _alt_description(width_m: int) -> str:
+    return (
+        f"Champis — altitude, gris 8 bits = indice k de [{width_m}k, {width_m}(k+1)[ m, "
+        "alpha 0 = altitude inconnue"
+    )
+
+
+def build_elev(depts: list[str], force: bool = False, jobs: int | None = None) -> Path:
+    """`E-<pas>m-d<hash départements>.pmtiles` : altitude fine du pixel, toutes espèces."""
+    tag = f"{ELEV_STEP_M}m-d{_depts_hash(depts)}"
+    srcs = [dept_dirs(d)["grid"] / "alt.tif" for d in depts]
+    return _build("E", tag, srcs, "E altitude fine", _alt_description(ELEV_STEP_M), force, jobs)
+
+
 def _build(
     kind: str,
     tag: str,
@@ -154,7 +176,10 @@ def _build(
     work.mkdir(parents=True, exist_ok=True)
     mosaic = work / f"{kind}_2154.tif"
     mbt = work / f"{kind}.mbtiles"
-    (_mosaic if kind == "T" else _mosaic_alt)(srcs, mosaic)
+    if kind == "T":
+        _mosaic(srcs, mosaic)
+    else:
+        _mosaic_alt(srcs, mosaic, ELEV_STEP_M if kind == "E" else ALT_CLASS_M)
     _mbtiles(mosaic, mbt, name, description, kind, jobs or default_jobs())
     _write_pmtiles(mbt, out)
     log.info("écrit %s", out)
@@ -285,8 +310,9 @@ def _mosaic(srcs: list[Path], out: Path) -> None:
     tmp.replace(out)
 
 
-def _mosaic_alt(srcs: list[Path], out: Path) -> None:
-    """alt.tif (uint16 m) → indice de classe uint8 par blocs ; altitude inconnue → NODATA."""
+def _mosaic_alt(srcs: list[Path], out: Path, width_m: int = ALT_CLASS_M) -> None:
+    """alt.tif (uint16 m) → indice uint8 de la tranche de `width_m` mètres, par blocs ; altitude
+    inconnue → NODATA. `width_m` = classe de 300 m (couche A) ou pas fin de 20 m (couche E)."""
     if out.exists():
         return
     raw = out.with_suffix(".alt16.tif")
@@ -308,9 +334,7 @@ def _mosaic_alt(srcs: list[Path], out: Path) -> None:
         with rasterio.open(tmp, "w", **profile) as dst:
             for _, win in src.block_windows(1):
                 alt = src.read(1, window=win)
-                cls = np.where(
-                    alt == NODATA_U16, NODATA, np.minimum(alt // ALT_CLASS_M, NODATA - 1)
-                )
+                cls = np.where(alt == NODATA_U16, NODATA, np.minimum(alt // width_m, NODATA - 1))
                 dst.write(cls.astype(np.uint8), 1, window=win)
     tmp.replace(out)
     raw.unlink()
@@ -615,7 +639,7 @@ def dept_bounds(
     kind: str, dept: str, species_id: str | None = None
 ) -> tuple[float, float, float, float]:
     """Emprise WGS84 (ouest, sud, est, nord) du raster source du département : T de l'espèce
-    (`kind = "T"`) ou classes d'altitude (`kind = "A"`)."""
+    (`kind = "T"`) ou altitude (`kind = "A"` ou `"E"`)."""
     if kind == "T":
         if species_id is None:
             raise ValueError("species_id requis pour l'emprise T")
@@ -711,6 +735,24 @@ def build_alt_dept(
         f"A classes d'altitude {dept}",
         f"Champis — classe d'altitude, gris 8 bits = indice k de [{ALT_CLASS_M}k, "
         f"{ALT_CLASS_M}(k+1)[ m, alpha 0 = altitude inconnue",
+    )
+    log.info("écrit %s (%d tuiles extraites)", out, n)
+    return out
+
+
+def build_elev_dept(
+    dept: str, all_depts: list[str], force: bool = False, jobs: int | None = None
+) -> Path:
+    """Couche E d'un seul département (voir `build_dept`)."""
+    tag = f"{ELEV_STEP_M}m-d{_depts_hash([dept])}"
+    out = TILES_DIR / f"E-{tag}.pmtiles"
+    if _done(out, force):
+        return out
+    src = full_set_source("E", f"{ELEV_STEP_M}m-d{_depts_hash(all_depts)}")
+    if src is None:
+        return build_elev([dept], force, jobs)
+    n = extract(
+        src, out, dept_bounds("E", dept), f"E altitude fine {dept}", _alt_description(ELEV_STEP_M)
     )
     log.info("écrit %s (%d tuiles extraites)", out, n)
     return out

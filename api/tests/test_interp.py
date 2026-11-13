@@ -62,3 +62,23 @@ def test_no_value_when_the_containing_cell_has_none():
     assert interp.interpolate(c, {"c_0935_6680": 0.9, "c_0930_6685": 0.3}) is None
     assert interp.interpolate(c, {"c_0930_6680": None, "c_0935_6680": 0.9}) is None
     assert interp.interpolate(c, {}) is None
+
+
+def test_between_classes_is_linear_between_centres_and_flat_beyond():
+    values = {150.0: 0.2, 450.0: 0.8, 750.0: 0.5}
+    assert interp.between_classes(450, values) == pytest.approx(0.8)  # au centre : la classe
+    assert interp.between_classes(600, values) == pytest.approx(0.65)  # à mi-chemin, plus de marche
+    assert interp.between_classes(599.9, values) == pytest.approx(
+        interp.between_classes(600.1, values), abs=1e-3
+    )
+    assert interp.between_classes(20, values) == pytest.approx(0.2)
+    assert interp.between_classes(2000, values) == pytest.approx(0.5)
+    # classe sans valeur ignorée ; aucune valeur : rien
+    assert interp.between_classes(450, {150.0: 0.1, 450.0: None, 750.0: 0.7}) == pytest.approx(0.4)
+    assert interp.between_classes(450, {150.0: None}) is None
+    assert interp.between_classes(450, {}) is None
+
+
+def test_elevation_is_the_middle_of_the_slice():
+    assert interp.elevation(0, 20) == 10
+    assert interp.elevation(30, 20) == 610
