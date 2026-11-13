@@ -1,4 +1,5 @@
-"""Téléchargements : BD Forêt (flux Géoplateforme), SoilGrids (WCS), MNT (Copernicus / BD ALTI).
+"""Téléchargements : BD Forêt (flux Géoplateforme), SoilGrids (WCS), MNT (Copernicus / BD ALTI),
+BD TOPO (WFS Géoplateforme, palier 3 du 12 nov. 2026).
 
 Chaque fonction est idempotente : elle ne retélécharge pas un fichier présent et vérifié.
 """
@@ -6,6 +7,7 @@ Chaque fonction est idempotente : elle ne retélécharge pas un fichier présent
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -65,6 +67,93 @@ def bdforet(dept: str) -> Path:
             z.extractall(out_dir)
         shp = next(out_dir.rglob("FORMATION_VEGETALE.shp"))
     return shp
+
+
+# --------------------------------------------------------------------------- BD TOPO (WFS)
+
+WFS_URL = "https://data.geopf.fr/wfs/ows"
+WFS_PAGE = 5000  # maximum servi par page par la Géoplateforme
+BDTOPO_LAYERS = {
+    # couche WFS → (fichier, filtre CQL en plus de l'emprise, propriétés gardées)
+    "zone_de_vegetation": (
+        "vegetation.geojson",
+        "nature IN ('Peupleraie','Bois','Verger','Haie','Forêt ouverte','Lande ligneuse')",
+        "nature,geometrie",
+    ),
+    "troncon_hydrographique": ("troncons.geojson", "fictif = false", "nature,geometrie"),
+    "surface_hydrographique": ("surfaces.geojson", None, "nature,geometrie"),
+}
+
+
+def bdtopo(
+    dept: str,
+    bbox_2154: tuple[float, float, float, float],
+    http: httpx.Client | None = None,
+    force: bool = False,
+) -> dict[str, Path]:
+    """Les objets BD TOPO V3 de l'emprise du département (Lambert-93), par le flux WFS de la
+    Géoplateforme : zones de végétation hors forêt fermée, tronçons hydrographiques non fictifs,
+    surfaces en eau ; GeoJSON réduit à la nature et à la géométrie, pages de `WFS_PAGE` objets,
+    un fichier par couche dans data/raw/<dept>/bdtopo/. Idempotent : un fichier présent est gardé."""
+    out_dir = RAW_DIR / dept / "bdtopo"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    xmin, ymin, xmax, ymax = bbox_2154
+    own = http is None
+    http = http or httpx.Client(timeout=300.0, headers={"User-Agent": "champis-pipeline"})
+    paths: dict[str, Path] = {}
+    try:
+        for layer, (name, extra, props) in BDTOPO_LAYERS.items():
+            dest = out_dir / name
+            paths[layer] = dest
+            if dest.exists() and not force:
+                log.info("présent : %s", dest.name)
+                continue
+            cql = f"BBOX(geometrie,{xmin:.0f},{ymin:.0f},{xmax:.0f},{ymax:.0f},'EPSG:2154')"
+            if extra:
+                cql += f" AND {extra}"
+            features: list[dict] = []
+            offset = 0
+            while True:
+                r = http.get(
+                    WFS_URL,
+                    params={
+                        "SERVICE": "WFS",
+                        "VERSION": "2.0.0",
+                        "REQUEST": "GetFeature",
+                        "TYPENAMES": f"BDTOPO_V3:{layer}",
+                        "OUTPUTFORMAT": "application/json",
+                        "SRSNAME": "EPSG:2154",
+                        "PROPERTYNAME": props,
+                        "COUNT": WFS_PAGE,
+                        "STARTINDEX": offset,
+                        "CQL_FILTER": cql,
+                    },
+                )
+                r.raise_for_status()
+                body = r.json()
+                page = body.get("features", [])
+                features += page
+                total = body.get("totalFeatures") or body.get("numberMatched")
+                log.info("BD TOPO %s %s : %d objets", dept, layer, len(features))
+                if len(page) < WFS_PAGE or (isinstance(total, int) and len(features) >= total):
+                    break
+                offset += WFS_PAGE
+            tmp = dest.with_suffix(f".{os.getpid()}.part")
+            tmp.write_text(
+                json.dumps(
+                    {
+                        "type": "FeatureCollection",
+                        "crs": {"type": "name", "properties": {"name": "EPSG:2154"}},
+                        "features": features,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            os.replace(tmp, dest)
+    finally:
+        if own:
+            http.close()
+    return paths
 
 
 def soilgrids_ph(bbox_4326: tuple[float, float, float, float]) -> Path:

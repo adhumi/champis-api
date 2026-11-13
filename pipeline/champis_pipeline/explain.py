@@ -67,7 +67,13 @@ def explain(dept: str, species_id: str, out_dir: Path = REPORTS_DIR) -> dict[str
             handles["aspect"].read(1, window=w),
             handles["edge"].read(1, window=w) if "edge" in handles else None,
         )
-        acc.add(sp, host[forest], ph10[forest], alt[forest], {k: v[forest] for k, v in f.items()})
+        acc.add(
+            sp,
+            host[forest],
+            ph10[forest],
+            alt[forest],
+            {k: v[forest] for k, v in f.items() if k != "nodata"},
+        )
     for h in handles.values():
         h.close()
 

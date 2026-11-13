@@ -100,6 +100,11 @@ def run_dept(dept: str, species: list[str] | None, force: bool) -> DeptResult:
         rasterize.edge(dept, host_p, cover_p, grid, force)
         rasterize.ph(dept, download.soilgrids_ph(bbox), grid, force)
         rasterize.dem_products(dept, download.copernicus_dem_tiles(bbox), grid, force)
+        topo = download.bdtopo(dept, rasterize.grid_bounds(grid))  # palier 3 (12 nov. 2026)
+        rasterize.topo(dept, topo["zone_de_vegetation"], host_p, grid, force)
+        rasterize.water(
+            dept, topo["troncon_hydrographique"], topo["surface_hydrographique"], grid, force
+        )
         rasterize.write_grid_stamp(dept)
         for sid in species or list_species():
             terrain.compute(dept, sid, force)
