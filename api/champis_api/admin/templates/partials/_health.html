@@ -1,0 +1,94 @@
+{% import "partials/_macros.html" as m %}
+{# Rafraîchi chaque minute par htmx ; sans JavaScript, le bouton « Rafraîchir » recharge la page. #}
+<div id="health-live" hx-get="/admin/health" hx-trigger="every 60s" hx-target="this" hx-swap="outerHTML">
+  <p class="text-secondary">Relevé le {{ h.generated | when }} · version {{ h.api.build or '—' }} · démarrée le {{ h.api.started_at | when }} · {{ h.api.workers }} workers · tuiles en mode {{ h.api.tiles_mode }}</p>
+  {% for a in h.alerts %}{{ m.alert(a.level, a.text) }}{% else %}{{ m.alert("ok", "Rien à signaler.") }}{% endfor %}
+
+  <div class="row row-cards mb-3">
+    <div class="col-md-6 col-xl-4"><div class="card h-100"><div class="card-header"><h2 class="card-title">Cache météo</h2></div>
+      <dl class="card-body datagrid">
+        <div class="datagrid-item"><dt class="datagrid-title">Cellules</dt><dd class="datagrid-content">{{ h.cache.seeded | n }} amorcées sur {{ h.cache.cells | n }}</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Indice par département</dt><dd class="datagrid-content">{{ h.cache.dept_index_at | when }} (jour {{ h.cache.today or '—' }})</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Cache publié importé</dt><dd class="datagrid-content">{% if h.cache.cache_published %}{{ h.cache.cache_published | when }}, {{ h.cache.cache_published_age_h | num(1) }} h{% else %}jamais{% endif %}</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Météo précalculée</dt><dd class="datagrid-content">{{ h.cache.cell_weather | n }} entrées, {{ h.cache.cell_field | n }} lignes compactes</dd></div>
+      </dl></div></div>
+
+    <div class="col-md-6 col-xl-4"><div class="card h-100"><div class="card-header"><h2 class="card-title">Volume</h2></div>
+      <dl class="card-body datagrid">
+        <div class="datagrid-item"><dt class="datagrid-title">Dossier</dt><dd class="datagrid-content"><code>{{ h.disk.path }}</code></dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Libre</dt><dd class="datagrid-content">{{ h.disk.free_bytes | size }} sur {{ h.disk.total_bytes | size }}</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Cache SQLite</dt><dd class="datagrid-content">{{ h.disk.cache_db_bytes | size }}</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Cache des tuiles</dt><dd class="datagrid-content">{% if h.tile_cache %}{{ h.tile_cache.entries | n }} plages, {{ h.tile_cache.bytes | size }} sur {{ h.tile_cache.max_bytes | size }}{{ '' if h.tile_cache.complete else ' (parcours partiel)' }}{% else %}désactivé{% endif %}</dd></div>
+      </dl></div></div>
+
+    <div class="col-md-6 col-xl-4"><div class="card h-100"><div class="card-header"><h2 class="card-title">Base{% if h.database %} ({{ h.database.dialect }}){% endif %}</h2></div>
+      {% if not h.database %}<div class="card-body text-secondary">Pas de base : observations, coins et journal des tâches répondent 503.</div>
+      {% elif h.database.tables is defined %}
+      <dl class="card-body datagrid">{% for t, count in h.database.tables.items() %}<div class="datagrid-item"><dt class="datagrid-title">{{ t }}</dt><dd class="datagrid-content">{{ count | n }}</dd></div>{% endfor %}</dl>
+      {% else %}<div class="card-body">{{ m.status("error") }} injoignable ({{ h.database.error }})</div>{% endif %}
+    </div></div>
+
+    <div class="col-md-6 col-xl-4"><div class="card h-100"><div class="card-header"><h2 class="card-title">Bucket</h2></div>
+      {% set b = h.bucket %}
+      {% if not b.configured %}<div class="card-body text-secondary">Non configuré : <code>/tiles</code> est vide.</div>
+      {% elif b.error %}<div class="card-body">{{ m.status("error") }} injoignable ({{ b.error }})</div>
+      {% else %}
+      <dl class="card-body datagrid">
+        <div class="datagrid-item"><dt class="datagrid-title">Manifeste des tuiles</dt><dd class="datagrid-content">{% if b.manifest %}{{ b.manifest.generated | when }} · {{ b.manifest.tiles | n }} fichiers, {{ b.manifest.bytes | size }}{% else %}absent{% endif %}</dd></div>
+        {% if b.manifest %}<div class="datagrid-item"><dt class="datagrid-title">Jeux</dt><dd class="datagrid-content">{% for s in b.manifest.sets if s.depts | length > 1 %}{{ s.depts | length }} départements : {% for k, count in s.kinds.items() %}{{ count }} {{ k }}{{ ', ' if not loop.last }}{% endfor %}{{ ' · ' if not loop.last }}{% endfor %}{% if b.manifest.per_dept_sets %} · {{ b.manifest.per_dept_sets }} jeux par département{% endif %}</dd></div>{% endif %}
+        <div class="datagrid-item"><dt class="datagrid-title">Cache publié</dt><dd class="datagrid-content">{% if b.cache %}{{ b.cache.published | when }} · {{ b.cache.cells | n }} cellules · {{ b.cache.bytes | size }}{% else %}aucun{% endif %}</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Amorçage publié</dt><dd class="datagrid-content">{% if b.seed %}{{ b.seed.published | when }} · {{ b.seed.history_cells | n }} cellules{% else %}aucun{% endif %}</dd></div>
+      </dl>
+      {% endif %}
+    </div></div>
+
+    <div class="col-md-6 col-xl-4"><div class="card h-100"><div class="card-header"><h2 class="card-title">Service d'exécution</h2></div>
+      {% if h.workers %}
+      <div class="list-group list-group-flush">
+        {% for w in h.workers %}
+        <div class="list-group-item">
+          <div>{{ m.status("manque" if w.silent_min is not none and w.silent_min > 2 else "ok") }} <strong>{{ w.name }}</strong> · battement {{ w.heartbeat_at | ago(now) }}</div>
+          <div class="text-secondary">{% if w.disk_free_mb is not none %}{{ (w.disk_free_mb * 1000000) | size }} libres sur {{ (w.disk_total_mb * 1000000) | size }}{% else %}volume inconnu{% endif %} · {% if w.current_job %}tâche en cours <a href="/admin/jobs/{{ w.current_job }}">{{ w.current_job[:8] }}</a>{% else %}libre{% endif %} · version {{ w.build or '—' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}<div class="card-body text-secondary">Aucun battement : le service <code>champis-jobs</code> n'a pas encore tourné.</div>{% endif %}
+    </div></div>
+
+    <div class="col-md-6 col-xl-4"><div class="card h-100"><div class="card-header"><h2 class="card-title">Trafic (7 jours)</h2></div>
+      {% if h.traffic %}
+      <div class="table-responsive"><table class="table table-sm card-table">
+        <thead><tr><th>jour</th><th class="text-end">429</th><th class="text-end">5xx</th></tr></thead>
+        <tbody>{% for day, t in h.traffic.items() %}<tr><td>{{ day }}</td><td class="text-end">{{ t.get('http_429', 0) | n }}</td><td class="text-end">{{ t.get('http_5xx', 0) | n }}</td></tr>{% endfor %}</tbody>
+      </table></div>
+      {% else %}<div class="card-body text-secondary">Rien de relevé.</div>{% endif %}
+    </div></div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header"><h2 class="card-title">Dernières tâches par sorte</h2><div class="card-actions"><a href="/admin/jobs">Tout le journal</a></div></div>
+    {% if h.jobs %}
+    <div class="table-responsive"><table class="table card-table table-vcenter">
+      <thead><tr><th>sorte</th><th>dernière exécution</th><th>dernier mot</th><th>attendue</th></tr></thead>
+      <tbody>
+      {% for kind, j in h.jobs.items() %}
+      <tr>
+        <td><a href="/admin/jobs?kind={{ kind }}">{{ j.label }}</a></td>
+        <td>{% if j.last %}{{ m.status(j.last.status) }} <a href="/admin/jobs/{{ j.last.id }}">{{ j.last.created_at | ago(now) }}</a>{% else %}<span class="text-secondary">aucune exécution inscrite</span>{% endif %}</td>
+        <td class="text-secondary">{{ j.last.summary or '' if j.last else '' }}</td>
+        <td class="text-secondary">{% if j.expected_every_h %}toutes les {{ j.expected_every_h | num(0) }} h{% endif %}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}{{ m.empty("Journal indisponible", "Sans base de données, aucune tâche n'est inscrite.") }}{% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-header"><h2 class="card-title">Contrôles</h2></div>
+    <div class="table-responsive"><table class="table card-table table-vcenter">
+      <thead><tr><th>état</th><th>point</th><th>détail</th></tr></thead>
+      <tbody>{% for k in h.checks %}<tr><td>{{ m.status(k.status) }}</td><td>{{ k.name }}</td><td class="text-secondary">{{ k.detail }}{% if k.hint and k.status != 'ok' %} — {{ k.hint }}{% endif %}</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </div>
+</div>

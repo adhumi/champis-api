@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Recherche{% endblock %}
+{% block subtitle %}{% if q %}<p class="text-secondary m-0">{{ hits | length }} résultat{{ 's' if hits | length > 1 }} pour « {{ q }} »</p>{% endif %}{% endblock %}
+{% block content %}
+<div class="card">
+  {% if hits %}
+  <div class="list-group list-group-flush">
+    {% for h in hits %}<a class="list-group-item list-group-item-action" href="{{ h.url }}"><span class="badge bg-secondary-lt me-2">{{ h.kind }}</span><strong>{{ h.label }}</strong>{% if h.hint %} <span class="text-secondary">· {{ h.hint }}</span>{% endif %}</a>{% endfor %}
+  </div>
+  {% elif q %}{{ m.empty("Aucun résultat", "Ni espèce, ni outil, ni page ne correspond. La recherche dans le journal des tâches cherche aussi dans leurs options et leurs résumés.", jobs_url, "Chercher dans les tâches") }}
+  {% else %}{{ m.empty("Rechercher", "Tape un nom d'espèce, un outil, une page ou le début d'un identifiant de tâche dans la barre du haut.") }}{% endif %}
+</div>
+{% endblock %}

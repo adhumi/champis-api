@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ job.kind | kind_label }}{% endblock %}
+{% block crumbs %}<ol class="breadcrumb mb-1" aria-label="Fil d'Ariane"><li class="breadcrumb-item"><a href="/admin/jobs">Tâches</a></li><li class="breadcrumb-item active" aria-current="page">{{ job.id[:8] }}</li></ol>{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">créée le {{ job.created_at | when }} · origine {{ job.origin }} · <code>{{ job.id }}</code></p>{% endblock %}
+{% block actions %}
+{% if job.kind in v.tools.TOOLS %}<a class="btn" href="/admin/tools/{{ job.kind }}?{{ job.args | urlencode }}">Relancer avec ces options</a>{% endif %}
+{% if log_url %}<a class="btn" href="{{ log_url }}" rel="noopener">Journal complet</a>{% endif %}
+{% endblock %}
+{% block content %}
+{% if job.args %}
+<div class="card mb-3"><div class="card-header"><h2 class="card-title">Options</h2></div>
+  <dl class="card-body row mb-0">{% for k, val in job.args.items() %}<dt class="col-sm-4 col-md-3 fw-normal text-secondary">{{ k }}</dt><dd class="col-sm-8 col-md-9">{{ val if val != '' else '—' }}</dd>{% endfor %}</dl>
+</div>
+{% endif %}
+{% include "partials/_job_live.html" %}
+{% endblock %}

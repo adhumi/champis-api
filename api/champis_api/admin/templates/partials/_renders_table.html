@@ -1,0 +1,25 @@
+{% import "partials/_macros.html" as m %}
+<div id="renders-table" hx-target="this" hx-swap="outerHTML">
+  {{ m.sort_state(lst, "renders-filters") }}
+  {% if page.items %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr>{{ m.th(lst, "species", "espèce") }}{{ m.th(lst, "zoom", "niveau") }}{{ m.th(lst, "bytes", "taille") }}<th>jeu</th><th class="w-1"></th></tr></thead>
+    <tbody>
+    {% for r in page.items %}
+    <tr>
+      <td><a href="/admin/species/{{ r.species }}">{{ r.name }}</a></td>
+      <td>z{{ r.zoom }}</td><td>{{ r.bytes | size }}</td>
+      <td>{{ m.badge('jeu courant' if r.current else 'ancien jeu', 'green' if r.current else 'secondary') }} <code>{{ r.hash }}</code></td>
+      <td class="text-nowrap">
+        <a class="btn btn-sm" href="/admin/renders/open?key={{ r.key | urlencode }}" rel="noopener">Ouvrir</a>
+        <a class="btn btn-sm btn-outline-danger" href="/admin/renders/delete?key={{ r.key | urlencode }}&amp;next={{ here | urlencode }}" hx-post="/admin/renders/delete" hx-vals='{{ {"key": r.key, "csrf": csrf} | tojson }}' hx-confirm="Supprimer {{ r.key }} du bucket ?" hx-target="closest tr" hx-swap="outerHTML">Supprimer</a>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ m.pagination(lst, page, "cartes") }}
+  {% else %}
+  {{ m.empty_list(lst, total, "cartes", ("Aucune carte HD", "Le bucket n'en contient pas encore : l'étape « Carte HD » de la page d'une espèce en génère une."), problem) }}
+  {% endif %}
+</div>

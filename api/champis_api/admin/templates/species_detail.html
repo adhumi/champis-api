@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block title %}{{ sp.name }}{% endblock %}
+{% block crumbs %}<ol class="breadcrumb mb-1" aria-label="Fil d'Ariane"><li class="breadcrumb-item"><a href="/admin/species">Espèces</a></li><li class="breadcrumb-item active" aria-current="page">{{ sp.name }}</li></ol>{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0"><em>{{ sp.latin }}</em> · groupe {{ sp.group.name }} · <code>{{ sp.id }}</code>{% if sp.usage.app_share is not none %} · {{ sp.usage.app_share }} % des requêtes de l'app{% endif %}{% if sp.usage.web_share is not none %} · {{ sp.usage.web_share }} % du site{% endif %}</p>{% endblock %}
+{% block actions %}
+<a class="btn" href="/admin/species/{{ sp.id }}/file">Contenu du fichier</a>
+<a class="btn" href="https://github.com/adhumi/champis/blob/main/species/{{ sp.id }}.json" rel="noopener">Voir sur GitHub</a>
+{% endblock %}
+{% block content %}
+{% set c = sp.completeness %}
+<div class="row row-cards mb-3">
+  <div class="col-md-8"><div class="card h-100"><div class="card-body">
+    <h2 class="card-title">Fichier {{ m.badge(v.completeness_text(c), 'green' if c.complete else 'orange') }}</h2>
+    <p class="text-secondary mb-2"><code>species/{{ sp.id }}.json</code> · schéma {{ sp.schema_version }} · empreinte <code>{{ sp.hash }}</code></p>
+    <ul class="list-unstyled mb-0">
+      <li>{{ m.dot('ok' if c.about else 'warn') }} fiche en mots (bloc <code>about</code>) {{ 'présente' if c.about else 'absente' }}</li>
+      <li>{{ m.dot('ok' if c.photo else 'warn') }} photo {{ 'choisie' if c.photo else 'absente' }}</li>
+      <li>{{ m.dot('ok' if c.illustration else 'warn') }} illustration {{ 'présente' if c.illustration else 'absente : à générer d\'après shared/illustrations/PROMPTS.md, puis à déposer dans le référentiel' }} (<a href="/admin/species/{{ sp.id }}/file#illustration">prompt</a>)</li>
+      {% if c.tiles is defined %}<li>{{ m.dot('ok' if c.tiles else 'warn') }} tuiles T France {{ 'publiées' if c.tiles else 'non publiées : l\'espèce n\'est pas servie aux clients' }}</li>{% endif %}
+    </ul>
+  </div></div></div>
+  <div class="col-md-4"><div class="card h-100"><div class="card-body text-center">
+    {% if c.illustration %}<img class="illustration" src="/admin/api/species/{{ sp.id }}/illustration" alt="Illustration de {{ sp.name }}" loading="lazy">
+    {% else %}<p class="text-secondary m-0">Pas d'illustration dans le référentiel.</p>{% endif %}
+  </div></div></div>
+</div>
+
+{% include "partials/_species_steps.html" %}
+
+<div class="card mb-3" id="cartes">
+  <div class="card-header"><h2 class="card-title">Cartes HD</h2>
+    <div class="card-actions"><form method="get" action="/admin/species/{{ sp.id }}" class="d-flex gap-2 align-items-center"><label class="form-label m-0" for="zoom">Niveau du bouton « Générer »</label><select class="form-select form-select-sm w-auto" id="zoom" name="zoom">{% for z in zooms %}<option value="{{ z }}"{{ ' selected' if z == zoom }}>{{ z }} ({{ '≈ A3' if z == 9 else '≈ A1' }})</option>{% endfor %}</select><button class="btn btn-sm" type="submit">Choisir</button></form></div>
+  </div>
+  {% if sp.maps %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr><th>niveau</th><th>taille</th><th>jeu</th><th class="w-1"></th></tr></thead>
+    <tbody>
+    {% for r in sp.maps %}
+    <tr>
+      <td>z{{ r.zoom }}</td><td>{{ r.bytes | size }}</td>
+      <td>{{ m.badge('jeu courant' if r.current else 'ancien jeu', 'green' if r.current else 'secondary') }} <code>{{ r.hash }}</code></td>
+      <td class="text-nowrap">
+        <a class="btn btn-sm" href="/admin/renders/open?key={{ r.key | urlencode }}" rel="noopener">Ouvrir</a>
+        <a class="btn btn-sm" href="/admin/tools/render?species={{ sp.id }}&amp;zoom={{ r.zoom }}&amp;force=true">Refaire</a>
+        <a class="btn btn-sm btn-outline-danger" href="/admin/renders/delete?key={{ r.key | urlencode }}&amp;next={{ ('/admin/species/' ~ sp.id) | urlencode }}" hx-post="/admin/renders/delete" hx-vals='{{ {"key": r.key, "csrf": csrf} | tojson }}' hx-confirm="Supprimer {{ r.key }} du bucket ?" hx-target="closest tr" hx-swap="outerHTML">Supprimer</a>
+      </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ m.empty("Aucune carte HD", "Le bouton « Générer » de l'étape Carte HD en produit une depuis les tuiles publiées.") }}{% endif %}
+</div>
+
+<div class="card mb-3" id="controle">
+  <div class="card-header"><h2 class="card-title">Contrôle GBIF</h2></div>
+  <div class="card-body border-bottom">
+    <p class="text-secondary">AUC de T aux occurrences GBIF sur un département et, en option, la variante lisière du test d'entrée (quatre bornes en mètres et un poids, tous ou aucun). Le fichier espèce n'est jamais écrit : le bloc entre par PR si le critère est atteint.</p>
+    <form class="row g-2 align-items-end" method="post" action="/admin/tools/check">
+      {{ m.csrf_field(csrf) }}
+      <input type="hidden" name="species" value="{{ sp.id }}"><input type="hidden" name="to_bucket" value="true">
+      <input type="hidden" name="back" value="/admin/species/{{ sp.id }}">
+      <div class="col-6 col-md-2"><label class="form-label" for="check-depts">Départements</label><input class="form-control" id="check-depts" name="depts" value="25" required></div>
+      {% for name, label in (("edge_min", "lisière : min (m)"), ("edge_opt_low", "opt_low (m)"), ("edge_opt_high", "opt_high (m)"), ("edge_max", "max (m)"), ("edge_weight", "poids")) %}
+      <div class="col-6 col-md"><label class="form-label" for="check-{{ name }}">{{ label }}</label><input class="form-control" id="check-{{ name }}" name="{{ name }}" type="number" step="any" min="0" inputmode="decimal"></div>
+      {% endfor %}
+      <div class="col-12 col-md-auto"><button class="btn btn-primary" type="submit"{{ ' disabled' if not sp.worker or sp.jobs }}>Contrôler</button></div>
+    </form>
+    {% if not sp.worker %}<p class="text-secondary mt-2 mb-0">Bouton éteint : volume inconnu, le worker n'a pas encore battu.</p>{% endif %}
+  </div>
+  {% if sp.checks %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr><th>département</th><th>variante</th><th>résultat</th><th class="text-end">occurrences en forêt</th><th class="w-1"></th></tr></thead>
+    <tbody>
+    {% for r in sp.checks %}
+    <tr><td>{{ r.dept }}</td><td>{{ r.variant or '—' }}</td>
+      <td>{{ v.check_summary(r) }}{% if r.entry and r.entry.met %} {{ m.badge('critère atteint', 'green') }}{% endif %}</td>
+      <td class="text-end">{{ r.n_in_forest | n }}</td>
+      <td><a class="btn btn-sm" href="/admin/reports/open?key={{ r.key | urlencode }}" rel="noopener">Ouvrir</a></td></tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}{{ m.empty("Aucun rapport", "Aucun contrôle GBIF de cette espèce n'est dans le bucket.") }}{% endif %}
+</div>
+{% endblock %}

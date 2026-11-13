@@ -1,0 +1,78 @@
+{% import "partials/_macros.html" as m %}
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>{% block title %}Backoffice{% endblock %} · Champis</title>
+<link rel="stylesheet" href="/admin/static/{{ vendor.tabler_css }}">
+<link rel="stylesheet" href="/admin/static/admin.css">
+{# sans JavaScript, le menu replié des petits écrans reste ouvert #}
+<noscript><style>.navbar-collapse{display:block!important}.navbar-toggler,[data-js]{display:none!important}</style></noscript>
+</head>
+<body>
+<a class="visually-hidden-focusable" href="#contenu">Aller au contenu</a>
+<div class="page">
+  {% if logged %}
+  <aside class="navbar navbar-vertical navbar-expand-lg" data-bs-theme="dark">
+    <div class="container-fluid">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#menu" aria-controls="menu" aria-expanded="false" aria-label="Ouvrir le menu"><span class="navbar-toggler-icon"></span></button>
+      <div class="navbar-brand"><a href="/admin/health" class="text-reset text-decoration-none">Champis · backoffice</a></div>
+      <div class="collapse navbar-collapse" id="menu">
+        <ul class="navbar-nav pt-lg-3">
+          {% for label, url in nav %}
+          <li class="nav-item{{ ' active' if path == url or path.startswith(url ~ '/') }}">
+            <a class="nav-link" href="{{ url }}"{% if path == url or path.startswith(url ~ '/') %} aria-current="page"{% endif %}>
+              <span class="nav-link-title">{{ label }}</span>
+              {% if url == '/admin/jobs' and queue %}<span class="badge bg-blue text-blue-fg ms-auto" title="tâches en file ou en cours">{{ queue }}</span>{% endif %}
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+        <form class="mt-auto p-3" method="post" action="/admin/logout">
+          {{ m.csrf_field(csrf) }}
+          <button class="btn btn-outline-light w-100" type="submit">Se déconnecter</button>
+        </form>
+      </div>
+    </div>
+  </aside>
+  {% endif %}
+  <div class="page-wrapper">
+    {% if logged %}
+    <header class="navbar d-print-none">
+      <div class="container-xl">
+        <form class="flex-fill" method="get" action="/admin/search" role="search">
+          <div class="input-group">
+            <input class="form-control" type="search" name="q" value="{{ search_q }}" placeholder="Espèce, outil, page, identifiant de tâche…" aria-label="Rechercher dans le backoffice">
+            <button class="btn" type="submit">Rechercher</button>
+          </div>
+        </form>
+      </div>
+    </header>
+    {% endif %}
+    <div class="page-header d-print-none">
+      <div class="container-xl">
+        {% block crumbs %}{% endblock %}
+        <div class="row g-2 align-items-center">
+          <div class="col">
+            <h1 class="page-title">{% block heading %}{{ self.title() }}{% endblock %}</h1>
+            {% block subtitle %}{% endblock %}
+          </div>
+          <div class="col-auto ms-auto d-flex gap-2 flex-wrap">{% block actions %}{% endblock %}</div>
+        </div>
+      </div>
+    </div>
+    <main class="page-body" id="contenu">
+      <div class="container-xl">
+        {% if flash %}{{ m.alert(flash.level, flash.text) }}{% endif %}
+        {% block content %}{% endblock %}
+      </div>
+    </main>
+  </div>
+</div>
+<script src="/admin/static/{{ vendor.tabler_js }}" defer></script>
+<script src="/admin/static/{{ vendor.htmx_js }}" defer></script>
+<script src="/admin/static/admin.js" defer></script>
+</body>
+</html>

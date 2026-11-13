@@ -9,7 +9,7 @@ Découpage des dépôts (spec › Produit › Étape C, lot C7, 6 nov. 2026) : `
 ```
 champis/      sous-module adhumi/champis : species/ (+ SCHEMA.md, validate.py), mapping/, shared/ (palette, vecteurs, textes)
 pipeline/     champis_pipeline : download → grid → terrain → tiles ; artifacts.py (sorties à committer, déposées dans le bucket par le worker)   (skill geo-pipeline)
-api/          champis_api : FastAPI, scoring M/Φ, vecteurs, mesure minimale, backoffice /admin (admin/, jobs.py, tools.py, worker.py, render.py)   (skill open-meteo)
+api/          champis_api : FastAPI, scoring M/Φ, vecteurs, mesure minimale, backoffice /admin (admin/ : pages.py, views.py, templates/, router.py ; jobs.py, tools.py, worker.py, render.py)   (skill open-meteo)
 data/         téléchargements et rasters, jamais commités (sauf weather_grid.json et weather_seed.json)
 ```
 
@@ -33,5 +33,6 @@ data/         téléchargements et rasters, jamais commités (sauf weather_grid.
 - Tests sans réseau : fixtures et données synthétiques (`pipeline/tests/test_pipeline_e2e.py` montre comment).
 - pytest : `[tool.pytest.ini_options]` à la racine ; `pytest.approx` pour les flottants, `numpy.testing` pour les tableaux.
 - FastAPI : `Annotated[...]` pour les dépendances, un `APIRouter` par domaine, `lifespan` pour le cache météo ; tests avec `httpx.ASGITransport(app=app)` et `pytest_asyncio.fixture`.
+- Backoffice (lot BO6, `docs/backoffice-bo6.md`) : chaque écran est une page rendue par le serveur (`admin/pages.py`, Jinja2) avec son adresse sous `/admin/`, liens et formulaires (`POST` puis 303, champ `csrf`), tri, filtres et page dans la query string ; htmx seulement par fragments (`templates/partials/`), jamais `hx-boost`, toujours un équivalent sans JS ; Tabler et htmx vendorés, pas de build. Les gabarits ne calculent rien (`admin/views.py`). L'API JSON `/admin/api/*` reste stable pour les scripts.
 - Le site est sur `champis.app`, l'API sur `api.champis.app` : tout changement de réponse qui sert le site se vérifie aussi dans `adhumi/champis-web` (CORS, en-têtes exposés).
 - Toute décision structurante passe par la spec avant le code (skill `spec-sync`) ; en cas de doute, demander à Adrien.

@@ -285,60 +285,82 @@ def describe() -> list[dict[str, Any]]:
     return out
 
 
-def validate(kind: str, args: dict[str, Any] | None) -> dict[str, str]:
-    """Options normalisées (chaînes) ; `ToolError` pour tout ce qui n'est pas dans le catalogue."""
+def _normalize(tool: Tool, f: Field, value: Any) -> str:
+    """La valeur d'un champ sous sa forme normalisée ; `ToolError` (sans le nom du champ) sinon."""
+    if f.kind == "bool":
+        if isinstance(value, str):
+            value = value.strip().lower() in ("1", "true", "oui", "on", "yes")
+        return "True" if bool(value) else "False"
+    if f.kind == "depts":
+        tokens = [t for t in str(value).replace(",", " ").split() if t]
+        if not tokens:
+            raise ToolError("au moins un département, ou all")
+        try:
+            parsed = parse_depts(tokens if tokens != [ALL] else [ALL])
+        except SystemExit as e:
+            raise ToolError(str(e)) from e
+        return ALL if tokens == [ALL] else " ".join(parsed)
+    if f.kind == "species":
+        ids = [t for t in str(value or "").replace(",", " ").split() if t]
+        unknown = [t for t in ids if t not in list_species()]
+        if unknown:
+            raise ToolError(f"espèce inconnue {', '.join(unknown)}")
+        return " ".join(dict.fromkeys(ids))
+    if f.kind == "number":
+        if value is None or (isinstance(value, str) and not value.strip()):
+            if f.default is None:  # nombre optionnel : vide = non fourni
+                return ""
+            raise ToolError("nombre attendu")
+        try:
+            number = float(value)
+        except (TypeError, ValueError) as e:
+            raise ToolError("nombre attendu") from e
+        if f.minimum is not None and number < f.minimum:
+            raise ToolError(f"au moins {f.minimum:g}")
+        if f.maximum is not None and number > f.maximum:
+            raise ToolError(f"au plus {f.maximum:g}")
+        return f"{number:g}"
+    value = str(value)
+    if value not in _choices(tool, f):
+        raise ToolError(f"valeur inconnue {value!r}")
+    return value
+
+
+FORM = ""  # clé des erreurs qui ne tiennent pas à un seul champ (`validate_fields`)
+
+
+def validate_fields(
+    kind: str, args: dict[str, Any] | None
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Options normalisées et erreurs par champ (`FORM` pour celles du formulaire entier) : les
+    pages du backoffice affichent chaque erreur sous son champ, toutes à la fois."""
     tool = TOOLS.get(kind)
     if tool is None:
         raise ToolError(f"outil inconnu : {kind}")
     args = args or {}
-    known = {f.name for f in tool.fields}
-    extra = set(args) - known
-    if extra:
-        raise ToolError(f"options refusées : {', '.join(sorted(extra))}")
     out: dict[str, str] = {}
+    errors: dict[str, str] = {}
+    extra = set(args) - {f.name for f in tool.fields}
+    if extra:
+        errors[FORM] = f"options refusées : {', '.join(sorted(extra))}"
     for f in tool.fields:
-        value = args.get(f.name, f.default)
-        if f.kind == "bool":
-            if isinstance(value, str):
-                value = value.strip().lower() in ("1", "true", "oui", "on", "yes")
-            out[f.name] = "True" if bool(value) else "False"
-        elif f.kind == "depts":
-            tokens = [t for t in str(value).replace(",", " ").split() if t]
-            if not tokens:
-                raise ToolError(f"{f.name} : au moins un département, ou all")
-            try:
-                parsed = parse_depts(tokens if tokens != [ALL] else [ALL])
-            except SystemExit as e:
-                raise ToolError(f"{f.name} : {e}") from e
-            out[f.name] = ALL if tokens == [ALL] else " ".join(parsed)
-        elif f.kind == "species":
-            ids = [t for t in str(value or "").replace(",", " ").split() if t]
-            unknown = [t for t in ids if t not in list_species()]
-            if unknown:
-                raise ToolError(f"{f.name} : espèce inconnue {', '.join(unknown)}")
-            out[f.name] = " ".join(dict.fromkeys(ids))
-        elif f.kind == "number":
-            if value is None or (isinstance(value, str) and not value.strip()):
-                if f.default is None:  # nombre optionnel : vide = non fourni
-                    out[f.name] = ""
-                    continue
-                raise ToolError(f"{f.name} : nombre attendu")
-            try:
-                number = float(value)
-            except (TypeError, ValueError) as e:
-                raise ToolError(f"{f.name} : nombre attendu") from e
-            if f.minimum is not None and number < f.minimum:
-                raise ToolError(f"{f.name} : au moins {f.minimum:g}")
-            if f.maximum is not None and number > f.maximum:
-                raise ToolError(f"{f.name} : au plus {f.maximum:g}")
-            out[f.name] = f"{number:g}"
-        else:
-            value = str(value)
-            if value not in _choices(tool, f):
-                raise ToolError(f"{f.name} : valeur inconnue {value!r}")
-            out[f.name] = value
-    if kind == "check":
-        _check_variant(out)
+        try:
+            out[f.name] = _normalize(tool, f, args.get(f.name, f.default))
+        except ToolError as e:
+            errors[f.name] = str(e)
+    if kind == "check" and not errors:
+        try:
+            _check_variant(out)
+        except ToolError as e:
+            errors[FORM] = str(e)
+    return out, errors
+
+
+def validate(kind: str, args: dict[str, Any] | None) -> dict[str, str]:
+    """Options normalisées (chaînes) ; `ToolError` pour tout ce qui n'est pas dans le catalogue."""
+    out, errors = validate_fields(kind, args)
+    for name, message in errors.items():  # la première, comme avant : options refusées d'abord
+        raise ToolError(f"{name} : {message}" if name else message)
     return out
 
 

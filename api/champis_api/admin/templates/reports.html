@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Rapports GBIF{% endblock %}
+{% block subtitle %}<p class="text-secondary m-0">Contrôles de crédibilité de T aux occurrences GBIF (AUC contre fond forestier) déposés dans le bucket. Un contrôle se lance depuis la page de son espèce.</p>{% endblock %}
+{% block actions %}<a class="btn btn-primary" href="/admin/tools/check">Lancer un contrôle</a>{% endblock %}
+{% block content %}
+<div class="card">
+  <div class="card-body border-bottom">
+    <form id="reports-filters" class="row g-2" method="get" action="/admin/reports" hx-get="/admin/reports" hx-target="#reports-table" hx-swap="outerHTML" hx-push-url="true" hx-trigger="submit, change, input changed delay:300ms from:#reports-q">
+      <div class="col-12 col-md-3"><label class="form-label" for="reports-q">Recherche</label><input class="form-control" id="reports-q" type="search" name="q" value="{{ lst.params.q }}" placeholder="nom, espèce, variante"></div>
+      <div class="col-6 col-md-3"><label class="form-label" for="reports-species">Espèce</label>
+        <select class="form-select" id="reports-species" name="species"><option value="">toutes</option>{% for sid, name in species %}<option value="{{ sid }}"{{ ' selected' if lst.params.species == sid }}>{{ name }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="reports-dept">Département</label>
+        <select class="form-select" id="reports-dept" name="dept"><option value="">tous</option>{% for d in depts %}<option value="{{ d }}"{{ ' selected' if lst.params.dept == d }}>{{ d }}</option>{% endfor %}</select></div>
+      <div class="col-6 col-md-2"><label class="form-label" for="reports-entry">Critère d'entrée</label>
+        <select class="form-select" id="reports-entry" name="entry"><option value="">tous</option><option value="atteint"{{ ' selected' if lst.params.entry == 'atteint' }}>atteint</option><option value="non"{{ ' selected' if lst.params.entry == 'non' }}>non atteint</option></select></div>
+      <div class="col-6 col-md-2 d-flex align-items-end gap-2"><button class="btn btn-primary" type="submit">Filtrer</button><a class="btn" href="/admin/reports">Effacer</a></div>
+    </form>
+  </div>
+  {% include "partials/_reports_table.html" %}
+</div>
+{% endblock %}

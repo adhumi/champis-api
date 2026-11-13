@@ -32,6 +32,7 @@ from sqlalchemy import (
     func,
     insert,
     inspect,
+    or_,
     select,
     text,
     update,
@@ -554,13 +555,61 @@ class Store:
             r = conn.execute(select(jobs).where(jobs.c.id == job_id)).first()
             return self._job(r) if r else None
 
-    def list_jobs(self, limit: int = 50, kind: str | None = None) -> list[dict[str, Any]]:
-        """Les plus récentes d'abord."""
-        q = select(jobs).order_by(jobs.c.created_at.desc()).limit(limit)
+    JOB_SORTS = ("created_at", "kind", "status", "origin")
+
+    @staticmethod
+    def _jobs_where(q, kind, status, origin, search):
         if kind:
             q = q.where(jobs.c.kind == kind)
+        if status:
+            q = q.where(jobs.c.status == status)
+        if origin:
+            q = q.where(jobs.c.origin == origin)
+        if search:
+            like = f"%{search}%"
+            q = q.where(
+                or_(
+                    jobs.c.id.like(f"{search}%"),
+                    jobs.c.args.like(like),
+                    jobs.c.summary.like(like),
+                    jobs.c.message.like(like),
+                )
+            )
+        return q
+
+    def list_jobs(
+        self,
+        limit: int = 50,
+        kind: str | None = None,
+        *,
+        offset: int = 0,
+        status: str | None = None,
+        origin: str | None = None,
+        search: str | None = None,
+        sort: str = "created_at",
+        descending: bool = True,
+    ) -> list[dict[str, Any]]:
+        """Les plus récentes d'abord ; filtres, tri et page pour la liste du backoffice (`search`
+        cherche dans le début de l'identifiant, les options, le résumé et le dernier message)."""
+        column = jobs.c[sort if sort in self.JOB_SORTS else "created_at"]
+        order = [column.desc() if descending else column.asc()]
+        if column is not jobs.c.created_at:
+            order.append(jobs.c.created_at.desc())
+        q = self._jobs_where(select(jobs), kind, status, origin, search)
+        q = q.order_by(*order).limit(limit).offset(offset)
         with self.engine.connect() as conn:
             return [self._job(r) for r in conn.execute(q)]
+
+    def count_jobs(
+        self,
+        kind: str | None = None,
+        status: str | None = None,
+        origin: str | None = None,
+        search: str | None = None,
+    ) -> int:
+        q = self._jobs_where(select(func.count()).select_from(jobs), kind, status, origin, search)
+        with self.engine.connect() as conn:
+            return int(conn.execute(q).scalar() or 0)
 
     def last_jobs_by_kind(self) -> dict[str, dict[str, Any]]:
         """La dernière exécution de chaque sorte de tâche (page Santé)."""

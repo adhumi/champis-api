@@ -1,8 +1,8 @@
-"""Routes `/admin` du backoffice (spec › Backoffice, lot BO1 : lecture seule).
+"""API JSON `/admin/api` du backoffice (spec › Backoffice, lot BO1 : lecture seule).
 
-- `GET /admin` et `/admin/static/<fichier>` : la page et ses fichiers, sans secret ;
-- `POST /admin/login` (`{"key": …}`) pose le cookie, 5 essais par minute et par IP ;
-  `POST /admin/logout` le retire ;
+Les pages elles-mêmes (HTML rendu par le serveur, lot BO6), la connexion et les fichiers statiques
+sont dans `pages.py` ; cette API reste celle des scripts (`Authorization: Bearer <clé>`) :
+
 - `GET /admin/api/me`, `/health`, `/usage?days=90`, `/jobs?limit=50&kind=`, `/jobs/<id>` :
   ce que la page affiche, derrière le cookie ou `Authorization: Bearer <clé>` ;
 - lot BO3 : `GET /admin/api/tools` (catalogue, état du service d'exécution, file), `POST
@@ -22,22 +22,17 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from .. import counts, jobs, render, tools
-from ..ratelimit import TokenBuckets, client_ip
 from . import auth, health
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"], include_in_schema=False)
-STATIC = Path(__file__).parent / "static"
-STATIC_FILES = {"admin.js": "application/javascript", "admin.css": "text/css"}
-LOGIN_PER_MINUTE = 5
 ROBOTS = {"X-Robots-Tag": "noindex, nofollow", "Cache-Control": "no-store"}
 MAX_USAGE_DAYS = 400
 
@@ -53,62 +48,6 @@ def _store(request: Request):
     return store
 
 
-def _login_buckets(request: Request) -> TokenBuckets:
-    buckets = getattr(request.app.state, "admin_login_buckets", None)
-    if buckets is None:
-        buckets = request.app.state.admin_login_buckets = TokenBuckets(LOGIN_PER_MINUTE)
-    return buckets
-
-
-@router.get("", response_class=HTMLResponse)
-@router.get("/", response_class=HTMLResponse)
-async def page(_: auth.Enabled) -> HTMLResponse:
-    return HTMLResponse((STATIC / "index.html").read_text(encoding="utf-8"), headers=ROBOTS)
-
-
-@router.get("/static/{name}")
-async def static(name: str, _: auth.Enabled) -> FileResponse:
-    if name not in STATIC_FILES:
-        raise HTTPException(404)
-    return FileResponse(STATIC / name, media_type=STATIC_FILES[name], headers=ROBOTS)
-
-
-class Login(BaseModel):
-    key: str
-
-
-@router.post("/login", status_code=204)
-async def login(body: Login, request: Request, response: Response, key: auth.Enabled) -> Response:
-    auth.same_origin(request)
-    if request.headers.get(auth.ACTION_HEADER) != "1":
-        raise HTTPException(403, f"en-tête {auth.ACTION_HEADER}: 1 requis")
-    wait = _login_buckets(request).take(client_ip(dict(request.headers), request.client))
-    if wait > 0:
-        raise HTTPException(429, "trop d'essais", headers={"Retry-After": str(int(wait + 1))})
-    if not auth.key_matches(key, body.key):
-        log.warning("backoffice : clé refusée")
-        raise HTTPException(401, "clé refusée")
-    response = Response(status_code=204, headers=ROBOTS)
-    response.set_cookie(
-        auth.COOKIE,
-        auth.make_token(key),
-        max_age=auth.TTL_S,
-        path="/admin",
-        # derrière Railway, TLS est terminé en amont : le protocole d'origine est dans l'en-tête
-        secure=request.headers.get("x-forwarded-proto", request.url.scheme) == "https",
-        httponly=True,
-        samesite="strict",
-    )
-    return response
-
-
-@router.post("/logout", status_code=204)
-async def logout(_: auth.Action) -> Response:
-    response = Response(status_code=204, headers=ROBOTS)
-    response.delete_cookie(auth.COOKIE, path="/admin")
-    return response
-
-
 @router.get("/api/me")
 async def me(_: auth.Authenticated) -> JSONResponse:
     return JSONResponse({"ok": True}, headers=ROBOTS)
@@ -122,36 +61,37 @@ async def api_health(request: Request, _: auth.Authenticated) -> JSONResponse:
     return JSONResponse(data, headers=ROBOTS)
 
 
-@router.get("/api/usage")
-async def api_usage(request: Request, _: auth.Authenticated, days: int = 90) -> JSONResponse:
+def usage(store, settings, days: int) -> dict[str, Any]:
+    """Ce que la page Usage affiche (synchrone : à lancer dans un fil)."""
     days = max(1, min(days, MAX_USAGE_DAYS))
-    store = _store(request)
     end = counts.today()
     span = [end - timedelta(days=k) for k in range(days)]
-    data = await asyncio.to_thread(store.counts_since, span[-1])
-    devices = await asyncio.to_thread(_devices, store, end, span[-1], request.app.state.settings)
+    data = store.counts_since(span[-1])
     by_name: dict[str, dict[str, int]] = {}
     for day, values in data.items():
         for name, value in values.items():
             by_name.setdefault(name, {})[day.isoformat()] = value
-    return JSONResponse(
-        {
-            "days": [d.isoformat() for d in sorted(span)],
-            "labels": counts.COUNTERS,
-            "counters": by_name,
-            "table": {
-                "header": list(counts.header()),
-                "rows": counts.rows(data, span[: min(days, 14)]),
-            },
-            "devices": devices,
-            # part de chaque espèce et groupe (lot BO2) : app et site, 7 et 30 jours
-            "layers": {
-                "7d": counts.layer_shares(data, end, 7),
-                "30d": counts.layer_shares(data, end, 30),
-            },
+    return {
+        "days": [d.isoformat() for d in sorted(span)],
+        "labels": counts.COUNTERS,
+        "counters": by_name,
+        "table": {
+            "header": list(counts.header()),
+            "rows": counts.rows(data, span[: min(days, 14)]),
         },
-        headers=ROBOTS,
-    )
+        "devices": _devices(store, end, span[-1], settings),
+        # part de chaque espèce et groupe (lot BO2) : app et site, 7 et 30 jours
+        "layers": {
+            "7d": counts.layer_shares(data, end, 7),
+            "30d": counts.layer_shares(data, end, 30),
+        },
+    }
+
+
+@router.get("/api/usage")
+async def api_usage(request: Request, _: auth.Authenticated, days: int = 90) -> JSONResponse:
+    data = await asyncio.to_thread(usage, _store(request), request.app.state.settings, days)
+    return JSONResponse(data, headers=ROBOTS)
 
 
 def _devices(store, end, since, settings) -> dict[str, Any]:

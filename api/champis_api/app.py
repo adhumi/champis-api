@@ -34,6 +34,7 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import catalog, counts
+from .admin import pages as admin_pages
 from .admin.router import router as admin_router
 from .apns import ApnsClient
 from .cache import WeatherCache
@@ -288,6 +289,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     app.include_router(observations.router)
     app.include_router(coins.router)
     app.include_router(admin_router)  # 404 tant que CHAMPIS_ADMIN_KEY est vide
+    admin_pages.install(app)  # les pages du backoffice (lot BO6), mêmes conditions
 
     @app.get("/health")
     async def health() -> dict[str, str | int | None]:

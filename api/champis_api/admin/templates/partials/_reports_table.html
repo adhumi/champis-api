@@ -1,0 +1,24 @@
+{% import "partials/_macros.html" as m %}
+<div id="reports-table" hx-target="this" hx-swap="outerHTML">
+  {{ m.sort_state(lst, "reports-filters") }}
+  {% if page.items %}
+  <div class="table-responsive"><table class="table card-table table-vcenter">
+    <thead><tr>{{ m.th(lst, "species", "espèce") }}{{ m.th(lst, "dept", "département") }}<th>variante</th>{{ m.th(lst, "auc", "résultat") }}<th class="text-end">occurrences en forêt</th>{{ m.th(lst, "name", "fichier") }}<th class="w-1"></th></tr></thead>
+    <tbody>
+    {% for r in page.items %}
+    <tr>
+      <td><a href="/admin/species/{{ r.species }}#controle">{{ r.species_name }}</a></td>
+      <td>{{ r.dept or '—' }}</td><td>{{ r.variant or '—' }}</td>
+      <td>{{ v.check_summary(r) }}{% if r.entry and r.entry.met %} {{ m.badge('critère atteint', 'green') }}{% endif %}</td>
+      <td class="text-end">{{ r.n_in_forest | n }}</td>
+      <td class="text-secondary"><small>{{ r.name }} · {{ r.bytes | size }}</small></td>
+      <td><a class="btn btn-sm" href="/admin/reports/open?key={{ r.key | urlencode }}" rel="noopener">Ouvrir</a></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ m.pagination(lst, page, "rapports") }}
+  {% else %}
+  {{ m.empty_list(lst, total, "rapports", ("Aucun rapport GBIF", "Le bucket n'en contient pas encore : le bloc « Contrôle GBIF » de la page d'une espèce en produit un."), problem) }}
+  {% endif %}
+</div>

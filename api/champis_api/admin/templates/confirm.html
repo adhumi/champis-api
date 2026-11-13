@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<form class="card" method="post" action="{{ action }}">
+  <div class="card-body">
+    <p class="fs-3">{{ question }}</p>
+    {% if details %}
+    <dl class="row mb-0">
+      {% for label, value in details %}<dt class="col-sm-5 col-md-4 fw-normal text-secondary">{{ label }}</dt><dd class="col-sm-7 col-md-8">{{ value }}</dd>{% endfor %}
+    </dl>
+    {% endif %}
+    {{ m.csrf_field(csrf) }}
+    <input type="hidden" name="confirmed" value="1">
+    {% for name, value in fields %}<input type="hidden" name="{{ name }}" value="{{ value }}">{% endfor %}
+  </div>
+  <div class="card-footer d-flex gap-2">
+    <a class="btn" href="{{ back }}">Annuler</a>
+    <button class="btn {{ 'btn-danger' if danger else 'btn-primary' }} ms-auto" type="submit">{{ submit }}</button>
+  </div>
+</form>
+{% endblock %}
