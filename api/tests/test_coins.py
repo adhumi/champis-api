@@ -98,6 +98,33 @@ def test_score_coins_uses_pixel_t_and_cell_weather(grid):
     assert len(scores[2].days) == 11 and all(d.value is None for d in scores[2].days)
 
 
+def test_score_coins_interpolates_between_cell_centres(grid):
+    """Spec › Scoring › Interpolation de la météo entre cellules (13 nov. 2026) : au bord commun
+    de deux cellules, le coin vaut la moyenne des deux ; une voisine sans météo est ignorée."""
+    from pyproj import Transformer
+
+    lon, lat = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True).transform(
+        934_999.0, 6_682_500.0
+    )  # 1 m avant le bord est de c_0930_6680, à la latitude des centres
+    coin = Coin("1", USER, "Bord", lat, lon, "cepes", 450, {"boletus_edulis": 1.0})
+    west = {"species": {"boletus_edulis": _row(0.8)}}
+    east = {
+        "species": {
+            "boletus_edulis": [
+                {"date": r["date"], "by_alt": {"150": {"M_eff": 0.2, "phi": 1.0}}}
+                for r in _row(0.2)
+            ]
+        }
+    }
+    both = score_coins([coin], grid, {"c_0930_6680": west, "c_0935_6680": east}, TODAY)[0]
+    # la cellule est n'a que la classe 150 : c'est sa classe la plus proche du coin
+    assert both.today == pytest.approx(0.5, abs=1e-3)
+    alone = score_coins([coin], grid, {"c_0930_6680": west}, TODAY)[0]
+    assert alone.today == pytest.approx(0.8)
+    # la cellule qui contient le coin n'a pas de météo : pas de score, jamais celui de la voisine
+    assert score_coins([coin], grid, {"c_0935_6680": east}, TODAY)[0].today is None
+
+
 def test_score_coins_reports_a_better_coming_day(grid):
     coin = Coin("1", USER, "Combe", 47.12, 6.31, "cepes", 450, {"boletus_edulis": 1.0})
     rows = _row(0.3)

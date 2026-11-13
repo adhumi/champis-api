@@ -8,8 +8,11 @@ coin est bon ou excellent**. L'app ne fait aucun calcul en arrière-plan. La not
 lot 1, 1er nov. 2026).
 
 Score d'un coin = max sur ses espèces de `T_e × M_eff_e × Φ_e` (règle 9), avec `T_e` lu par l'app
-dans les tuiles au moment où le coin est créé, et `M_eff`, `Φ` de la cellule météo la plus proche
-pour la classe d'altitude du coin. Les seuils (« bon » = 0,55…) viennent de la palette, jamais du code.
+dans les tuiles au moment où le coin est créé, et `M_eff × Φ` interpolé au point du coin entre les
+centres des cellules météo qui l'encadrent (`champis_api.interp`, spec › Scoring › Interpolation
+de la météo entre cellules, 13 nov. 2026), chaque cellule pour sa classe d'altitude la plus proche
+de celle du coin. Les phrases du jour restent celles de la cellule qui contient le coin. Hors
+grille : cellule la plus proche, sans interpolation. Les seuils (« bon » = 0,55…) viennent de la palette, jamais du code.
 """
 
 from __future__ import annotations
@@ -20,7 +23,7 @@ from datetime import date
 
 from champis_pipeline.species import load_palette, load_species
 
-from . import counts
+from . import counts, interp
 from .apns import ApnsClient
 from .grid import Cell, WeatherGrid
 from .scoring import palette_class
@@ -61,6 +64,30 @@ def nearest_alt_class(cell: Cell, alt_m: float) -> str:
     return str(int(best))
 
 
+def _cells_of(coin: Coin, grid: WeatherGrid) -> tuple[Cell | None, interp.Corners | None]:
+    """Cellule qui porte le coin et coins d'interpolation ; hors grille, la cellule la plus
+    proche et pas d'interpolation."""
+    c = interp.corners(coin.lat, coin.lon)
+    home = grid.get(c.containing)
+    if home is not None:
+        return home, c
+    return grid.nearest(coin.lat, coin.lon), None
+
+
+def _factor(w: dict | None, cell: Cell | None, sid: str, day: str, alt_m: float) -> float | None:
+    """`M_eff × Φ` d'une cellule pour une espèce et un jour, à sa classe la plus proche du coin."""
+    if w is None or cell is None:
+        return None
+    rows = w["species"].get(sid)
+    if not rows:
+        return None
+    row = next((r for r in rows if r["date"] == day), None)
+    alt = nearest_alt_class(cell, alt_m)
+    if row is None or alt not in row["by_alt"]:
+        return None
+    return row["by_alt"][alt]["M_eff"] * row["by_alt"][alt]["phi"]
+
+
 def score_coins(
     coins: list[Coin], grid: WeatherGrid, weather: dict[str, dict], today: date
 ) -> list[CoinScore]:
@@ -69,23 +96,25 @@ def score_coins(
     out = []
     all_days = days_around(today)
     for coin in coins:
-        cell = grid.nearest(coin.lat, coin.lon)
-        w = weather.get(cell.id) if cell else None
+        home, corners = _cells_of(coin, grid)
+        w = weather.get(home.id) if home else None
         if w is None:
             out.append(CoinScore(coin, None, None, None, None, _empty_days(all_days)))
             continue
-        alt = nearest_alt_class(cell, coin.alt_class)
+        ids = corners.ids if corners else (home.id,)
         per_day: dict[date, tuple[float, str]] = {}
         for d in all_days:
+            day = d.isoformat()
             best_v, best_sid = None, None
             for sid, t in coin.t.items():
-                rows = w["species"].get(sid)
-                if not rows:
+                values = {
+                    cid: _factor(weather.get(cid), grid.get(cid), sid, day, coin.alt_class)
+                    for cid in ids
+                }
+                f = interp.interpolate(corners, values) if corners else values[home.id]
+                if f is None:
                     continue
-                row = next((r for r in rows if r["date"] == d.isoformat()), None)
-                if row is None or alt not in row["by_alt"]:
-                    continue
-                v = t * row["by_alt"][alt]["M_eff"] * row["by_alt"][alt]["phi"]
+                v = t * f
                 if best_v is None or v > best_v or (v == best_v and sid < best_sid):
                     best_v, best_sid = v, sid
             if best_v is not None:
@@ -98,6 +127,7 @@ def score_coins(
             out.append(CoinScore(coin, None, None, None, None, days))
             continue
         t_val, lead = per_day[today]
+        alt = nearest_alt_class(home, coin.alt_class)
         today_row = next(r for r in w["species"][lead] if r["date"] == today.isoformat())
         phrases = tuple(today_row["by_alt"][alt].get("summary", ()))
         later = [(v, d) for d, (v, _) in per_day.items() if d > today]
@@ -177,12 +207,16 @@ def compose(scores: list[CoinScore], today: date) -> tuple[str, str, str] | None
 async def weather_for(
     coins: list[Coin], grid: WeatherGrid, client: OpenMeteoClient, today: date
 ) -> dict[str, dict]:
-    """Météo des cellules les plus proches des coins (depuis le cache après la pré-chauffe)."""
+    """Météo de la cellule de chaque coin et de celles qui l'encadrent pour l'interpolation
+    (depuis le cache après la pré-chauffe)."""
     cells: dict[str, Cell] = {}
     for c in coins:
-        cell = grid.nearest(c.lat, c.lon)
-        if cell:
-            cells[cell.id] = cell
+        home, corners = _cells_of(c, grid)
+        for cid in corners.ids if corners else ():
+            if (cell := grid.get(cid)) is not None:
+                cells[cid] = cell
+        if home:
+            cells[home.id] = home
     if not cells:
         return {}
     species = sorted({sid for c in coins for sid in c.t})

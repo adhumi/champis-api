@@ -6,6 +6,7 @@ import json
 from datetime import date
 
 import pytest
+from champis_api import interp
 from champis_api.scoring import (
     DailySeries,
     group_score,
@@ -77,3 +78,16 @@ def test_group_and_palette_vectors():
     for c in _load("palette.json")["cases"]:
         cls = palette_class(c["score"], pal)
         assert {**cls, "rgba": list(palette_color(c["score"], pal))} == c["expected"]
+
+
+def test_interp_vectors():
+    for c in _load("interp.json")["cases"]:
+        corners = interp.corners(c["lat"], c["lon"])
+        exp = c["expected"]
+        assert corners.containing == exp["containing"] and list(corners.ids) == exp["ids"], c
+        assert all(abs(w - e) <= TOL for w, e in zip(corners.weights, exp["weights"], strict=True))
+        got = interp.interpolate(corners, c["values"])
+        if exp["value"] is None:
+            assert got is None, c
+        else:
+            assert abs(got - exp["value"]) <= TOL, c
