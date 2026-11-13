@@ -328,7 +328,8 @@ def test_worker_main_requires_a_database(tmp_path: Path):
 
 
 def _app(grid, client, store, bucket=None):
-    s = Settings(admin_key=KEY, s3=None, apns_key="")
+    # base de la mesure (page Santé) : SQLite en mémoire, jamais `data/champis.db` du dépôt
+    s = Settings(admin_key=KEY, s3=None, apns_key="", database_url="sqlite://")
     return create_app(
         settings=s,
         state=State(grid=grid, client=client, cache=client.cache, store=store, bucket=bucket),

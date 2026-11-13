@@ -22,6 +22,8 @@ ACTION = {"X-Champis-Admin": "1"}
 
 
 def _app(grid, client, store, bucket=None, **settings):
+    # base de la mesure (page Santé) : SQLite en mémoire, jamais `data/champis.db` du dépôt
+    settings.setdefault("database_url", "sqlite://")
     s = Settings(admin_key=KEY, s3=None, apns_key="", **settings)
     state = State(grid=grid, client=client, cache=client.cache, store=store, bucket=bucket)
     return create_app(settings=s, state=state)
@@ -55,7 +57,7 @@ def test_tokens_and_keys():
 @pytest.mark.asyncio
 async def test_without_a_key_the_backoffice_does_not_exist(grid, client, store):
     app = create_app(
-        settings=Settings(admin_key="", s3=None, apns_key=""),
+        settings=Settings(admin_key="", s3=None, apns_key="", database_url="sqlite://"),
         state=State(grid=grid, client=client, cache=client.cache, store=store),
     )
     async with (
