@@ -36,6 +36,15 @@ MAX_BBOX_CELLS = 5000
 MAX_BBOX_COMPUTE = 40
 UNAVAILABLE_NOT_PRECOMPUTED = "météo pas encore précalculée : prochaine pré-chauffe"
 
+# Coordonnées des requêtes : des nombres finis et bornés, sinon 422 (correctif du 13 nov. 2026 :
+# `lat=inf` remontait en 500, « math domain error » dans `WeatherGrid.nearest`). Un point est sur
+# le globe ; une emprise ne sert qu'à des comparaisons et vient telle quelle de la carte, qui,
+# dézoomée, dépasse ±180° de longitude (copies du monde) ou ±90° de latitude (région MapKit plus
+# sa marge) : bornes larges, pour ne refuser que ce qui n'est pas une emprise.
+Lat = Annotated[float, Query(ge=-90.0, le=90.0, allow_inf_nan=False)]
+Lon = Annotated[float, Query(ge=-180.0, le=180.0, allow_inf_nan=False)]
+BoxCoord = Annotated[float, Query(ge=-720.0, le=720.0, allow_inf_nan=False)]
+
 
 def _grid(request: Request) -> WeatherGrid:
     return request.app.state.champis.grid
@@ -94,8 +103,8 @@ async def get_weather(
     client: Client,
     species: Species,
     cell: str | None = None,
-    lat: float | None = None,
-    lon: float | None = None,
+    lat: Lat | None = None,
+    lon: Lon | None = None,
 ) -> dict[str, Any]:
     if cell is not None:
         c = grid.get(cell)
@@ -122,10 +131,10 @@ async def get_weather_bbox(
     client: Client,
     cache: Cache,
     species: Species,
-    min_lon: float,
-    min_lat: float,
-    max_lon: float,
-    max_lat: float,
+    min_lon: BoxCoord,
+    min_lat: BoxCoord,
+    max_lon: BoxCoord,
+    max_lat: BoxCoord,
     day: date | None = None,
 ) -> dict[str, Any]:
     """Par cellule de l'emprise (id, lat, lon, alt_classes, elevation_m) : `M_eff` et `phi` par classe
@@ -218,10 +227,10 @@ async def get_weather_field(
     cache: Cache,
     species: Species,
     day: date,
-    min_lon: float,
-    min_lat: float,
-    max_lon: float,
-    max_lat: float,
+    min_lon: BoxCoord,
+    min_lat: BoxCoord,
+    max_lon: BoxCoord,
+    max_lat: BoxCoord,
 ) -> JSONResponse:
     """Champ météo compact d'une grande emprise, pour la carte sous le zoom 9 (spec › Points
     ouverts › Carte visible dès l'ouverture, 4 nov. 2026) : par cellule (`id`, `lat`, `lon`,

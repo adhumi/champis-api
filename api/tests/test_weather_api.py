@@ -83,6 +83,33 @@ async def test_weather_shape(api):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["inf", "-inf", "nan", "1e999", "1e308", "91", "abc"])
+async def test_coordinates_must_be_finite_and_bounded(api, bad):
+    """`lat=inf` donnait un 500 (« math domain error » dans `WeatherGrid.nearest`) : toute
+    coordonnée non finie ou hors bornes est un 422, sur les trois routes météo."""
+    r = await api.get(f"/weather?lat={bad}&lon=1")
+    assert r.status_code == 422, r.text
+    r = await api.get(f"/weather?lat=47&lon={bad if bad != '91' else '181'}")
+    assert r.status_code == 422, r.text
+    box = {"min_lon": 6.0, "min_lat": 47.0, "max_lon": 6.5, "max_lat": 47.3}
+    for name in box:
+        params = box | {name: bad if bad != "91" else "721"}
+        assert (await api.get("/weather/bbox", params=params)).status_code == 422, name
+        r = await api.get("/weather/field", params=params | {"day": J})
+        assert r.status_code == 422, name
+
+
+@pytest.mark.asyncio
+async def test_wide_map_extents_are_still_accepted(api):
+    """Une carte dézoomée envoie une emprise plus large que le globe : toujours servie."""
+    wide = {"min_lon": -200.5, "min_lat": -95.1, "max_lon": 200.5, "max_lat": 136.1}
+    r = await api.get("/weather/field", params=wide | {"day": J})
+    assert r.status_code == 200, r.text
+    r = await api.get("/weather", params={"lat": 90, "lon": -180, "species": "boletus_edulis"})
+    assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
 async def test_weather_by_lat_lon_and_errors(api):
     r = await api.get("/weather", params={"lat": 47.12, "lon": 6.37})
     assert r.json()["cell"]["id"] == "c_0935_6680"
