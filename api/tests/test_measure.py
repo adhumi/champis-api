@@ -38,6 +38,13 @@ def test_tracker_writes_each_device_once_a_day():
     assert not t.first_today(D + timedelta(days=1), "a")
 
 
+def test_tracker_is_bounded():
+    t = counts.DeviceDayTracker(max_entries=2)
+    assert t.first_today(D, "a") and t.first_today(D, "b") and t.first_today(D, "c")
+    assert list(t.seen) == ["b", "c"]  # la plus ancienne est partie
+    assert t.first_today(D, "a") and not t.first_today(D, "c")
+
+
 def test_layer_targets_group_species_or_all():
     groups = {"cepes": ["boletus_aereus", "boletus_edulis"], "girolles": ["cantharellus_cibarius"]}
     assert counts.layer_targets(["boletus_edulis", "boletus_aereus"], groups) == ["cepes"]
@@ -191,3 +198,24 @@ async def test_usage_page_exposes_devices_and_layer_shares(grid, client, store):
     assert u["layers"]["7d"] == {"app": {"cepes": 6, "girolles": 2}}
     assert u["layers"]["30d"]["web"] == {"cepes": 5}
     assert "layer_app:cepes" in u["counters"]  # brut, la page les regroupe
+
+
+@pytest.mark.asyncio
+async def test_only_served_requests_on_limited_paths_are_measured(grid, client, store):
+    """Une réponse en erreur ou un chemin hors limiteur (relais de tuiles) n'écrit rien : un
+    identifiant au hasard par requête ne remplit plus `device_days`."""
+    app = _app(grid, client, store)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        h = {"X-Champis-User": USER}
+        assert (await c.get("/tiles/T-x.pmtiles", headers=h)).status_code == 404  # hors limiteur
+        assert (await c.get("/nulle-part", headers=h)).status_code == 404
+        assert (await c.get("/weather?cell=inconnue", headers=h)).status_code == 404
+        r = await c.post("/observations", json={"observations": []}, headers=h)
+        assert r.status_code == 422
+        assert store.table_counts()["device_days"] == 0
+        assert store.counts_since(D) == {}
+        assert (await c.get("/species", headers=h)).status_code == 200
+    assert store.table_counts()["device_days"] == 1

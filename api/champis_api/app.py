@@ -303,7 +303,15 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             await asyncio.to_thread(counts.bump_quietly, store, "http_429")
         elif response.status_code >= 500:
             await asyncio.to_thread(counts.bump_quietly, store, "http_5xx")
-        if request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS:
+        # Appareils et couches : seulement une requête servie (2xx) sur un chemin soumis au
+        # limiteur (14 nov. 2026). Un `GET /tiles/x` en 404 avec un identifiant au hasard écrivait
+        # une ligne `device_days` par requête, sans limite de débit.
+        measured = 200 <= response.status_code < 300 and not request.url.path.startswith(
+            RATE_LIMIT_EXEMPT
+        )
+        if measured and (
+            request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS
+        ):
             await asyncio.to_thread(_measure, store, request, response.status_code)
         return response
 

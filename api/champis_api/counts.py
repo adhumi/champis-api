@@ -71,6 +71,7 @@ LAYER_PATHS = (
 )  # ce que les clients demandent par couche
 ALL_SPECIES = "toutes"  # requête sans `species` : toutes les espèces
 DEVICE_HASH_LENGTH = 32  # 16 octets en hexadécimal
+TRACKER_MAX_ENTRIES = 50_000  # empreintes du jour gardées en mémoire par worker (≈ 5 Mo au pire)
 
 
 def device_hash(secret: str, user_id: str) -> str:
@@ -94,18 +95,23 @@ def valid_user_id(value: str | None) -> str | None:
 
 class DeviceDayTracker:
     """Par worker : les (jour, empreinte) déjà écrits, pour n'écrire chaque appareil qu'une fois
-    par jour ; vidé au changement de jour."""
+    par jour ; vidé au changement de jour. Borné (`max_entries`, ≈ 100 octets l'une) : au-delà,
+    la plus ancienne empreinte est oubliée, quitte à ce que son appareil soit réécrit une fois
+    (la clé primaire de `device_days` l'ignore)."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int = TRACKER_MAX_ENTRIES) -> None:
         self.day: date | None = None
-        self.seen: set[str] = set()
+        self.seen: dict[str, None] = {}  # dans l'ordre d'arrivée
+        self.max_entries = max_entries
 
     def first_today(self, day: date, hashed: str) -> bool:
         if day != self.day:
-            self.day, self.seen = day, set()
+            self.day, self.seen = day, {}
         if hashed in self.seen:
             return False
-        self.seen.add(hashed)
+        while len(self.seen) >= self.max_entries:
+            del self.seen[next(iter(self.seen))]
+        self.seen[hashed] = None
         return True
 
 
