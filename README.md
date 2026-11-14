@@ -48,7 +48,7 @@ Pour regarder le résultat : la carte du dépôt `adhumi/champis-web` en mode d�
 
 ### Affichage et journaux
 
-Chaque commande affiche ses étapes `[i/n]` avec un statut (`ok`, `deja fait`, `ECHEC`) et sa durée, des barres de progression pour les tâches longues, et un résumé final. Le statut va sur stderr, les données (`summary`) sur stdout. Couleurs sur un terminal seulement (`NO_COLOR` les coupe). Tout est aussi écrit, sans couleur, dans `data/logs/<commande>-<date>.log` (50 derniers gardés ; `make log` affiche le dernier ; `CHAMPIS_LOG_DIR` change le dossier, vide pour ne rien écrire). `-v` rétablit les journaux bruts et les traces complètes ; `-q` ne garde que les avertissements et le résultat.
+Chaque commande affiche ses étapes `[i/n]` avec un statut (`ok`, `deja fait`, `ECHEC`) et sa durée, des barres de progression pour les tâches longues, et un résumé final. Le statut va sur stderr, les données (`summary`) sur stdout. Couleurs sur un terminal seulement (`NO_COLOR` les coupe). Tout est aussi écrit, sans couleur, dans `data/logs/<commande>-<date>.log` (50 derniers gardés ; `make log` affiche le dernier ; `CHAMPIS_LOG_DIR` change le dossier, vide pour ne rien écrire). `-v` rétablit les journaux bruts et les traces complètes ; `-q` ne garde que les avertissements et le résultat. Les secrets connus (clé Open-Meteo `apikey=`, signature des adresses présignées du bucket, jeton et JWT d'APNs) sont masqués dans tout ce que la console écrit, à l'écran, dans le fichier et dans le journal des tâches, `-v` compris (`champis_pipeline.redact`, 13 nov. 2026).
 
 ```
 champis-pipeline all --dept 25

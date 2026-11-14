@@ -10,6 +10,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
+from .. import offload
 from ..catalog import served_groups, served_species
 from ..coins import score_coins, weather_for
 from ..identity import UserId
@@ -75,10 +76,12 @@ def put_coins(body: CoinsIn, user: UserId, store: StoreDep, request: Request) ->
 async def get_coins(user: UserId, store: StoreDep, request: Request) -> dict[str, Any]:
     """Mes coins avec le score du jour (et le meilleur jour à venir) calculés par le backend."""
     st = request.app.state.champis
-    coins = store.coins_of(user)
+    # lecture de la base et calcul des scores dans des fils, hors de la boucle d'événements
+    # (13 nov. 2026) ; seuls les appels Open-Meteo de `weather_for` restent dans la boucle
+    coins = await offload.run(store.coins_of, user)
     today = st.client.today()
     weather = await weather_for(coins, st.grid, st.client, today)
-    scores = score_coins(coins, st.grid, weather, today)
+    scores = await offload.run(score_coins, coins, st.grid, weather, today)
     return {
         "today": today.isoformat(),
         "coins": [

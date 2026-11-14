@@ -102,9 +102,12 @@ def test_render_version_is_in_the_set_hash_and_the_metadata(tmp_path, monkeypatc
     assert not tiles._done(current, force=True) and current.exists()
 
 
-def test_built_sets_carry_the_render_version(full_mosaic, tmp_path):
+def test_built_sets_carry_the_render_version(full_mosaic, tmp_path, monkeypatch):
     """`_mbtiles` (T et A) écrit `champis_render` ; un extrait par département l'hérite."""
     import sqlite3
+
+    # `extract` travaille sous `TILES_DIR/_work` : dans tmp, jamais dans `data/tiles` du dépôt
+    monkeypatch.setattr(tiles, "TILES_DIR", tmp_path / "tiles")
 
     mbt = tmp_path / "T.mbtiles"
     tiles._mbtiles(full_mosaic, mbt, "T test", "desc", "T", jobs=1)

@@ -55,6 +55,13 @@ async def test_health_and_species(api):
 
 
 @pytest.mark.asyncio
+async def test_openapi_and_interactive_docs_are_not_served(api):
+    """Décision du 13 nov. 2026 : ni schéma OpenAPI ni pages de documentation sur le service."""
+    for path in ("/docs", "/redoc", "/openapi.json", "/docs/oauth2-redirect"):
+        assert (await api.get(path)).status_code == 404, path
+
+
+@pytest.mark.asyncio
 async def test_weather_shape(api):
     r = await api.get("/weather", params={"cell": CELL, "species": "boletus_edulis"})
     assert r.status_code == 200, r.text
@@ -80,6 +87,33 @@ async def test_weather_shape(api):
     assert 0 <= today["M_eff"] <= 1
     assert today["phi"] == phenology_window(EDULIS, TODAY, 450.0)
     assert set(rows[0]["by_alt"]) == {"450", "1350"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad", ["inf", "-inf", "nan", "1e999", "1e308", "91", "abc"])
+async def test_coordinates_must_be_finite_and_bounded(api, bad):
+    """`lat=inf` donnait un 500 (« math domain error » dans `WeatherGrid.nearest`) : toute
+    coordonnée non finie ou hors bornes est un 422, sur les trois routes météo."""
+    r = await api.get(f"/weather?lat={bad}&lon=1")
+    assert r.status_code == 422, r.text
+    r = await api.get(f"/weather?lat=47&lon={bad if bad != '91' else '181'}")
+    assert r.status_code == 422, r.text
+    box = {"min_lon": 6.0, "min_lat": 47.0, "max_lon": 6.5, "max_lat": 47.3}
+    for name in box:
+        params = box | {name: bad if bad != "91" else "721"}
+        assert (await api.get("/weather/bbox", params=params)).status_code == 422, name
+        r = await api.get("/weather/field", params=params | {"day": J})
+        assert r.status_code == 422, name
+
+
+@pytest.mark.asyncio
+async def test_wide_map_extents_are_still_accepted(api):
+    """Une carte dézoomée envoie une emprise plus large que le globe : toujours servie."""
+    wide = {"min_lon": -200.5, "min_lat": -95.1, "max_lon": 200.5, "max_lat": 136.1}
+    r = await api.get("/weather/field", params=wide | {"day": J})
+    assert r.status_code == 200, r.text
+    r = await api.get("/weather", params={"lat": 90, "lon": -180, "species": "boletus_edulis"})
+    assert r.status_code == 200, r.text
 
 
 @pytest.mark.asyncio
@@ -1195,7 +1229,10 @@ async def test_field_reads_the_bbox_in_one_sql_query(api, grid, client):
     finally:
         client.cache.db.set_trace_callback(None)
     assert r.status_code == 200 and len(r.json()["cells"]) == 2
-    assert len(statements) == 1 and "cell_field" in statements[0]
+    # une seule lecture du champ ; les deux autres lisent la version du précalcul (table `meta`,
+    # par clé) pour le cache en mémoire du champ (13 nov. 2026)
+    assert len([q for q in statements if "cell_field" in q]) == 1
+    assert len(statements) == 3 and all("FROM meta" in q for q in statements[:2])
     assert "cell_weather" not in statements[0]  # jamais les onze jours détaillés
 
 
@@ -1302,6 +1339,9 @@ async def test_rebuild_cell_field_migrates_a_cache_from_before_the_table(api, gr
     reference = sorted(cache.db.execute("SELECT * FROM cell_field").fetchall())
     cache.db.execute("DELETE FROM cell_field")
     cache.db.commit()
+    # écriture hors des méthodes du cache : on la signale comme elles le font, sans quoi le champ
+    # gardé en mémoire (`field_cache`) servirait encore l'ancien
+    cache.field_generation += 1
     assert (await api.get("/weather/field", params={**BBOX_FR, "day": J})).json()["cells"] == []
     status = cache.cell_field_status()
     assert status.present and not status.current and status.field_rows == 0

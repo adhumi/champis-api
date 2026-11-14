@@ -4,8 +4,12 @@ Service FastAPI : scoring météo `M × Φ` par cellule, indice par département
 
 ```bash
 uv run champis-pipeline weather-grid --depts 25        # produit data/weather_grid.json
-uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/docs
+uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/health
 ```
+
+Journaux : les clients HTTP et S3 (httpx, httpcore, hpack, botocore, urllib3…) restent sous WARNING, parce qu'ils écrivent l'adresse de chaque requête sortante (clé Open-Meteo `apikey=`, adresses présignées du bucket, jeton d'appareil APNs), et un filtre masque ces secrets sur tous les handlers (`champis_pipeline.redact`, correctif du 13 nov. 2026).
+
+Pas de documentation interactive : `/docs`, `/redoc` et `/openapi.json` ne sont pas servis (décision du 13 nov. 2026) ; les routes sont décrites plus bas.
 
 Les commandes `champis-api` partagent l'affichage du pipeline (étapes, statut, journal dans `data/logs/`, `-v`/`-q`) ; `make warm`, `make seed`, `make publish-seed`, `make notify` les lancent.
 
@@ -69,6 +73,7 @@ Migration d'une API qui pré-chauffait elle-même : avant la première exécutio
 | `CHAMPIS_TILES_URL_HOURS` | `24` | Durée des URL présignées |
 | `CHAMPIS_TILE_CACHE_DIR` | `<dossier de CHAMPIS_CACHE_DB>/tiles` (`/data/tiles` sur Railway) | Cache disque du relais (mode `proxy`) : une entrée par plage `Range` exacte relayée, servie ensuite sans repasser par le bucket |
 | `CHAMPIS_TILE_CACHE_MB` | `2048` | Taille totale du cache disque en Mo, éviction des plages les moins lues au-delà ; `0` = désactivé |
+| `CHAMPIS_FIELD_CACHE_MB` | `64` | Mémoire, par worker, du champ compact de `/weather/field` gardé tant que le précalcul n'a pas changé (France entière ≈ 4 Mo pour une espèce, ≈ 33 Mo pour les 27) ; `0` = chaque requête relit son emprise |
 | `CHAMPIS_CORS_ORIGINS` | `*` | Origines autorisées, séparées par des virgules |
 | `CHAMPIS_WARM_HOURS` | *(vide)* | Heures Paris de la pré-chauffe intégrée (repli), ex. `3,15` ; vide = service cron `champis-warm` (`.railway/railway.ts`) |
 | `CHAMPIS_WARM_ON_START` | `0` | `1` : pré-chauffe au démarrage (repli ; chaque redéploiement relancerait une passe) |
@@ -126,7 +131,7 @@ Identité : en-tête `X-Champis-User`, un UUID généré par l'app au premier la
 
 **Notification** (`champis_api.coins.notify_all` ; service cron `champis-api notify --pull`, ou tâche intégrée à `CHAMPIS_NOTIFY_HOURS` en repli, ou `champis-api notify` à la main) : après la pré-chauffe du matin, une seule notification par appareil, récapitulative, envoyée seulement si au moins un coin est « bon » ou « excellent » (seuil lu dans `shared/palette.json`). Un jeton refusé par APNs (`Unregistered`, `BadDeviceToken`) est retiré, on n'insiste pas. L'app ne fait aucun rafraîchissement en arrière-plan.
 
-**Protection** (service public) : seau à jetons par IP et par worker (`X-Forwarded-For` derrière Railway), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures).
+**Protection** (service public) : seau à jetons par IP et par worker (l'adresse est celle que pose l'edge Railway, `X-Real-IP`, à défaut le dernier élément de `X-Forwarded-For`, jamais une valeur fournie par le client ; dictionnaires bornés à 50 000 adresses, un seau redevenu plein est oublié ; correctif du 13 nov. 2026), 120 lectures et 20 écritures par minute par défaut, corps d'écriture ≤ 256 Ko, lots bornés, validation stricte des champs (espèces connues, France métropolitaine, dates non futures) ; les coordonnées des routes météo sont des nombres finis et bornés (`lat` ±90, `lon` ±180, emprise ±720 pour une carte dézoomée), sinon 422. La liste `species=` des routes météo et de `/departements` est dédoublonnée et ne dépasse jamais le nombre d'espèces servies (au-delà, 422). Le calcul des scores, la lecture du précalcul et l'encodage des grandes réponses se font dans des fils, hors de la boucle d'événements (une requête lourde ne gèle plus les autres) ; le cache SQLite n'est jamais partagé entre fils sans verrou (connexion principale sous verrou, une connexion de lecture par fil). `/weather/field` garde en mémoire le champ d'un jeu d'espèces et d'un jour tant que le précalcul n'a pas changé (`champis_api/field_cache.py`), et les réponses sont compressées au niveau 6 de gzip (correctifs du 13 nov. 2026).
 
 ## Backoffice `/admin` (spec › Backoffice, 7 et 8 nov. 2026 ; lot BO1)
 

@@ -191,6 +191,10 @@ class TileCache:
             self.trim()
         return True
 
+    def discard(self, name: str, start: int, end: int) -> None:
+        """Retire une entrée périmée (fichier republié) : `put` n'écrase pas une entrée présente."""
+        _unlink(self.path(name, start, end))
+
     # ------------------------------------------------------------------ nettoyage et état
 
     def scan(self, budget_s: float | None = None) -> tuple[list[tuple[float, int, Path]], Stats]:

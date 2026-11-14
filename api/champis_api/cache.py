@@ -23,11 +23,14 @@ climatologie du sol.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sqlite3
+import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -70,7 +73,14 @@ class StoredCellWeather:
     today: str
     computed_at: str
     stale: bool
-    rows: list[dict[str, Any]]
+    rows_json: str  # le texte rangé, décodé à la demande seulement
+
+    @property
+    def rows(self) -> list[dict[str, Any]]:
+        """Décodées à chaque accès : garder en mémoire les lignes de toute une emprise (plus
+        d'un million d'objets pour 5 000 cellules) déclenche des passes complètes du ramasse-
+        miettes, 0,25 s de gel chacune pour tous les fils (mesuré le 13 nov. 2026)."""
+        return json.loads(self.rows_json)
 
 
 @dataclass(frozen=True)
@@ -124,6 +134,17 @@ def cell_field_status(db: sqlite3.Connection) -> CellFieldStatus:
     return CellFieldStatus(True, w_n, w_at, f_n, f_at)
 
 
+def _locked[**P, R](method: Callable[P, R]) -> Callable[P, R]:
+    """Méthode qui se sert de la connexion principale : un fil à la fois (`WeatherCache._lock`)."""
+
+    @functools.wraps(method)
+    def locked(*args: P.args, **kwargs: P.kwargs) -> R:
+        with args[0]._lock:  # type: ignore[attr-defined]
+            return method(*args, **kwargs)
+
+    return locked
+
+
 def bucket_now(now: datetime) -> str:
     """Seau de 12 h en UTC : `2026-10-17T00` ou `2026-10-17T12`."""
     h = (now.hour // BUCKET_HOURS) * BUCKET_HOURS
@@ -142,7 +163,30 @@ class WeatherCache:
         """`shared` : le fichier est lu et écrit par plusieurs processus (cache du service,
         workers uvicorn, import en arrière-plan) → journal WAL, les lecteurs ne sont jamais
         bloqués par un écrivain ; une base d'amorçage, écrite puis téléversée, reste en mode
-        classique (un seul fichier à tout moment)."""
+        classique (un seul fichier à tout moment).
+
+        Fils (13 nov. 2026) : les routes lourdes lisent et calculent hors de la boucle
+        d'événements. Une connexion `sqlite3` de Python ne se partage pas entre fils, même avec
+        SQLite en mode sérialisé : deux exécutions simultanées de la même requête se partagent
+        l'instruction préparée du cache de la connexion, et l'une lit avec les paramètres de
+        l'autre (constaté par `test_offload.py`). Donc :
+
+        - la connexion principale `db` ne sert qu'un fil à la fois, sous `_lock` (toutes les
+          méthodes ; une écriture y est une transaction entière, close par son `commit`) ;
+        - les grandes lectures des routes (`cell_weather`, `cell_field`, `dept_index`) passent
+          par `_reading` : sur un cache partagé (fichier en WAL), chaque fil a sa propre
+          connexion de lecture, qui ne bloque ni n'est bloquée par personne et ne retient pas
+          `_lock` pendant une lecture d'une seconde ; sur une base en mémoire ou non partagée
+          (tests, amorçage), la connexion principale sous `_lock`.
+
+        `field_generation` compte les écritures de `cell_field` par cette instance : le cache
+        en mémoire de `/weather/field` s'y fie pour se vider."""
+        self._lock = threading.RLock()
+        self._path = str(path)
+        self._own_readers = shared and str(path) != ":memory:"
+        self._readers: list[sqlite3.Connection] = []
+        self._local = threading.local()
+        self.field_generation = 0
         self.db = sqlite3.connect(str(path), timeout=self.BUSY_TIMEOUT_S, check_same_thread=False)
         if shared and str(path) != ":memory:":
             self.db.execute("PRAGMA journal_mode=WAL")
@@ -150,8 +194,26 @@ class WeatherCache:
         self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
         self.db.commit()
 
+    @contextmanager
+    def _reading(self) -> Iterator[sqlite3.Connection]:
+        """Connexion pour une grande lecture : celle du fil courant sur un cache partagé (ouverte
+        à la première demande, en lecture seule), sinon la principale sous `_lock`."""
+        if not self._own_readers:
+            with self._lock:
+                yield self.db
+            return
+        db = getattr(self._local, "db", None)
+        if db is None:
+            db = sqlite3.connect(self._path, timeout=self.BUSY_TIMEOUT_S, check_same_thread=False)
+            db.execute("PRAGMA query_only=ON")
+            with self._lock:
+                self._readers.append(db)
+            self._local.db = db
+        yield db
+
     # ------------------------------------------------------------------ prévisions brutes
 
+    @_locked
     def get(self, cell_id: str, kind: str, bucket: str) -> Any | None:
         row = self.db.execute(
             "SELECT payload FROM raw WHERE cell_id = ? AND kind = ? AND bucket = ?",
@@ -159,6 +221,7 @@ class WeatherCache:
         ).fetchone()
         return json.loads(row[0]) if row else None
 
+    @_locked
     def latest(self, cell_id: str, kind: str) -> tuple[Any, str] | None:
         """Dernière réponse connue (payload, fetched_at), quel que soit le seau."""
         row = self.db.execute(
@@ -168,6 +231,7 @@ class WeatherCache:
         ).fetchone()
         return (json.loads(row[0]), row[1]) if row else None
 
+    @_locked
     def put(self, cell_id: str, kind: str, bucket: str, payload: Any, now: datetime) -> None:
         self.db.execute(
             "INSERT OR REPLACE INTO raw VALUES (?, ?, ?, ?, ?)",
@@ -182,6 +246,7 @@ class WeatherCache:
 
     # ------------------------------------------------------------------ historique accumulé
 
+    @_locked
     def put_history(
         self, cell_id: str, rows: dict[str, dict[str, float | None]], source: str
     ) -> int:
@@ -205,6 +270,7 @@ class WeatherCache:
         self.db.commit()
         return n
 
+    @_locked
     def history(self, cell_id: str, start: date, end: date) -> dict[str, dict[str, float]]:
         rows = self.db.execute(
             "SELECT day, values_json FROM history WHERE cell_id = ? AND day BETWEEN ? AND ?",
@@ -212,6 +278,7 @@ class WeatherCache:
         ).fetchall()
         return {day: _history_row(js) for day, js in rows}
 
+    @_locked
     def history_days_with(self, cell_id: str, var: str) -> int:
         """Jours d'historique où la variable optionnelle `var` est renseignée (collecte d'une
         variable mise en service après l'amorçage : `soil_t` depuis le 9 nov. 2026)."""
@@ -220,6 +287,7 @@ class WeatherCache:
         ).fetchall()
         return sum(1 for (js,) in rows if _history_row(js).get(var) is not None)
 
+    @_locked
     def last_history_day(self, cell_id: str) -> date | None:
         """Dernier jour présent dans l'historique (amorçage ou prévision), None si aucun."""
         row = self.db.execute(
@@ -227,11 +295,13 @@ class WeatherCache:
         ).fetchone()
         return date.fromisoformat(row[0]) if row and row[0] else None
 
+    @_locked
     def history_days(self, cell_id: str) -> int:
         return self.db.execute(
             "SELECT COUNT(*) FROM history WHERE cell_id = ?", (cell_id,)
         ).fetchone()[0]
 
+    @_locked
     def prune_history(self, today: date) -> None:
         self.db.execute(
             "DELETE FROM history WHERE day < ?",
@@ -241,6 +311,7 @@ class WeatherCache:
 
     # ------------------------------------------------------------------ climatologie du sol
 
+    @_locked
     def put_soil_clim(
         self, cell_id: str, months: dict[str, list[float]], year: list[float] | None = None
     ) -> None:
@@ -254,6 +325,7 @@ class WeatherCache:
         )
         self.db.commit()
 
+    @_locked
     def soil_clim(self, cell_id: str) -> dict[str, Any] | None:
         """`{"months": {"1": […], …}, "year": […] | None}` ; `year` manque dans une base amorcée
         avant le 7 nov. 2026 : `soil_percentile` le dérive alors des mensuels."""
@@ -268,16 +340,20 @@ class WeatherCache:
             "year": stored.get("year"),
         }
 
+    @_locked
     def seeded_cells(self) -> int:
         """Cellules disposant d'une climatologie du sol, donc amorcées."""
         return self.db.execute("SELECT COUNT(*) FROM soil_clim").fetchone()[0]
 
+    @_locked
     def seeded_ids(self) -> set[str]:
         return {r[0] for r in self.db.execute("SELECT cell_id FROM soil_clim")}
 
+    @_locked
     def history_ids(self) -> set[str]:
         return {r[0] for r in self.db.execute("SELECT DISTINCT cell_id FROM history")}
 
+    @_locked
     def import_seed_db(self, path: Path) -> int:
         """Importe une base d'amorçage (même schéma) par ATTACH : l'historique ne remplit que les
         trous (jamais par-dessus la prévision), la climatologie est remplacée. Rien en mémoire."""
@@ -296,6 +372,7 @@ class WeatherCache:
             self.db.execute("DETACH DATABASE seed")
         return n
 
+    @_locked
     def import_cache_db(self, path: Path) -> dict[str, int]:
         """Remplace tout le contenu par celui d'une base au même schéma (cache publié par le
         service cron, `champis-api warm --publish`), en une transaction : les lecteurs voient
@@ -320,6 +397,7 @@ class WeatherCache:
                 log.info("instantané sans cell_field : dérivée de cell_weather à l'import")
                 counts["cell_field"] = self._rebuild_cell_field()
             self.db.commit()
+            self.field_generation += 1
         except BaseException:
             self.db.rollback()
             raise
@@ -327,6 +405,7 @@ class WeatherCache:
             self.db.execute("DETACH DATABASE pub")
         return counts
 
+    @_locked
     def snapshot(self, path: Path) -> None:
         """Copie compacte et cohérente de la base dans `path` (`VACUUM INTO`) : un seul fichier,
         sans journal WAL à côté, prêt à être téléversé."""
@@ -338,6 +417,7 @@ class WeatherCache:
     META_DEPT_INDEX_AT = "dept_index_computed_at"
     META_DEPT_INDEX_TODAY = "dept_index_today"
 
+    @_locked
     def put_dept_index(
         self, rows: list[tuple[str, str, str, float | None, float]], today: date, now: datetime
     ) -> None:
@@ -367,8 +447,10 @@ class WeatherCache:
             params.append(day.isoformat())
         if where:
             sql += " WHERE " + " AND ".join(where)
-        return self.db.execute(sql + " ORDER BY dept, species, day", params).fetchall()
+        with self._reading() as db:
+            return db.execute(sql + " ORDER BY dept, species, day", params).fetchall()
 
+    @_locked
     def dept_index_meta(self) -> tuple[str, str] | None:
         """(computed_at, today) du dernier calcul, None si jamais calculé."""
         at, today = (
@@ -379,6 +461,7 @@ class WeatherCache:
 
     # ------------------------------------------------------------------ météo par cellule
 
+    @_locked
     def put_cell_weather(
         self,
         entries: Iterable[tuple[str, str, bool, list[dict[str, Any]]]],
@@ -406,6 +489,7 @@ class WeatherCache:
             "INSERT OR REPLACE INTO cell_field VALUES (?, ?, ?, ?, ?, ?)", field_rows
         )
         self.db.commit()
+        self.field_generation += bool(rows)
         return len(rows)
 
     def cell_weather(
@@ -421,15 +505,18 @@ class WeatherCache:
         sp_sql = ",".join("?" * len(sp))
         for i in range(0, len(ids), self.SQL_CHUNK):
             chunk = ids[i : i + self.SQL_CHUNK]
-            rows = self.db.execute(
-                "SELECT cell_id, species, today, computed_at, stale, rows_json FROM cell_weather "
-                f"WHERE species IN ({sp_sql}) AND cell_id IN ({','.join('?' * len(chunk))})",
-                sp + chunk,
-            ).fetchall()
+            with self._reading() as db:  # par lot : jamais `_lock` le temps de toute l'emprise
+                rows = db.execute(
+                    "SELECT cell_id, species, today, computed_at, stale, rows_json "
+                    f"FROM cell_weather WHERE species IN ({sp_sql}) "
+                    f"AND cell_id IN ({','.join('?' * len(chunk))})",
+                    sp + chunk,
+                ).fetchall()
             for cell_id, sid, today, at, stale, rows_json in rows:
-                out[cell_id, sid] = StoredCellWeather(today, at, bool(stale), json.loads(rows_json))
+                out[cell_id, sid] = StoredCellWeather(today, at, bool(stale), rows_json)
         return out
 
+    @_locked
     def cell_weather_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM cell_weather").fetchone()[0]
 
@@ -453,19 +540,21 @@ class WeatherCache:
         sp = list(species)
         if not ids or not sp:
             return {}
-        rows = self.db.execute(
-            "SELECT cell_id, MAX(computed_at), MAX(stale), json_group_object(species, json(f)) "
-            "FROM cell_field "
-            f"WHERE species IN ({','.join('?' * len(sp))}) AND date = ? "
-            "AND cell_id IN (SELECT value FROM json_each(?)) "
-            "GROUP BY cell_id HAVING COUNT(*) = ?",
-            [*sp, day.isoformat(), json.dumps(ids), len(sp)],
-        ).fetchall()
+        with self._reading() as db:
+            rows = db.execute(
+                "SELECT cell_id, MAX(computed_at), MAX(stale), "
+                "json_group_object(species, json(f)) FROM cell_field "
+                f"WHERE species IN ({','.join('?' * len(sp))}) AND date = ? "
+                "AND cell_id IN (SELECT value FROM json_each(?)) "
+                "GROUP BY cell_id HAVING COUNT(*) = ?",
+                [*sp, day.isoformat(), json.dumps(ids), len(sp)],
+            ).fetchall()
         return {
             cell_id: StoredCellField(at, bool(stale), json.loads(f))
             for cell_id, at, stale, f in rows
         }
 
+    @_locked
     def prune_cell_field(self, today: date) -> int:
         """Purge les jours hors de la fenêtre J−3 → J+7 de `today` (ceux des passages antérieurs
         que le remplacement par (espèce, jour, cellule) n'a pas recouverts). Un parcours de la
@@ -474,11 +563,14 @@ class WeatherCache:
         last = (today + timedelta(days=CELL_WEATHER_DAYS_AFTER)).isoformat()
         cur = self.db.execute("DELETE FROM cell_field WHERE date < ? OR date > ?", (first, last))
         self.db.commit()
+        self.field_generation += bool(cur.rowcount)
         return cur.rowcount
 
+    @_locked
     def cell_field_count(self) -> int:
         return self.db.execute("SELECT COUNT(*) FROM cell_field").fetchone()[0]
 
+    @_locked
     def cell_field_status(self) -> CellFieldStatus:
         return cell_field_status(self.db)
 
@@ -523,6 +615,7 @@ class WeatherCache:
             n += len(batch)
         return n
 
+    @_locked
     def rebuild_cell_field(self) -> int:
         """Migration : dérive `cell_field` de `cell_weather` (base d'une API déployée avant la
         table, instantané ancien). Idempotente, en une transaction, journalisée ; sur la France
@@ -535,6 +628,7 @@ class WeatherCache:
         except BaseException:
             self.db.rollback()
             raise
+        self.field_generation += 1
         log.info(
             "cell_field reconstruite depuis cell_weather : %d lignes en %.1f s",
             n,
@@ -542,6 +636,7 @@ class WeatherCache:
         )
         return n
 
+    @_locked
     def ensure_cell_field(self) -> int | None:
         """Au démarrage : reconstruit `cell_field` si elle n'est pas dérivée du même passage que
         `cell_weather` (base d'avant la table). Renvoie le nombre de lignes écrites, None si rien
@@ -560,13 +655,20 @@ class WeatherCache:
 
     # ------------------------------------------------------------------ métadonnées
 
+    @_locked
     def meta_get(self, key: str) -> str | None:
         row = self.db.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
         return row[0] if row else None
 
+    @_locked
     def meta_set(self, key: str, value: str) -> None:
         self.db.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
         self.db.commit()
 
+    @_locked
     def close(self) -> None:
+        for reader in self._readers:
+            reader.close()
+        self._readers.clear()
+        self._local = threading.local()
         self.db.close()

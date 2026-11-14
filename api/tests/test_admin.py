@@ -4,6 +4,7 @@ Tâches rendent ce que la spec décrit ; les compteurs 429 et 5xx se remplissent
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime, timedelta
 
 import httpx
@@ -21,6 +22,8 @@ ACTION = {"X-Champis-Admin": "1"}
 
 
 def _app(grid, client, store, bucket=None, **settings):
+    # base de la mesure (page Santé) : SQLite en mémoire, jamais `data/champis.db` du dépôt
+    settings.setdefault("database_url", "sqlite://")
     s = Settings(admin_key=KEY, s3=None, apns_key="", **settings)
     state = State(grid=grid, client=client, cache=client.cache, store=store, bucket=bucket)
     return create_app(settings=s, state=state)
@@ -54,7 +57,7 @@ def test_tokens_and_keys():
 @pytest.mark.asyncio
 async def test_without_a_key_the_backoffice_does_not_exist(grid, client, store):
     app = create_app(
-        settings=Settings(admin_key="", s3=None, apns_key=""),
+        settings=Settings(admin_key="", s3=None, apns_key="", database_url="sqlite://"),
         state=State(grid=grid, client=client, cache=client.cache, store=store),
     )
     async with (
@@ -122,9 +125,15 @@ async def test_login_attempts_are_limited_per_ip(admin: httpx.AsyncClient):
     assert r.status_code == 429 and "retry-after" in r.headers
     # une autre adresse n'est pas touchée
     r = await admin.post(
-        "/admin/login", json={"key": KEY}, headers={**ACTION, "X-Forwarded-For": "5.6.7.8"}
+        "/admin/login", json={"key": KEY}, headers={**ACTION, "X-Real-IP": "5.6.7.8"}
     )
     assert r.status_code == 204
+    # les seaux de connexion se purgent seuls : une minute plus tard, il n'en reste aucun d'ancien
+    buckets = admin._transport.app.state.admin_login_buckets
+    assert len(buckets.buckets) == 2
+    buckets.clock = lambda: time.monotonic() + 120.0
+    buckets.take("9.9.9.9")
+    assert list(buckets.buckets) == ["9.9.9.9"]
 
 
 # ------------------------------------------------------------------ pages

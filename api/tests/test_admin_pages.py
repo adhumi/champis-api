@@ -136,7 +136,10 @@ def seed_store(store: Store) -> dict[str, str]:
 
 
 def make_app(grid, client, store, bucket=None):
-    settings = Settings(admin_key=KEY, s3=None, apns_key="", rate_write_per_minute=1000)
+    # base de la mesure (page Santé) : SQLite en mémoire, jamais `data/champis.db` du dépôt
+    settings = Settings(
+        admin_key=KEY, s3=None, apns_key="", rate_write_per_minute=1000, database_url="sqlite://"
+    )
     state = State(grid=grid, client=client, cache=client.cache, store=store, bucket=bucket)
     return create_app(settings=settings, state=state)
 
@@ -284,7 +287,7 @@ async def test_login_form_is_rate_limited_and_json_login_is_strict(anonymous: Si
 @pytest.mark.asyncio
 async def test_without_a_key_no_page_exists(grid, client, store):
     app = create_app(
-        settings=Settings(admin_key="", s3=None, apns_key=""),
+        settings=Settings(admin_key="", s3=None, apns_key="", database_url="sqlite://"),
         state=State(grid=grid, client=client, cache=client.cache, store=store),
     )
     async with (

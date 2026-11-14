@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -34,6 +33,7 @@ from typing import Any
 
 import httpx
 import numpy as np
+from champis_pipeline.redact import redact
 
 from .cache import HISTORY_VARS, WeatherCache, bucket_now
 from .grid import Cell
@@ -375,7 +375,7 @@ def _past_rows(forecast: dict[str, Any], today: date) -> dict[str, dict[str, flo
 
 def _redact(e: Exception) -> str:
     """Message d'erreur sans la clé API (httpx met l'URL complète dans le message)."""
-    return re.sub(r"apikey=[^&'\s]+", "apikey=***", str(e))
+    return redact(str(e))
 
 
 def _retry_after(e: Exception) -> int | None:

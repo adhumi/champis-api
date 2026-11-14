@@ -389,3 +389,53 @@ def test_doctor_reports_the_cache(tmp_path, monkeypatch):
     cache.put(NAME, 0, 99, _entry(100), 100)
     c = doctor._tile_cache(Settings(**base, tile_cache_mb=10))
     assert c.status == doctor.OK and "1 plages" in c.detail and "sur 10 Mo" in c.detail
+
+
+# ------------------------------------------------------------------ jeu republié sous le même nom
+
+
+@pytest.mark.asyncio
+async def test_entry_of_a_previous_version_is_not_served(grid, scenario, cache, monkeypatch):
+    """Le fichier a changé dans le bucket (taille du manifeste différente) : l'ancienne plage du
+    cache est relayée de nouveau et remplacée, pas servie à côté des plages du nouveau fichier."""
+    old = Entry(
+        body=b"x" * 128,
+        start=0,
+        end=127,
+        total=len(BLOB) - 1000,
+        etag='"old"',
+        content_type="application/octet-stream",
+    )
+    assert cache.put(NAME, 0, 127, old, 128)
+    upstream = _Upstream()
+    app = _app(grid, scenario, upstream, cache)
+    async with app.router.lifespan_context(app), _client(app) as c:
+        r1 = await c.get(f"/tiles/{NAME}", headers={"Range": "bytes=0-127"})
+        assert r1.headers["x-cache"] == "miss" and r1.content == BLOB[:128]
+        assert r1.headers["etag"] == '"abc"'
+        r2 = await c.get(f"/tiles/{NAME}", headers={"Range": "bytes=0-127"})
+        assert r2.headers["x-cache"] == "hit" and r2.content == BLOB[:128]
+        assert r2.headers["content-range"] == f"bytes 0-127/{len(BLOB)}"
+    assert len(upstream.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_with_another_etag_than_the_bucket_is_not_served(grid, scenario, cache):
+    """Même taille, autre contenu : dès qu'une plage relayée a montré l'ETag du bucket, une entrée
+    qui en porte un autre n'est plus servie."""
+    old = Entry(
+        body=b"x" * 128,
+        start=0,
+        end=127,
+        total=len(BLOB),
+        etag='"old"',
+        content_type="application/octet-stream",
+    )
+    assert cache.put(NAME, 0, 127, old, 128)
+    upstream = _Upstream()
+    app = _app(grid, scenario, upstream, cache)
+    async with app.router.lifespan_context(app), _client(app) as c:
+        await c.get(f"/tiles/{NAME}", headers={"Range": "bytes=128-255"})  # montre l'ETag courant
+        r = await c.get(f"/tiles/{NAME}", headers={"Range": "bytes=0-127"})
+        assert r.headers["x-cache"] == "miss" and r.content == BLOB[:128]
+        assert r.headers["etag"] == '"abc"'

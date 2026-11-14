@@ -12,6 +12,8 @@ fond, écriture atomique, voir `tile_cache`). Même réponse dans les deux cas :
 `x-cache: hit|miss` en plus. Une requête sans Range, ouverte (`bytes=a-`), en suffixe, multiple ou
 trop grande reste un relais en streaming, jamais mise en cache ; `If-None-Match` qui correspond
 à l'ETag mémorisé rend 304 comme le bucket. `CHAMPIS_TILE_CACHE_MB=0` désactive le cache.
+Une entrée d'une version précédente du fichier (jeu republié sous le même nom) n'est pas servie :
+voir `_stale`.
 """
 
 from __future__ import annotations
@@ -83,7 +85,9 @@ async def proxy_tile(name: str, request: Request) -> Response:
     if cacheable:
         hit = await cache.get(name, *rng)
         if hit is not None:
-            return _cached_response(hit, request.headers.get("if-none-match"))
+            if not _stale(st, name, hit):
+                return _cached_response(hit, request.headers.get("if-none-match"))
+            cache.discard(name, *rng)
     url = st.bucket.presign(TILES_PREFIX + name, 3600)
     headers = {k: v for k, v in request.headers.items() if k.lower() in ("range", "if-none-match")}
     http: httpx.AsyncClient = st.client.http
@@ -92,6 +96,8 @@ async def proxy_tile(name: str, request: Request) -> Response:
     if upstream.status_code >= 400:
         await upstream.aclose()
         raise HTTPException(upstream.status_code, "bucket : fichier indisponible")
+    if upstream.headers.get("etag"):
+        _seen_etags(st)[name] = upstream.headers["etag"]
     out_headers = {k: v for k, v in upstream.headers.items() if k.lower() in PROXY_HEADERS}
     out_headers.setdefault("accept-ranges", "bytes")
     out_headers["cache-control"] = CACHE_CONTROL
@@ -131,6 +137,38 @@ async def proxy_tile(name: str, request: Request) -> Response:
     return StreamingResponse(
         body(), status_code=upstream.status_code, headers=out_headers, background=background
     )
+
+
+def _seen_etags(st) -> dict[str, str]:
+    """Dernier ETag vu du bucket par fichier, pour ce processus (voir `_stale`)."""
+    seen = getattr(st, "tile_etags", None)
+    if seen is None:
+        seen = st.tile_etags = {}
+    return seen
+
+
+def _stale(st, name: str, entry: Entry) -> bool:
+    """Une entrée du cache qui vient d'une version précédente du fichier.
+
+    Un jeu republié garde son nom (l'empreinte du nom est celle des départements, pas du
+    contenu) : sans ce contrôle, le début du fichier restait servi depuis le cache avec l'ancien
+    ETag pendant que les plages jamais lues venaient du nouveau, et le lecteur PMTiles refusait le
+    mélange (carte trouée, fiche muette ; constaté en production le 13 nov. 2026 sur un jeu A).
+    Deux témoins, sans requête de plus au bucket : la taille du fichier dans le manifeste, relu
+    toutes les `MANIFEST_TTL_S`, et le dernier ETag que ce processus a reçu du bucket pour ce nom.
+    Une entrée périmée est retirée, relayée de nouveau puis réécrite. Limite : un fichier republié
+    à la même taille n'est reconnu qu'à la première plage relayée par ce processus.
+    """
+    seen = _seen_etags(st).get(name)
+    if seen and entry.etag and entry.etag != seen:
+        return True
+    if entry.total is None:
+        return False
+    for t in (catalog.manifest() or {}).get("tiles", []):
+        if t.get("name") == name:
+            size = t.get("bytes")
+            return isinstance(size, int) and size != entry.total
+    return False
 
 
 def _cached_response(entry: Entry, if_none_match: str | None) -> Response:

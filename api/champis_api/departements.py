@@ -19,16 +19,17 @@ Groupe (règle 9) : maximum des indices des espèces du groupe, `leading` = l'es
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from champis_pipeline.species import load_species
 
 from .cache import WeatherCache
-from .grid import WeatherGrid
+from .grid import Cell, WeatherGrid
 from .scoring import group_score
-from .weather_client import OpenMeteoClient
+from .weather_client import CellRaw, OpenMeteoClient
 from .weather_service import HistoryTooShortError, SeriesGapError, cell_weather, days_around
 
 log = logging.getLogger(__name__)
@@ -87,20 +88,47 @@ async def compute(
     grid: WeatherGrid, client: OpenMeteoClient, cache: WeatherCache, species_ids: list[str]
 ) -> DeptIndexReport:
     """Recalcule l'indice pour toute la grille à partir du cache (après une pré-chauffe, aucune
-    requête Open-Meteo n'est nécessaire) et l'enregistre."""
+    requête Open-Meteo n'est nécessaire) et l'enregistre.
+
+    Le calcul (≈ 14 ms par cellule et par espèce, des dizaines de minutes sur la France) et ses
+    écritures se font dans un fil (13 nov. 2026) : lancé par la pré-chauffe intégrée d'un worker
+    de l'API (repli sans cron), il ne gèle plus ses requêtes le temps de la passe."""
     cells = [c for c in grid.cells.values() if c.t_sum]
     if not cells:
         log.warning("indice par département : grille sans poids Σ T (version 1) ; rien à calculer")
         return DeptIndexReport(0, 0, 0, 0)
     today = client.today()
-    days = days_around(today)
     res = await client.fetch_cells_partial(cells)
-    now = client.now()
+    return await asyncio.to_thread(
+        _score_and_store,
+        grid,
+        cache,
+        species_ids,
+        cells,
+        res.raws,
+        len(res.unavailable),
+        today,
+        client.now(),
+    )
+
+
+def _score_and_store(
+    grid: WeatherGrid,
+    cache: WeatherCache,
+    species_ids: list[str],
+    cells: list[Cell],
+    raws: dict[str, CellRaw],
+    missing: int,
+    today: date,
+    now: datetime,
+) -> DeptIndexReport:
+    """Dans un fil : scores de chaque cellule, rangés pour `/weather/bbox` et `/weather/field`,
+    puis l'indice agrégé. `missing` : cellules déjà sans météo au moment de la lecture."""
+    days = days_around(today)
     weather: CellWeather = {}
-    missing = len(res.unavailable)
     stored = 0
     for c in cells:
-        raw = res.raws.get(c.id)
+        raw = raws.get(c.id)
         if raw is None:
             continue
         try:
