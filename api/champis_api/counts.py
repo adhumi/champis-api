@@ -154,6 +154,11 @@ def today(now: datetime | None = None) -> date:
     return (now or datetime.now(PARIS)).astimezone(PARIS).date()
 
 
+def day_start(day: date) -> datetime:
+    """Minuit, heure de Paris, au début de ce jour civil."""
+    return datetime(day.year, day.month, day.day, tzinfo=PARIS)
+
+
 def bump_quietly(store: Store, name: str, n: int = 1, day: date | None = None) -> None:
     """Un compteur ne doit jamais faire échouer ce qu'il compte : une erreur est journalisée."""
     try:

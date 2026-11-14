@@ -1,4 +1,4 @@
-"""`POST /observations` (lot idempotent), `GET /observations` (les miennes), `DELETE /observations`
+"""`POST /observations` (lot idempotent, quota par identifiant et par jour), `GET /observations` (les miennes), `DELETE /observations`
 (tout effacer : droit RGPD). Spec › Backend et › Retour terrain (30 oct. 2026).
 
 Une observation = espèce, position, date, trouvé / rien trouvé, quantité 1–3 si trouvé. Pas de
@@ -15,8 +15,9 @@ from champis_pipeline.species import list_species
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
+from .. import counts
 from ..identity import UserId
-from ..store import Store
+from ..store import QuotaExceededError, Store
 
 router = APIRouter(prefix="/observations", tags=["observations"])
 
@@ -65,16 +66,29 @@ class ObservationBatch(BaseModel):
 
 @router.post("", status_code=201)
 def post_observations(
-    batch: ObservationBatch, user: UserId, store: StoreDep, now: Now
+    batch: ObservationBatch, user: UserId, store: StoreDep, now: Now, request: Request
 ) -> dict[str, Any]:
     """Enregistre un lot. Les `id` déjà connus sont ignorés : renvoyer le même lot après une
-    coupure réseau ne crée pas de doublon."""
+    coupure réseau ne crée pas de doublon. Au-delà du quota du jour de l'identifiant
+    (`CHAMPIS_OBSERVATIONS_PER_DAY`), 429 avec `Retry-After` : rien du lot n'est écrit."""
     today = now.date()
     for o in batch.observations:
         if o.date > today + timedelta(days=1):
             raise HTTPException(422, f"date dans le futur : {o.date}")
     rows = [o.model_dump() | {"id": str(o.id)} for o in batch.observations]
-    return store.add_observations(user, rows, now)
+    quota = request.app.state.settings.observations_per_day
+    try:
+        return store.add_observations(user, rows, now, quota=quota)
+    except QuotaExceededError as e:
+        # jusqu'à minuit, heure de Paris ; le lot entier est refusé, l'app le garde et le renvoie
+        tomorrow = counts.day_start(counts.today(now) + timedelta(days=1))
+        wait = max(1, int((tomorrow - now).total_seconds()) + 1)
+        raise HTTPException(
+            429,
+            f"{e.quota} observations par jour au plus pour un appareil : lot refusé, "
+            "à renvoyer demain",
+            headers={"Retry-After": str(wait)},
+        ) from e
 
 
 @router.get("")

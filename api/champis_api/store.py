@@ -209,6 +209,14 @@ class Device:
     sandbox: bool
 
 
+class QuotaExceededError(Exception):
+    """Le lot ferait dépasser le quota d'observations du jour de cet identifiant."""
+
+    def __init__(self, quota: int, used: int) -> None:
+        super().__init__(f"quota de {quota} observations par jour atteint ({used} aujourd'hui)")
+        self.quota, self.used = quota, used
+
+
 class Store:
     """Une instance par service ; les méthodes sont synchrones (FastAPI les exécute hors de la
     boucle d'événements quand les endpoints sont des `def`)."""
@@ -335,10 +343,17 @@ class Store:
 
     # ------------------------------------------------------------------ observations
 
-    def add_observations(self, user_id: str, rows: list[dict[str, Any]], now: datetime) -> dict:
+    def add_observations(
+        self, user_id: str, rows: list[dict[str, Any]], now: datetime, quota: int = 0
+    ) -> dict:
         """Insère les observations absentes (par `id`, pour cet appareil) ; les déjà connues sont
         ignorées, pas écrasées : un renvoi après coupure réseau est sans effet. Un `id` répété
-        dans le lot ne compte qu'une fois (le premier), les suivants sont des doublons."""
+        dans le lot ne compte qu'une fois (le premier), les suivants sont des doublons.
+
+        `quota` (0 = aucun) : nombre d'observations nouvelles qu'un identifiant peut enregistrer
+        par jour civil (heure de Paris). Un lot qui le ferait dépasser est refusé en entier
+        (`QuotaExceededError`), rien n'est écrit : l'app le garde et le renvoie tel quel le
+        lendemain. Un renvoi de lignes déjà connues n'est jamais refusé."""
         if not rows:
             return {"inserted": 0, "duplicates": 0}
         unique = {r["id"]: r for r in reversed(rows)}  # le premier de chaque `id` l'emporte
@@ -369,11 +384,22 @@ class Store:
                 if r["id"] not in known
             ]
             if fresh:
-                conn.execute(insert(observations), fresh)
-                # mesure minimale : observations reçues ce jour-là, en nombre seulement
-                from .counts import today
+                from .counts import day_start, today
 
                 day = today(now)
+                if quota > 0:
+                    used = conn.execute(
+                        select(func.count())
+                        .select_from(observations)
+                        .where(
+                            observations.c.user_id == user_id,
+                            observations.c.created_at >= day_start(day).astimezone(UTC),
+                        )
+                    ).scalar_one()
+                    if used + len(fresh) > quota:
+                        raise QuotaExceededError(quota, int(used))
+                conn.execute(insert(observations), fresh)
+                # mesure minimale : observations reçues ce jour-là, en nombre seulement
                 found = sum(1 for r in fresh if r["found"])
                 self._bump(conn, day, "observations_found", found)
                 self._bump(conn, day, "observations_not_found", len(fresh) - found)
