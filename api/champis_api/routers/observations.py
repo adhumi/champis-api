@@ -99,6 +99,16 @@ def get_observations(user: UserId, store: StoreDep) -> dict[str, Any]:
 
 
 @router.delete("")
-def delete_observations(user: UserId, store: StoreDep) -> dict[str, Any]:
-    """Efface toutes mes observations, mes coins et mon jeton de notification."""
-    return {"deleted": store.delete_observations(user)}
+def delete_observations(
+    user: UserId, store: StoreDep, now: Now, request: Request
+) -> dict[str, Any]:
+    """Efface toutes mes observations, mes coins, mon jeton de notification et les empreintes de
+    mon appareil dans la mesure des appareils actifs (`device_days`, 14 nov. 2026) : l'empreinte
+    de chaque jour conservé est recalculée depuis l'identifiant, puis effacée."""
+    secret = request.app.state.settings.measure_secret
+    prints = counts.device_prints(secret, user, counts.today(now)) if secret else []
+    deleted = store.delete_observations(user, device_prints=prints)
+    tracker = getattr(request.app.state, "device_tracker", None)
+    if tracker is not None:
+        tracker.forget(prints)
+    return {"deleted": deleted}

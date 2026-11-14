@@ -250,7 +250,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         return getattr(getattr(app.state, "champis", None), "store", None)
 
     # appareils actifs (lot BO2) : par worker, les empreintes déjà écrites aujourd'hui
-    tracker = counts.DeviceDayTracker()
+    tracker = app.state.device_tracker = counts.DeviceDayTracker()
     # cible d'une requête météo : groupe ou espèce, parmi les espèces servies aux clients (une
     # couche « girolles » de l'app demande les girolles du catalogue, pas celles sans planche ni
     # tuiles) ; le catalogue suit le manifeste du bucket, donc relu à chaque mesure (en cache)
@@ -261,12 +261,17 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         groups = species_groups(catalog.served_species())
         user = counts.valid_user_id(request.headers.get("x-champis-user"))
         if user and settings.measure_secret:
-            hashed = counts.device_hash(settings.measure_secret, user)
-            if tracker.first_today(day, hashed):
-                try:
+            try:
+                # l'empreinte change chaque jour ; seul le jour du déploiement, s'il a commencé
+                # avec l'ancienne, se termine avec elle (pas de mélange dans un même jour)
+                if tracker.legacy(day, lambda: store.has_legacy_device_rows(day)):
+                    hashed = counts.legacy_device_hash(settings.measure_secret, user)
+                else:
+                    hashed = counts.device_hash(settings.measure_secret, user, day)
+                if tracker.first_today(day, hashed):
                     store.mark_device_day(day, hashed)
-                except Exception:
-                    log.exception("mesure : appareil actif non enregistré")
+            except Exception:
+                log.exception("mesure : appareil actif non enregistré")
         if request.method == "GET" and status == 200 and request.url.path in counts.LAYER_PATHS:
             client = (
                 "app" if user else "web" if request.headers.get("origin") == site_origin else None
@@ -309,8 +314,13 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         measured = 200 <= response.status_code < 300 and not request.url.path.startswith(
             RATE_LIMIT_EXEMPT
         )
-        if measured and (
-            request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS
+        # « Supprimer mes observations et mes coins » efface aussi les empreintes de l'appareil :
+        # cette requête-là n'en réécrit pas une
+        erasure = request.method == "DELETE" and request.url.path == "/observations"
+        if (
+            measured
+            and not erasure
+            and (request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS)
         ):
             await asyncio.to_thread(_measure, store, request, response.status_code)
         return response

@@ -22,10 +22,18 @@ Adrien seul (`champis-api stats`, une ligne dans `doctor`).
   (`Origin` du site) séparés ; la part de chaque espèce sur la carte (lot BO2).
 
 Appareils actifs (lot BO2) : l'app envoie son identifiant pseudonyme sur toutes ses requêtes ;
-l'API n'en garde qu'une empreinte HMAC par jour (`device_hash`, secret `CHAMPIS_MEASURE_SECRET`),
-jamais l'identifiant, dans `device_days` : actifs du jour, de la semaine, du mois et uniques sur
-13 mois se comptent dessus. Un appareil hors ligne ne compte pas. Changer le secret remet
-l'historique à zéro.
+l'API n'en garde qu'une empreinte HMAC (`device_hash`, secret `CHAMPIS_MEASURE_SECRET`), jamais
+l'identifiant, dans `device_days`. Depuis le 14 nov. 2026 l'empreinte est **salée par le jour** :
+le même appareil a une empreinte différente chaque jour, deux jours ne se relient donc pas entre
+eux, même avec la table sous les yeux. Ce qui se compte : les appareils d'un jour donné. Ce qui ne
+se compte plus : les appareils distincts sur plusieurs jours (semaine, mois, 13 mois), retirés du
+backoffice. Un appareil hors ligne ne compte pas.
+
+Les lignes d'avant portent l'ancienne empreinte, la même tous les jours (`legacy_device_hash`,
+32 chiffres hexadécimaux ; la nouvelle commence par `j`) : elles expirent seules, à 400 jours. Un
+jour ne mélange jamais les deux : le jour du déploiement, s'il a déjà des lignes à l'ancienne
+empreinte, se termine avec elle (`DeviceDayTracker.legacy`). `DELETE /observations` efface les
+empreintes de l'appareil, anciennes et nouvelles (`device_prints`).
 
 Les soutiens et les coûts restent un relevé manuel mensuel.
 """
@@ -36,6 +44,7 @@ import hashlib
 import hmac
 import logging
 import uuid
+from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
@@ -70,17 +79,36 @@ LAYER_PATHS = (
     "/weather/field",
 )  # ce que les clients demandent par couche
 ALL_SPECIES = "toutes"  # requête sans `species` : toutes les espèces
-DEVICE_HASH_LENGTH = 32  # 16 octets en hexadécimal
+DEVICE_HASH_LENGTH = 32  # la colonne `device_days.device_hash`
+DAILY_PREFIX = "j"  # empreinte salée par le jour ; l'ancienne est faite de 32 chiffres hexadécimaux
 TRACKER_MAX_ENTRIES = 50_000  # empreintes du jour gardées en mémoire par worker (≈ 5 Mo au pire)
 
 
-def device_hash(secret: str, user_id: str) -> str:
-    """Empreinte HMAC-SHA256 de l'identifiant de l'app, tronquée : ni l'identifiant ni rien qui
-    s'y recoupe sans le secret."""
-    digest = hmac.new(
-        secret.encode("utf-8"), user_id.strip().lower().encode("utf-8"), hashlib.sha256
-    )
+def _user_bytes(user_id: str) -> bytes:
+    return user_id.strip().lower().encode("utf-8")
+
+
+def device_hash(secret: str, user_id: str, day: date) -> str:
+    """Empreinte de l'appareil **pour ce jour** : HMAC-SHA256 du jour et de l'identifiant de
+    l'app, tronquée. Ni l'identifiant ni rien qui s'y recoupe sans le secret, et l'empreinte d'un
+    jour ne dit rien de celle d'un autre."""
+    message = day.isoformat().encode("ascii") + b"\n" + _user_bytes(user_id)
+    digest = hmac.new(secret.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return DAILY_PREFIX + digest[: DEVICE_HASH_LENGTH - len(DAILY_PREFIX)]
+
+
+def legacy_device_hash(secret: str, user_id: str) -> str:
+    """L'empreinte d'avant le 14 nov. 2026, la même tous les jours. Ne sert plus qu'à finir le
+    jour du déploiement sans mélange et à effacer les anciennes lignes d'un appareil."""
+    digest = hmac.new(secret.encode("utf-8"), _user_bytes(user_id), hashlib.sha256)
     return digest.hexdigest()[:DEVICE_HASH_LENGTH]
+
+
+def device_prints(secret: str, user_id: str, end: date, days: int = KEEP_DAYS + 1) -> list[str]:
+    """Toutes les empreintes que `device_days` peut encore porter pour cet appareil : celle de
+    chaque jour conservé (jusqu'à `end` inclus) et l'ancienne. Pour le droit à l'effacement."""
+    daily = [device_hash(secret, user_id, end - timedelta(days=k)) for k in range(days)]
+    return [legacy_device_hash(secret, user_id), *daily]
 
 
 def valid_user_id(value: str | None) -> str | None:
@@ -103,6 +131,20 @@ class DeviceDayTracker:
         self.day: date | None = None
         self.seen: dict[str, None] = {}  # dans l'ordre d'arrivée
         self.max_entries = max_entries
+        self._legacy: tuple[date, bool] | None = None
+
+    def legacy(self, day: date, probe: Callable[[], bool]) -> bool:
+        """Ce jour se compte-t-il encore avec l'ancienne empreinte ? Vrai seulement pour le jour
+        du déploiement, s'il avait déjà des lignes à l'ancienne empreinte (`probe` le lit en
+        base, une fois par jour et par worker) : un jour ne mélange pas les deux."""
+        if self._legacy is None or self._legacy[0] != day:
+            self._legacy = (day, bool(probe()))
+        return self._legacy[1]
+
+    def forget(self, hashes: list[str]) -> None:
+        """Empreintes effacées de la base (droit à l'effacement) : oubliées ici aussi."""
+        for h in hashes:
+            self.seen.pop(h, None)
 
     def first_today(self, day: date, hashed: str) -> bool:
         if day != self.day:
@@ -178,7 +220,7 @@ def record_notify(store: Store, sent: int, failed: int, day: date | None = None)
         store.set_count(day, "coins", n_coins)
         # la veille est complète : son nombre d'appareils actifs devient un compteur (lot BO2)
         yesterday = day - timedelta(days=1)
-        active = store.active_devices(yesterday, 1)
+        active = store.active_devices(yesterday)
         if active:
             store.set_count(yesterday, "active_devices", active)
         store.purge_counts(day - timedelta(days=KEEP_DAYS))

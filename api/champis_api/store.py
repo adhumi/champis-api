@@ -115,7 +115,8 @@ daily_counts = Table(
 
 # Appareils actifs (spec › Backoffice › Usage, tranché le 8 nov. 2026, `counts.py`) : une ligne
 # par appareil de l'app et par jour, l'appareil réduit à une empreinte HMAC (secret serveur),
-# jamais l'identifiant lui-même ; non recoupable avec les coins ni les observations. 400 jours.
+# différente chaque jour depuis le 14 nov. 2026, jamais l'identifiant lui-même ; non recoupable
+# avec les coins ni les observations, ni d'un jour à l'autre. 400 jours.
 device_days = Table(
     "device_days",
     metadata,
@@ -426,12 +427,18 @@ class Store:
                 for r in res
             ]
 
-    def delete_observations(self, user_id: str) -> int:
-        """Droit à l'effacement : toutes les lignes de l'identifiant, observations, coins et jeton."""
+    def delete_observations(self, user_id: str, device_prints: list[str] | None = None) -> int:
+        """Droit à l'effacement : toutes les lignes de l'identifiant, observations, coins et jeton,
+        et les empreintes de l'appareil dans `device_days` (`counts.device_prints` : celle de
+        chaque jour conservé et l'ancienne, que seul l'appelant sait recalculer)."""
         with self.engine.begin() as conn:
             n = conn.execute(delete(observations).where(observations.c.user_id == user_id)).rowcount
             conn.execute(delete(coins).where(coins.c.user_id == user_id))
             conn.execute(delete(devices).where(devices.c.user_id == user_id))
+            if device_prints:
+                conn.execute(
+                    delete(device_days).where(device_days.c.device_hash.in_(device_prints))
+                )
         return n
 
     # ------------------------------------------------------------------ coins et appareils
@@ -587,17 +594,30 @@ class Store:
                 return False
         return True
 
-    def active_devices(self, end: date, days: int) -> int:
-        """Appareils distincts vus sur les `days` jours qui se terminent à `end` inclus."""
-        since = end - timedelta(days=days - 1)
+    def active_devices(self, day: date) -> int:
+        """Appareils vus ce jour-là. L'empreinte change chaque jour (`counts.device_hash`) : il
+        n'y a pas de compte d'appareils distincts sur plusieurs jours."""
         with self.engine.connect() as conn:
             return int(
                 conn.execute(
-                    select(func.count(func.distinct(device_days.c.device_hash))).where(
-                        device_days.c.day >= since, device_days.c.day <= end
-                    )
+                    select(func.count()).select_from(device_days).where(device_days.c.day == day)
                 ).scalar_one()
             )
+
+    def has_legacy_device_rows(self, day: date) -> bool:
+        """Ce jour a-t-il des lignes à l'ancienne empreinte (la même tous les jours) ?"""
+        from .counts import DAILY_PREFIX
+
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(device_days.c.device_hash)
+                .where(
+                    device_days.c.day == day,
+                    device_days.c.device_hash.not_like(f"{DAILY_PREFIX}%"),
+                )
+                .limit(1)
+            ).first()
+        return row is not None
 
     def daily_active_devices(self, since: date) -> dict[date, int]:
         """Appareils distincts par jour depuis `since`."""

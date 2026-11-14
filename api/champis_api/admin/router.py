@@ -95,17 +95,16 @@ async def api_usage(request: Request, _: auth.Authenticated, days: int = 90) -> 
 
 
 def _devices(store, end, since, settings) -> dict[str, Any]:
-    """Appareils de l'app (lot BO2) : actifs du jour, de la semaine, du mois, uniques sur 13 mois,
-    la série par jour ; `enabled` dit si le secret est posé (sinon rien n'est compté)."""
+    """Appareils de l'app (lot BO2) : actifs du jour et de la veille, la série par jour ;
+    `enabled` dit si le secret est posé (sinon rien n'est compté). L'empreinte d'un appareil
+    change chaque jour (14 nov. 2026) : les appareils distincts sur 7 jours, 30 jours et 13 mois
+    ne se comptent plus et ont quitté cette réponse (`week`, `month`, `unique`)."""
     with_coins, _ = store.coin_totals()
     daily = store.daily_active_devices(since)
     return {
         "enabled": bool(settings.measure_secret),
-        "today": store.active_devices(end, 1),
-        "yesterday": store.active_devices(end - timedelta(days=1), 1),
-        "week": store.active_devices(end, 7),
-        "month": store.active_devices(end, 30),
-        "unique": store.active_devices(end, counts.KEEP_DAYS),
+        "today": store.active_devices(end),
+        "yesterday": store.active_devices(end - timedelta(days=1)),
         "with_coins": with_coins,
         "daily": {d.isoformat(): n for d, n in sorted(daily.items())},
     }
