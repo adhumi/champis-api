@@ -53,6 +53,7 @@ def run_checks(settings: Settings | None = None, offline: bool = False) -> list[
         _notify(settings),
         _tile_cache(settings),
         _database(settings),
+        _schema(settings),
         _counts(settings),
         _apns(settings),
         _cds(),
@@ -321,6 +322,32 @@ def _database(settings: Settings) -> Check:
             "sur Railway : service Postgres connecté, DATABASE_URL injectée",
         )
     return Check("observations et coins", OK, url.split("://", 1)[0] + " (mot de passe masqué)")
+
+
+def _schema(settings: Settings) -> Check:
+    """Clé primaire `(user_id, id)` des observations et des coins (migration du 14 nov. 2026,
+    `Store._migrate_owner_keys`, tentée à chaque ouverture de la base)."""
+    from .store import Store
+
+    name = "schéma de la base"
+    if not settings.database_url:
+        return Check(name, INFO, "pas de base")
+    try:
+        store = Store(settings.database_url)
+        try:
+            migrated = store.owner_keys
+        finally:
+            store.close()
+    except Exception as e:  # base injoignable : un état des lieux, pas un échec
+        return Check(name, INFO, f"base injoignable ({type(e).__name__})")
+    if migrated:
+        return Check(name, OK, "observations et coins : clé primaire (user_id, id)")
+    return Check(
+        name,
+        MISSING,
+        "clé primaire (user_id, id) non posée : l'ancienne clé (id seul) reste en service",
+        "voir le journal du service (« clé primaire ») ; la migration est retentée à chaque démarrage",
+    )
 
 
 def _counts(settings: Settings) -> Check:

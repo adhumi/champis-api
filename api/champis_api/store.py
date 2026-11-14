@@ -10,6 +10,7 @@ développement sans Postgres), le code ne porte aucun SQL spécifique à un mote
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -23,6 +24,7 @@ from sqlalchemy import (
     Float,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Table,
@@ -41,7 +43,12 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
+log = logging.getLogger(__name__)
 metadata = MetaData()
+# Verrou consultatif Postgres de la création des tables et de la migration des clés primaires
+# (un entier arbitraire, fixe)
+MIGRATION_LOCK = 0x43484D50  # « CHMP »
+MIGRATION_LOCK_TIMEOUT = "10s"
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -56,8 +63,10 @@ def _iso(dt: datetime | None) -> str | None:
 observations = Table(
     "observations",
     metadata,
-    Column("id", String(36), primary_key=True),  # UUID généré par l'app : idempotence
+    Column("id", String(36), nullable=False),  # UUID généré par l'app : idempotence
     Column("user_id", String(36), nullable=False, index=True),
+    # un identifiant d'observation n'est unique que pour son appareil (`_migrate_owner_keys`)
+    PrimaryKeyConstraint("user_id", "id"),
     Column("species", String(64), nullable=False),
     Column("lat", Float, nullable=False),
     Column("lon", Float, nullable=False),
@@ -81,8 +90,9 @@ devices = Table(
 coins = Table(
     "coins",
     metadata,
-    Column("id", String(36), primary_key=True),
+    Column("id", String(36), nullable=False),
     Column("user_id", String(36), nullable=False, index=True),
+    PrimaryKeyConstraint("user_id", "id"),
     Column("name", String(80), nullable=False),
     Column("lat", Float, nullable=False),
     Column("lon", Float, nullable=False),
@@ -210,8 +220,21 @@ class Store:
             if url in ("sqlite://", "sqlite:///:memory:"):
                 kwargs["poolclass"] = StaticPool
         self.engine: Engine = create_engine(url, **kwargs)
-        metadata.create_all(self.engine)
+        self._create_tables()
         self._add_missing_columns()
+        # vrai quand observations et coins ont leur clé primaire `(user_id, id)`
+        self.owner_keys = self._migrate_owner_keys()
+
+    def _create_tables(self) -> None:
+        """`create_all`, un processus à la fois sur Postgres : les workers de l'API, le service
+        d'exécution et les crons ouvrent la base au même déploiement, et deux `CREATE TABLE` de
+        la même table nouvelle se heurtaient (« duplicate key … pg_type_typname_nsp_index »)."""
+        if self.dialect != "postgresql":
+            metadata.create_all(self.engine)
+            return
+        with self.engine.begin() as conn:
+            conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK})
+            metadata.create_all(conn)
 
     def _add_missing_columns(self) -> None:
         """`create_all` ne touche pas une table qui existe : une colonne ajoutée au schéma (comme
@@ -235,6 +258,77 @@ class Store:
                     if col.name not in now:
                         raise
 
+    def _migrate_owner_keys(self) -> bool:
+        """Clé primaire `(user_id, id)` pour `observations` et `coins` (14 nov. 2026).
+
+        Jusque-là la clé était `id` seul : un appareil qui envoyait l'identifiant d'un autre
+        l'empêchait de l'enregistrer (et recevait un 500 pour ses coins). `create_all` ne touche
+        pas une table qui existe : celles d'avant sont migrées ici, une fois.
+
+        - Postgres : `ALTER TABLE … DROP CONSTRAINT <clé>, ADD PRIMARY KEY (user_id, id)`, une
+          seule instruction dans une transaction. L'ancienne clé garantit déjà l'unicité de `id`,
+          donc celle de `(user_id, id)` : la nouvelle ne peut pas être refusée par les données.
+          API, worker et crons ouvrent la base en même temps : un verrou consultatif de transaction
+          les met en file, et l'état est relu sous le verrou. `lock_timeout` borne l'attente du
+          verrou de table.
+        - SQLite (tests, développement) ne sait pas changer une clé primaire : la table est
+          recréée et recopiée dans une transaction (`BEGIN IMMEDIATE`, relu sous le verrou).
+
+        Idempotente. Un échec est journalisé et n'empêche pas le service : le code fonctionne
+        avec l'ancienne clé (comportement d'avant), la migration est retentée au prochain
+        démarrage et `champis-api doctor` le signale."""
+        done = True
+        for table in (observations, coins):
+            try:
+                if self._owner_key(self.engine, table):
+                    continue
+                with self.engine.begin() as conn:
+                    if self.dialect == "postgresql":
+                        self._migrate_postgres(conn, table)
+                    else:
+                        self._migrate_sqlite(conn, table)
+            except Exception:
+                done = False
+                log.exception(
+                    "base : clé primaire (user_id, id) de %s non posée ; l'ancienne clé reste en "
+                    "service, nouvel essai au prochain démarrage",
+                    table.name,
+                )
+        return done
+
+    @staticmethod
+    def _owner_key(bind, table: Table) -> bool:
+        columns = inspect(bind).get_pk_constraint(table.name).get("constrained_columns") or []
+        return set(columns) == {"user_id", "id"}
+
+    def _migrate_postgres(self, conn: Connection, table: Table) -> None:
+        conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK})
+        if self._owner_key(conn, table):  # un autre processus vient de le faire
+            return
+        name = inspect(conn).get_pk_constraint(table.name).get("name")
+        conn.execute(text(f"SET LOCAL lock_timeout = '{MIGRATION_LOCK_TIMEOUT}'"))
+        drop = f'DROP CONSTRAINT "{name}", ' if name else ""
+        conn.execute(text(f'ALTER TABLE "{table.name}" {drop}ADD PRIMARY KEY (user_id, id)'))
+        log.info("base : clé primaire (user_id, id) posée sur %s", table.name)
+
+    def _migrate_sqlite(self, conn: Connection, table: Table) -> None:
+        # pysqlite n'ouvre pas de transaction avant un DDL : on la demande, avec le verrou
+        # d'écriture ; `engine.begin()` la valide ou l'annule en sortie
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        if self._owner_key(conn, table):
+            return
+        old = f"{table.name}_avant_cle"
+        names = ", ".join(f'"{c.name}"' for c in table.columns)
+        for index in inspect(conn).get_indexes(table.name):  # ils suivraient l'ancienne table
+            conn.exec_driver_sql(f'DROP INDEX "{index["name"]}"')
+        conn.exec_driver_sql(f'ALTER TABLE "{table.name}" RENAME TO "{old}"')
+        table.create(conn)
+        n = conn.exec_driver_sql(
+            f'INSERT INTO "{table.name}" ({names}) SELECT {names} FROM "{old}"'
+        ).rowcount
+        conn.exec_driver_sql(f'DROP TABLE "{old}"')
+        log.info("base : clé primaire (user_id, id) posée sur %s (%d lignes)", table.name, n)
+
     @property
     def dialect(self) -> str:
         return self.engine.dialect.name
@@ -242,15 +336,20 @@ class Store:
     # ------------------------------------------------------------------ observations
 
     def add_observations(self, user_id: str, rows: list[dict[str, Any]], now: datetime) -> dict:
-        """Insère les observations absentes (par `id`) ; les déjà connues sont ignorées, pas
-        écrasées : un renvoi après coupure réseau est sans effet."""
+        """Insère les observations absentes (par `id`, pour cet appareil) ; les déjà connues sont
+        ignorées, pas écrasées : un renvoi après coupure réseau est sans effet. Un `id` répété
+        dans le lot ne compte qu'une fois (le premier), les suivants sont des doublons."""
         if not rows:
             return {"inserted": 0, "duplicates": 0}
-        ids = [r["id"] for r in rows]
+        unique = {r["id"]: r for r in reversed(rows)}  # le premier de chaque `id` l'emporte
         with self.engine.begin() as conn:
             known = {
                 r[0]
-                for r in conn.execute(select(observations.c.id).where(observations.c.id.in_(ids)))
+                for r in conn.execute(
+                    select(observations.c.id).where(
+                        observations.c.user_id == user_id, observations.c.id.in_(list(unique))
+                    )
+                )
             }
             fresh = [
                 {
@@ -266,7 +365,7 @@ class Store:
                     "shared": False,
                     "created_at": now.astimezone(UTC),
                 }
-                for r in rows
+                for r in reversed(unique.values())
                 if r["id"] not in known
             ]
             if fresh:
@@ -278,7 +377,7 @@ class Store:
                 found = sum(1 for r in fresh if r["found"])
                 self._bump(conn, day, "observations_found", found)
                 self._bump(conn, day, "observations_not_found", len(fresh) - found)
-        return {"inserted": len(fresh), "duplicates": len(known)}
+        return {"inserted": len(fresh), "duplicates": len(rows) - len(fresh)}
 
     def observations_of(self, user_id: str) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
@@ -319,8 +418,10 @@ class Store:
         sandbox: bool,
         now: datetime,
     ) -> int:
-        """Remplace la liste complète des coins de l'appareil (pas de fusion) et son jeton APNs."""
+        """Remplace la liste complète des coins de l'appareil (pas de fusion) et son jeton APNs.
+        Un `id` répété dans la liste ne donne qu'un coin : le dernier."""
         ts = now.astimezone(UTC)
+        rows = list({r["id"]: r for r in rows}.values())
         with self.engine.begin() as conn:
             conn.execute(delete(coins).where(coins.c.user_id == user_id))
             if rows:
