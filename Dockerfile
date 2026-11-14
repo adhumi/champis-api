@@ -2,7 +2,17 @@
 # (adhumi/champis-web) depuis le découpage des dépôts (6 nov. 2026).
 # La même image sert aux services cron (railway.warm.toml, railway.notify.toml) : seul le
 # `startCommand` change ; la pré-chauffe n'est plus dans l'API (décision du 4 nov. 2026).
-FROM python:3.12-slim-bookworm
+# Images de base épinglées par condensé (14 nov. 2026) : un tag se déplace, pas un condensé. Pour
+# les relever (index multi-architecture) : `docker buildx imagetools inspect <image>:<tag>`.
+#
+# L'image tourne encore en root, sciemment : un volume Railway est monté en root et la doc
+# (docs.railway.com/volumes › Permissions, lue le 14 nov. 2026) n'offre à une image non-root que
+# `RAILWAY_RUN_UID=0`, c'est-à-dire root. L'API et `champis-jobs` écrivent sur leur volume `/data`
+# (cache météo SQLite, cache des tuiles, verrous, rasters), les crons dans `/data` et
+# `/app/data/logs` du conteneur, `uv run` dans `/app/.venv` : passer à un utilisateur sans
+# privilège demande un point d'entrée qui rend ces chemins à cet utilisateur avant de lâcher root,
+# à essayer sur un service Railway, pas à l'aveugle (un cron qui n'écrit plus échoue sans bruit).
+FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
 
 # rasterio (pipeline : climatologie du sol et, lot BO4, terrain et tuiles sur le service
 # champis-jobs) embarque son GDAL mais pas libexpat ; l'API, elle, n'importe jamais rasterio.
@@ -10,7 +20,7 @@ FROM python:3.12-slim-bookworm
 # les lettres accentuées (« Cèpe »).
 RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 
-COPY --from=ghcr.io/astral-sh/uv:0.11.32 /uv /uvx /bin/
+COPY --from=ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e597550000edbe78fdc2594d5cd8de1a217f504c /uv /uvx /bin/
 
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_DEV=1 UV_FROZEN=1
