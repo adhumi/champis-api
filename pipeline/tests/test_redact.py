@@ -117,3 +117,30 @@ def test_cli_logs_never_show_the_key_even_verbose(tmp_path: Path, monkeypatch, r
     assert "HTTP Request" not in buf2.getvalue() and KEY not in buf2.getvalue()
     for name in QUIET_LOGGERS:
         assert logging.getLogger(name).level == logging.WARNING, name
+
+
+def test_access_filter_drops_the_query_string_whatever_the_record_shape():
+    """Journal d'accès sans query string (14 nov. 2026) : l'enregistrement à cinq arguments
+    d'uvicorn garde ses arguments, chemin réécrit ; une autre forme perd ce qui suit le `?`."""
+    from champis_pipeline.redact import AccessQueryFilter, install_access_filter, strip_query
+
+    assert strip_query("/weather?lat=47.1&lon=6.3") == "/weather" and strip_query("/x") == "/x"
+
+    def record(msg, *args):
+        return logging.LogRecord("uvicorn.access", logging.INFO, __file__, 1, msg, args, None)
+
+    f = AccessQueryFilter()
+    r = record(
+        '%s - "%s %s HTTP/%s" %d', "10.0.0.1:1", "GET", "/weather?lat=47.1&lon=6.3", "1.1", 200
+    )
+    assert f.filter(r) and r.args == ("10.0.0.1:1", "GET", "/weather", "1.1", 200)
+    assert r.getMessage() == '10.0.0.1:1 - "GET /weather HTTP/1.1" 200'
+    r = record("GET %s terminé en %d ms", "/weather/bbox?min_lon=6.2&min_lat=47.0", 12)
+    assert f.filter(r) and r.getMessage() == "GET /weather/bbox terminé en 12 ms"
+    r = record("rien à retirer : %s", "/health")
+    assert f.filter(r) and r.args == ("/health",)
+    assert f.filter(record("mal formé %d", "x"))  # logging s'en plaindra lui-même
+    logger = logging.getLogger("champis.test.access")
+    install_access_filter(logger)
+    install_access_filter(logger)
+    assert len(logger.filters) == 1

@@ -64,6 +64,7 @@ RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
 MAP_OPEN_PATH = "/tiles"
 GZIP_LEVEL = 6
 UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")  # leurs propres handlers
+ACCESS_LOGGER = "uvicorn.access"
 SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
 LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
 
@@ -93,6 +94,9 @@ def _configure_logging() -> None:
     jeton d'appareil dans l'adresse d'APNs. Correctif du 13 nov. 2026 : les clients HTTP et S3
     restent sous WARNING, et un filtre masque ces secrets sur tous les handlers, pour ce qui
     passerait quand même (message d'une exception, niveau rétabli pour un diagnostic).
+
+    Le journal d'accès d'uvicorn (celui du `CMD` du Dockerfile) écrivait le chemin complet, donc
+    `lat` et `lon` de chaque requête météo : un filtre en retire la query string (14 nov. 2026).
     """
     root = logging.getLogger()
     if not root.handlers:
@@ -100,6 +104,8 @@ def _configure_logging() -> None:
     logging.getLogger("champis_api").setLevel(logging.INFO)
     redact.quiet_libraries()
     redact.install(root, *(logging.getLogger(name) for name in UVICORN_LOGGERS))
+    # le journal d'accès garde méthode, chemin et code, pas la query string (positions)
+    redact.install_access_filter(logging.getLogger(ACCESS_LOGGER))
 
 
 def create_app(settings: Settings | None = None, state: State | None = None) -> FastAPI:

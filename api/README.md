@@ -7,7 +7,7 @@ uv run champis-pipeline weather-grid --depts 25        # produit data/weather_gr
 uv run uvicorn champis_api.app:app --reload            # http://127.0.0.1:8000/health
 ```
 
-Journaux : les clients HTTP et S3 (httpx, httpcore, hpack, botocore, urllib3…) restent sous WARNING, parce qu'ils écrivent l'adresse de chaque requête sortante (clé Open-Meteo `apikey=`, adresses présignées du bucket, jeton d'appareil APNs), et un filtre masque ces secrets sur tous les handlers (`champis_pipeline.redact`, correctif du 13 nov. 2026).
+Journaux : les clients HTTP et S3 (httpx, httpcore, hpack, botocore, urllib3…) restent sous WARNING, parce qu'ils écrivent l'adresse de chaque requête sortante (clé Open-Meteo `apikey=`, adresses présignées du bucket, jeton d'appareil APNs), et un filtre masque ces secrets sur tous les handlers (`champis_pipeline.redact`, correctif du 13 nov. 2026). Le journal d'accès d'uvicorn garde la méthode, le chemin et le code de chaque requête, sans sa query string : `lat`, `lon` et les emprises n'y figurent plus (`redact.AccessQueryFilter`, 14 nov. 2026).
 
 Pas de documentation interactive : `/docs`, `/redoc` et `/openapi.json` ne sont pas servis (décision du 13 nov. 2026) ; les routes sont décrites plus bas.
 
