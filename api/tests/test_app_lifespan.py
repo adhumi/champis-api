@@ -260,3 +260,50 @@ def test_access_log_keeps_method_path_and_status_but_not_the_query():
         '10.0.0.1:5000 - "GET /health HTTP/1.1" 200 OK',
     ]
     assert "47.1" not in buf.getvalue() and "lon" not in buf.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_on_railway_the_api_refuses_to_start_without_a_database(tmp_path: Path):
+    """Sans `DATABASE_URL`, plus de repli SQLite dans le conteneur en production : sur Railway
+    (`RAILWAY_ENVIRONMENT_NAME`) les réglages n'ont pas de base et l'API ne démarre pas ; en
+    local le repli reste ; les crons, eux, lisent les mêmes réglages et se passent de base."""
+    from champis_api import settings as settings_module
+
+    railway = {"RAILWAY_ENVIRONMENT_NAME": "production"}
+    assert settings_module.default_database_url({}).startswith("sqlite:///")
+    assert settings_module.default_database_url(railway) == ""
+    assert settings_module.default_database_url(
+        railway | {"DATABASE_URL": "postgresql://h/db"}
+    ) == ("postgresql://h/db")
+    assert settings_module.default_database_url(
+        railway | {"CHAMPIS_DATABASE_URL": "sqlite:////data/x.db"}
+    )
+    assert settings_module.running_on_railway(railway) and not settings_module.running_on_railway(
+        {}
+    )
+
+    grid_path = tmp_path / "weather_grid.json"
+    grid_path.write_text(json.dumps(GRID), encoding="utf-8")
+    base = {
+        "weather_grid": grid_path,
+        "cache_db": tmp_path / "cache" / "weather_cache.db",
+        "weather_seed": tmp_path / "absent.json",
+        "s3": None,
+        "apns_key": "",
+        "warm_hours": (),
+        "notify_hours": (),
+        "cache_poll_minutes": 0,
+    }
+    app = create_app(Settings(**base, database_url="", on_railway=True))
+    with pytest.raises(RuntimeError, match="DATABASE_URL absente sur Railway"):
+        async with app.router.lifespan_context(app):
+            pass
+    assert not (tmp_path / "cache").exists()  # refus avant d'avoir rien écrit
+    # sur Railway avec une base, et en local sans base : l'API démarre
+    for kwargs in (
+        {"database_url": f"sqlite:///{tmp_path / 'c.db'}", "on_railway": True},
+        {"database_url": "", "on_railway": False},
+    ):
+        app = create_app(Settings(**base, **kwargs))
+        async with app.router.lifespan_context(app):
+            assert (app.state.champis.store is None) == (not kwargs["database_url"])

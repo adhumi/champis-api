@@ -119,6 +119,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             catalog.configure(state.bucket)
             yield
             return
+        require_database(settings)
         settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
         cache = WeatherCache(settings.cache_db, shared=True)
         bucket = Bucket(settings.s3) if settings.s3 else None
@@ -369,6 +370,20 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             app.mount("/web", StaticFiles(directory=settings.web_dir / "web", html=True))
 
     return app
+
+
+def require_database(settings: Settings) -> None:
+    """Sur Railway, l'API ne démarre pas sans base (14 nov. 2026) : sans `DATABASE_URL` elle
+    retombait sur un fichier SQLite dans le conteneur, effacé au déploiement suivant, et les
+    observations et les coins de l'app partaient avec lui sans un mot. Le déploiement échoue à
+    la place (Railway garde le précédent). En local, le repli SQLite reste."""
+    if settings.on_railway and not settings.database_url:
+        raise RuntimeError(
+            "DATABASE_URL absente sur Railway : l'API ne démarre pas sans base (les observations "
+            "et les coins seraient écrits dans le conteneur et perdus au prochain déploiement). "
+            "Connecter le service Postgres au service de l'API (variable DATABASE_URL, "
+            ".railway/railway.ts), ou poser CHAMPIS_DATABASE_URL."
+        )
 
 
 def next_warm(now: datetime, hours: tuple[int, ...]) -> datetime:
