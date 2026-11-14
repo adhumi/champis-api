@@ -124,6 +124,17 @@ device_days = Table(
     Column("device_hash", String(32), primary_key=True),
 )
 
+# Sessions du backoffice (14 nov. 2026, `admin/auth.py`) : une ligne par session ouverte, connue de
+# tous les workers et gardée d'un déploiement à l'autre ; `id` est le SHA-256 de l'identifiant que
+# porte le cookie, jamais l'identifiant. Supprimée à la déconnexion, purgée à son expiration.
+admin_sessions = Table(
+    "admin_sessions",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+)
+
 # Journal des tâches (spec › Backoffice, 7 nov. 2026, `jobs.py`) : une ligne par exécution d'une
 # commande (cron Railway, outil lancé depuis le backoffice, CLI sur un poste), avec l'étape en
 # cours et sa progression ; les événements (étapes, notes, avertissements) à côté. Gardé 400 jours.
@@ -578,6 +589,7 @@ class Store:
                     jobs,
                     job_events,
                     workers,
+                    admin_sessions,
                 )
             }
 
@@ -632,6 +644,38 @@ class Store:
     def purge_device_days(self, before: date) -> int:
         with self.engine.begin() as conn:
             return conn.execute(delete(device_days).where(device_days.c.day < before)).rowcount
+
+    # ------------------------------------------------------------------ sessions du backoffice
+
+    def create_admin_session(self, digest: str, now: datetime, expires: datetime) -> None:
+        """Ouvre une session (`digest` : SHA-256 de son identifiant) ; les expirées partent."""
+        ts = now.astimezone(UTC)
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.expires_at <= ts))
+            conn.execute(
+                insert(admin_sessions).values(
+                    id=digest, created_at=ts, expires_at=expires.astimezone(UTC)
+                )
+            )
+
+    def admin_session_valid(self, digest: str, now: datetime) -> bool:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(admin_sessions.c.id).where(
+                    admin_sessions.c.id == digest,
+                    admin_sessions.c.expires_at > now.astimezone(UTC),
+                )
+            ).first()
+        return row is not None
+
+    def delete_admin_session(self, digest: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.id == digest))
+
+    def delete_admin_sessions(self) -> int:
+        """« Déconnecter toutes les sessions » : le nombre de sessions fermées."""
+        with self.engine.begin() as conn:
+            return conn.execute(delete(admin_sessions)).rowcount
 
     # ------------------------------------------------------------------ journal des tâches
 

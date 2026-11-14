@@ -34,6 +34,9 @@ aucun lien ne se partageait, et lancer un outil ne menait pas à la tâche cré�
 - L'API JSON `/admin/api/*` (Bearer pour les scripts), ses réponses et ses tests.
 - La clé unique, le cookie signé (HttpOnly, SameSite=Strict, `Path=/admin`, 30 jours), la limite
   de 5 essais par minute, le 404 sans `CHAMPIS_ADMIN_KEY`, `X-Robots-Tag: noindex`.
+  (Depuis le 14 nov. 2026 le cookie porte une session révocable connue du serveur, les `Bearer`
+  refusés comptent dans les mêmes 5 essais, et toutes les réponses portent une CSP sans script ni
+  style en ligne : `api/README.md` › Backoffice › Accès.)
 - Le catalogue des outils (`tools.py`) : rien d'autre ne se lance depuis le backoffice.
 - « Une étape à la fois » sur la page d'une espèce : pas d'enchaînement automatique.
 - Les fichiers espèces restent en lecture seule (ils se modifient par PR dans `adhumi/champis`).

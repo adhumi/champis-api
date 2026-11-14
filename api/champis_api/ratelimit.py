@@ -65,6 +65,14 @@ class TokenBuckets:
             return 0.0
         return (1.0 - b.tokens) * 60.0 / self.per_minute
 
+    def wait(self, key: str) -> float:
+        """Sans rien prendre : 0 si un jeton est disponible, sinon le délai (s) avant le prochain."""
+        b = self.buckets.get(key)
+        if b is None:
+            return 0.0
+        tokens = min(self.per_minute, b.tokens + (self.clock() - b.updated) * self.per_minute / 60)
+        return 0.0 if tokens >= 1.0 else (1.0 - tokens) * 60.0 / self.per_minute
+
     def prune(self, older_than_s: float = FULL_AFTER_S, now: float | None = None) -> None:
         """Oublie les seaux intacts depuis `older_than_s` : ils sont en tête, le parcours
         s'arrête au premier seau récent (coût amorti constant, à chaque `take`)."""

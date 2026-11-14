@@ -35,8 +35,10 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import catalog, counts
+from .admin import auth as admin_auth
 from .admin import pages as admin_pages
 from .admin.router import router as admin_router
+from .admin.security import AdminSecurityHeaders
 from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
@@ -223,6 +225,9 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     # source de configuration, les routeurs ne relisent pas l'environnement.
     app.state.settings = settings
     app.state.started_at = datetime.now(UTC)
+    problem = admin_auth.key_problem(settings.admin_key)
+    if problem:
+        log.error("backoffice : %s", problem)
     # `/weather/bbox` sur une emprise large pèse plusieurs Mo en JSON très répétitif, dix fois
     # moins une fois compressé (décision du 2 nov. 2026). Niveau 6, celui de zlib, et non le 9
     # par défaut de Starlette (13 nov. 2026) : sur la grille réelle la compression était le
@@ -331,6 +336,10 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         ):
             await asyncio.to_thread(_measure, store, request, response.status_code)
         return response
+
+    # En-têtes de sécurité du backoffice (CSP, cadres, HSTS) : ajouté en dernier, donc à
+    # l'extérieur, pour couvrir aussi les réponses du limiteur et les 404 d'un backoffice fermé.
+    app.add_middleware(AdminSecurityHeaders)
 
     app.include_router(species.router)
     app.include_router(weather.router)

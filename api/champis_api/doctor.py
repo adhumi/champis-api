@@ -4,7 +4,8 @@ Vérifie ce qui, dans la pratique, bloque une publication ou un déploiement : `
 grille météo (version 2, hash des espèces), amorçage, clé Open-Meteo, bucket (joignable), pré-chauffe
 (intégrée à l'API ou déléguée au service cron, et la date du dernier cache publié), champ compact
 `cell_field` du cache local (présent et dérivé du même passage que `cell_weather`), notification
-« mes coins », cache disque du relais de tuiles, base des observations, clé APNs, identifiants CDS,
+« mes coins », cache disque du relais de tuiles, base des observations (et sa clé primaire),
+clé du backoffice, clé APNs, identifiants CDS,
 vecteurs de parité. Rien n'est modifié ; le réseau n'est touché que pour le bucket (`--offline`
 l'évite).
 """
@@ -54,6 +55,7 @@ def run_checks(settings: Settings | None = None, offline: bool = False) -> list[
         _tile_cache(settings),
         _database(settings),
         _schema(settings),
+        _admin(settings),
         _counts(settings),
         _apns(settings),
         _cds(),
@@ -322,6 +324,24 @@ def _database(settings: Settings) -> Check:
             "sur Railway : service Postgres connecté, DATABASE_URL injectée",
         )
     return Check("observations et coins", OK, url.split("://", 1)[0] + " (mot de passe masqué)")
+
+
+def _admin(settings: Settings) -> Check:
+    """Clé du backoffice : absente (pas de backoffice), trop courte (fermé), ou en service."""
+    from .admin import auth
+
+    key = settings.admin_key
+    if not key:
+        return Check(
+            "backoffice",
+            INFO,
+            "pas de clé : /admin n'existe pas (404)",
+            "CHAMPIS_ADMIN_KEY (`openssl rand -base64 32`)",
+        )
+    problem = auth.key_problem(key)
+    if problem:
+        return Check("backoffice", MISSING, problem, "poser une clé plus longue dans Railway")
+    return Check("backoffice", OK, f"clé de {len(key)} caractères")
 
 
 def _schema(settings: Settings) -> Check:
