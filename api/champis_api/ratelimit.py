@@ -5,7 +5,9 @@ Seau à jetons par adresse IP, en mémoire, **par processus** : avec N workers u
 2026) un client peut obtenir jusqu'à N fois la limite ; acceptable, le limiteur protège le CPU et
 Open-Meteo, pas l'équité au jeton près. Une réserve pour les lectures,
 une bien plus petite pour les écritures (`POST`, `PUT`, `DELETE`), qui ne servent qu'à l'app.
-Au-delà : 429 avec `Retry-After`. Un corps annoncé plus gros que `max_body` : 413.
+Au-delà : 429 avec `Retry-After`. Un corps plus gros que `max_body` : 413, qu'il soit annoncé
+(`Content-Length`) ou non : les octets réellement reçus sont comptés (14 nov. 2026 ; un corps en
+`Transfer-Encoding: chunked` n'annonce rien et passait le seul contrôle de l'en-tête).
 
 L'adresse du client est celle que pose le proxy de confiance, jamais une valeur que le client
 choisit (`client_ip`, correctif du 13 nov. 2026 : le premier élément de `X-Forwarded-For`, lu
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 WRITE_METHODS = frozenset({"POST", "PUT", "DELETE", "PATCH"})
@@ -111,7 +114,42 @@ class RateLimitMiddleware:
                 send, 429, "trop de requêtes", {"retry-after": str(max(1, int(wait + 0.999)))}
             )
             return
-        await self.app(scope, receive, send)
+        await self._bounded(scope, receive, send)
+
+    async def _bounded(self, scope, receive, send) -> None:
+        """Passe la requête en comptant les octets du corps à mesure qu'ils arrivent. Au-delà de
+        `max_body`, la lecture s'arrête (l'application ne reçoit pas la suite) et la réponse est
+        413, quoi que l'application ait fait de l'interruption ; si elle avait déjà commencé à
+        répondre, sa réponse reste (rien d'autre n'est possible en HTTP)."""
+        received = 0
+        too_large = started = False
+
+        async def counted_receive():
+            nonlocal received, too_large
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_body:
+                    too_large = True
+                    raise BodyTooLargeError
+            return message
+
+        async def guarded_send(message):
+            nonlocal started
+            if too_large and not started:
+                return  # la réponse de l'application à l'interruption : remplacée par le 413
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        with suppress(BodyTooLargeError):
+            await self.app(scope, counted_receive, guarded_send)
+        if too_large and not started:
+            await _plain(send, 413, f"corps trop volumineux (maximum {self.max_body} octets)")
+
+
+class BodyTooLargeError(Exception):
+    """Levée dans `receive` quand le corps dépasse `max_body` : arrête la lecture."""
 
 
 def scope_headers(scope) -> dict[str, str]:

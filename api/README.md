@@ -89,7 +89,7 @@ Migration d'une API qui pré-chauffait elle-même : avant la première exécutio
 | `CHAMPIS_APNS_TOPIC` | `fr.adhumi.champis` | Sujet APNs = identifiant de bundle de l'app |
 | `CHAMPIS_NOTIFY_HOURS` | `7` (vide dans l'image) | Heure(s) Paris de la notification « mes coins » envoyée par l'API (repli) ; vide = service cron `champis-notify` (`.railway/railway.ts`) |
 | `CHAMPIS_RATE_READ`, `CHAMPIS_RATE_WRITE` | `120`, `20` | Requêtes par minute et par IP, lectures et écritures (`POST`/`PUT`/`DELETE`) ; au-delà 429 + `Retry-After` |
-| `CHAMPIS_MAX_BODY` | `262144` | Taille maximale d'un corps d'écriture (octets) ; au-delà 413 |
+| `CHAMPIS_MAX_BODY` | `262144` | Taille maximale d'un corps de requête (octets), comptée sur les octets reçus, annoncés (`Content-Length`) ou non (`chunked`) ; au-delà 413 |
 | `CHAMPIS_ADMIN_KEY` | *(vide)* | Clé unique du backoffice `/admin` (≥ 32 caractères aléatoires, variable secrète Railway) ; vide = le backoffice n'existe pas (404) |
 | `CHAMPIS_MEASURE_SECRET` | *(vide)* | Appareils actifs (lot BO2) : secret du HMAC qui remplace l'identifiant de l'app par une empreinte par jour dans `device_days` ; vide = non comptés ; le changer remet l'historique à zéro |
 | `CHAMPIS_DATA_DIR` | `data/` du dépôt | Dossier des données du pipeline (brut, rasters, T, tuiles, journaux, amorçage) ; `/data` sur le service `champis-jobs`, son volume |
