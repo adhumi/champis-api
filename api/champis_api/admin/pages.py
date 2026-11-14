@@ -6,7 +6,8 @@ fait par de vrais liens et de vrais formulaires (`POST` puis redirection 303), l
 requête qui porte `HX-Request` et vise un fragment connu (`HX-Target`) reçoit ce seul fragment,
 toute autre requête la page entière. Rien ne dépend de JavaScript.
 
-- `GET /admin` → Santé ; `GET|POST /admin/login`, `POST /admin/logout` ;
+- `GET /admin` → Santé ; `GET|POST /admin/login`, `POST /admin/logout`, `POST /admin/logout/all`
+  (toutes les sessions) ;
 - `/admin/health`, `/admin/usage?days=` ;
 - `/admin/species?q=&state=&group=&complete=&sort=&dir=`, `/admin/species/<id>`,
   `/admin/species/<id>/file` ;
@@ -18,8 +19,9 @@ toute autre requête la page entière. Rien ne dépend de JavaScript.
   une URL signée fraîche), `GET|POST /admin/renders/delete` ;
 - `/admin/search?q=` ; `/admin/static/<fichier>` (Tabler et htmx vendorés, sans tiers).
 
-L'API JSON `/admin/api/*` (`router.py`) ne change pas. Accès : `auth.py` (cookie signé ou Bearer,
-jeton `csrf` dans chaque formulaire) ; une page sans session redirige vers la connexion.
+L'API JSON `/admin/api/*` (`router.py`) ne change pas. Accès : `auth.py` (session révocable ou
+Bearer, jeton `csrf` dans chaque formulaire) ; une page sans session redirige vers la connexion.
+Toutes les réponses portent les en-têtes de `security.py` (CSP sans script ni style en ligne).
 """
 
 from __future__ import annotations
@@ -37,7 +39,6 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from .. import jobs, render, tools
-from ..ratelimit import TokenBuckets, client_ip, scope_headers
 from . import auth, health, views
 from . import router as api
 
@@ -53,13 +54,13 @@ VENDOR = {
 }
 STATIC_FILES = {
     "admin.css": "text/css",
+    "noscript.css": "text/css",
     "admin.js": "application/javascript",
     VENDOR["tabler_css"]: "text/css",
     VENDOR["tabler_js"]: "application/javascript",
     VENDOR["htmx_js"]: "application/javascript",
 }
 ROBOTS = api.ROBOTS
-LOGIN_PER_MINUTE = 5
 FLASH_COOKIE = "champis_flash"
 HOME = "/admin/health"
 FORM_TYPE = "application/x-www-form-urlencoded"
@@ -136,15 +137,6 @@ def safe_next(value: str | None) -> str:
 
 def _is_htmx(request: Request) -> bool:
     return request.headers.get("hx-request") == "true"
-
-
-def _login_buckets(request: Request) -> TokenBuckets:
-    """Essais de connexion par adresse ; `TokenBuckets` oublie seul les seaux redevenus pleins et
-    borne leur nombre (ils n'étaient jamais purgés avant le 13 nov. 2026)."""
-    buckets = getattr(request.app.state, "admin_login_buckets", None)
-    if buckets is None:
-        buckets = request.app.state.admin_login_buckets = TokenBuckets(LOGIN_PER_MINUTE)
-    return buckets
 
 
 class Ctx:
@@ -236,15 +228,16 @@ class Ctx:
                 auth.sign(self.key, quote(f"{flash[0]}|{flash[1]}")),
                 max_age=60,
                 path="/admin",
+                secure=auth.https(self.request),
                 httponly=True,
                 samesite="strict",
             )
         return response
 
 
-def session(request: Request, key: auth.Enabled) -> Ctx:
+async def session(request: Request, key: auth.Enabled) -> Ctx:
     auth.same_origin(request)
-    if not auth.logged_in(request, key):
+    if not await auth.logged_in(request, key):
         raise LoginRequiredError
     return Ctx(request, key)
 
@@ -291,7 +284,11 @@ Posted = Annotated[Form, Depends(posted)]
 
 async def _page_error(request: Request, exc: PageError) -> Response:
     key = request.app.state.settings.admin_key
-    ctx = Ctx(request, key, logged=auth.logged_in(request, key))
+    # l'accès a déjà été décidé par la page (`session`) ; sinon le cookie seul, sans essai compté
+    logged = getattr(request.state, "admin_logged", None)
+    if logged is None:
+        logged = await asyncio.to_thread(auth.session_valid, request, key)
+    ctx = Ctx(request, key, logged=logged)
     ctx.htmx = False  # une erreur remplace la page, pas un fragment
     return await ctx.render(
         "error.html", exc.status, title=exc.title, detail=exc.detail, status_code=exc.status
@@ -340,21 +337,22 @@ async def static(name: str, _: auth.Enabled) -> FileResponse:
 
 @router.get("/login")
 async def login_page(request: Request, key: auth.Enabled, next: str = "") -> Response:
-    if auth.logged_in(request, key):
+    if await auth.logged_in(request, key):
         return RedirectResponse(safe_next(next), 303, headers=ROBOTS)
     return await Ctx(request, key, logged=False).render(
         "login.html", next=safe_next(next), error=""
     )
 
 
-def _session_cookie(request: Request, response: Response, key: str) -> None:
+async def _session_cookie(request: Request, response: Response, key: str) -> None:
+    """Ouvre une session côté serveur et pose son cookie."""
+    cookie = await asyncio.to_thread(auth.open_session, request, key)
     response.set_cookie(
         auth.COOKIE,
-        auth.make_token(key),
+        cookie,
         max_age=auth.TTL_S,
         path="/admin",
-        # derrière Railway, TLS est terminé en amont : le protocole d'origine est dans l'en-tête
-        secure=request.headers.get("x-forwarded-proto", request.url.scheme) == "https",
+        secure=auth.https(request),
         httponly=True,
         samesite="strict",
     )
@@ -380,12 +378,13 @@ async def login(request: Request, key: auth.Enabled) -> Response:
         form = await read_form(request)
         given, next_ = form.get("key"), safe_next(form.get("next"))
     ctx = Ctx(request, key, logged=False)
-    wait = _login_buckets(request).take(client_ip(scope_headers(request.scope), request.client))
+    # chaque essai prend un jeton du seau de son adresse, le même que les `Bearer` refusés
+    wait = auth.failures(request).take(auth.address(request))
     if wait > 0:
-        retry = {"Retry-After": str(int(wait + 1))}
         if as_json:
-            raise HTTPException(429, "trop d'essais", headers=retry)
+            raise auth.too_many(wait)
         error = "Trop d'essais : attends une minute avant de recommencer."
+        retry = {"Retry-After": str(int(wait + 1))}
         return await ctx.render("login.html", 429, headers=retry, next=next_, error=error)
     if not auth.key_matches(key, given):
         log.warning("backoffice : clé refusée")
@@ -397,25 +396,53 @@ async def login(request: Request, key: auth.Enabled) -> Response:
         response = Response(status_code=204, headers=ROBOTS)
     else:
         response = RedirectResponse(next_, 303, headers=ROBOTS)
-    _session_cookie(request, response, key)
+    try:
+        await _session_cookie(request, response, key)
+    except Exception as e:
+        # la session doit être connue du serveur : sans base joignable, pas de session
+        log.exception("backoffice : session non enregistrée")
+        detail = "La session n'a pas pu être enregistrée : la base ne répond pas."
+        if as_json:
+            raise HTTPException(503, detail) from e
+        error = f"{detail} Les scripts gardent leur accès par Authorization: Bearer."
+        return await ctx.render("login.html", 503, next=next_, error=error)
     return response
 
 
-@router.post("/logout")
-async def logout(request: Request, key: auth.Enabled) -> Response:
+async def _leave(request: Request, key: str, everywhere: bool) -> Response:
+    """Déconnexion : la session du cookie (ou toutes) est supprimée côté serveur, puis le cookie.
+    Deux formes, comme la connexion : l'en-tête des scripts (204) ou le jeton `csrf` de la page."""
     auth.same_origin(request)
     response: Response
     if request.headers.get(auth.ACTION_HEADER) == "1":  # les scripts, comme au lot BO1
-        if not auth.logged_in(request, key):
+        if not await auth.logged_in(request, key):
             raise HTTPException(401, "clé requise")
         response = Response(status_code=204, headers=ROBOTS)
     else:
         form = await read_form(request)
         if not auth.csrf_valid(key, request.cookies.get(auth.COOKIE), form.get("csrf")):
             raise HTTPException(403, f"en-tête {auth.ACTION_HEADER}: 1 ou jeton csrf requis")
+        if everywhere and not await auth.logged_in(request, key):
+            raise HTTPException(401, "clé requise")
         response = RedirectResponse("/admin/login", 303, headers=ROBOTS)
+    if everywhere:
+        n = await asyncio.to_thread(auth.sessions(request).delete_admin_sessions)
+        log.info("backoffice : toutes les sessions fermées (%d)", n)
+    else:
+        await asyncio.to_thread(auth.close_session, request, key)
     response.delete_cookie(auth.COOKIE, path="/admin")
     return response
+
+
+@router.post("/logout")
+async def logout(request: Request, key: auth.Enabled) -> Response:
+    return await _leave(request, key, everywhere=False)
+
+
+@router.post("/logout/all")
+async def logout_all(request: Request, key: auth.Enabled) -> Response:
+    """« Déconnecter toutes les sessions » : tous les navigateurs devront redonner la clé."""
+    return await _leave(request, key, everywhere=True)
 
 
 # ------------------------------------------------------------------ santé, usage

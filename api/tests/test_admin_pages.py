@@ -516,7 +516,10 @@ async def test_job_page_follows_a_running_job(site: Site):
     r = await site.get(f"/admin/jobs/{site.ids['running']}")
     assert r.status_code == 200 and "tuiles PMTiles" in r.text
     assert "étape 2/4 : niveau 15" in r.text and "30 / 120 tuiles" in r.text
-    assert 'style="width:25.0%"' in r.text and "une tuile illisible" in r.text
+    assert (
+        '<progress class="progress mb-2" aria-label="Avancement" value="25.0" max="100">' in r.text
+        and "une tuile illisible" in r.text
+    )
     assert 'hx-trigger="every 3s"' in r.text and "Annuler cette tâche" in r.text
     assert f"/admin/tools/tiles?depts=all&jobs=2&species={GIROLLE}" in r.text  # relancer
     r = await site.fragment(f"/admin/jobs/{site.ids['running']}", "job-live")
@@ -524,7 +527,7 @@ async def test_job_page_follows_a_running_job(site: Site):
 
     r = await site.get(f"/admin/jobs/{site.ids['warm']}")
     assert "2 cellules" in r.text and "hx-trigger" not in r.text and "Annuler cette" not in r.text
-    assert "Aucun événement" in r.text and 'style="width:100.0%"' in r.text
+    assert "Aucun événement" in r.text and 'value="100.0" max="100"' in r.text
     r = await site.get("/admin/jobs/inconnue")
     assert r.status_code == 404 and "Tâche inconnue" in r.text
 

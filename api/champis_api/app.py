@@ -35,8 +35,10 @@ from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import catalog, counts
+from .admin import auth as admin_auth
 from .admin import pages as admin_pages
 from .admin.router import router as admin_router
+from .admin.security import AdminSecurityHeaders
 from .apns import ApnsClient
 from .cache import WeatherCache
 from .coins import notify_all
@@ -64,6 +66,7 @@ RATE_LIMIT_EXEMPT = ("/tiles/", "/web/", "/shared/", "/species/")
 MAP_OPEN_PATH = "/tiles"
 GZIP_LEVEL = 6
 UVICORN_LOGGERS = ("uvicorn", "uvicorn.error", "uvicorn.access")  # leurs propres handlers
+ACCESS_LOGGER = "uvicorn.access"
 SEED_LOCK = ".champis-seed.lock"  # à côté du cache : import de l'amorçage, un worker à la fois
 LEADER_LOCK = ".champis-leader.lock"  # tenu par le worker meneur tant qu'il vit
 
@@ -93,6 +96,9 @@ def _configure_logging() -> None:
     jeton d'appareil dans l'adresse d'APNs. Correctif du 13 nov. 2026 : les clients HTTP et S3
     restent sous WARNING, et un filtre masque ces secrets sur tous les handlers, pour ce qui
     passerait quand même (message d'une exception, niveau rétabli pour un diagnostic).
+
+    Le journal d'accès d'uvicorn (celui du `CMD` du Dockerfile) écrivait le chemin complet, donc
+    `lat` et `lon` de chaque requête météo : un filtre en retire la query string (14 nov. 2026).
     """
     root = logging.getLogger()
     if not root.handlers:
@@ -100,6 +106,8 @@ def _configure_logging() -> None:
     logging.getLogger("champis_api").setLevel(logging.INFO)
     redact.quiet_libraries()
     redact.install(root, *(logging.getLogger(name) for name in UVICORN_LOGGERS))
+    # le journal d'accès garde méthode, chemin et code, pas la query string (positions)
+    redact.install_access_filter(logging.getLogger(ACCESS_LOGGER))
 
 
 def create_app(settings: Settings | None = None, state: State | None = None) -> FastAPI:
@@ -113,6 +121,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             catalog.configure(state.bucket)
             yield
             return
+        require_database(settings)
         settings.cache_db.parent.mkdir(parents=True, exist_ok=True)
         cache = WeatherCache(settings.cache_db, shared=True)
         bucket = Bucket(settings.s3) if settings.s3 else None
@@ -216,6 +225,9 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
     # source de configuration, les routeurs ne relisent pas l'environnement.
     app.state.settings = settings
     app.state.started_at = datetime.now(UTC)
+    problem = admin_auth.key_problem(settings.admin_key)
+    if problem:
+        log.error("backoffice : %s", problem)
     # `/weather/bbox` sur une emprise large pèse plusieurs Mo en JSON très répétitif, dix fois
     # moins une fois compressé (décision du 2 nov. 2026). Niveau 6, celui de zlib, et non le 9
     # par défaut de Starlette (13 nov. 2026) : sur la grille réelle la compression était le
@@ -250,7 +262,7 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         return getattr(getattr(app.state, "champis", None), "store", None)
 
     # appareils actifs (lot BO2) : par worker, les empreintes déjà écrites aujourd'hui
-    tracker = counts.DeviceDayTracker()
+    tracker = app.state.device_tracker = counts.DeviceDayTracker()
     # cible d'une requête météo : groupe ou espèce, parmi les espèces servies aux clients (une
     # couche « girolles » de l'app demande les girolles du catalogue, pas celles sans planche ni
     # tuiles) ; le catalogue suit le manifeste du bucket, donc relu à chaque mesure (en cache)
@@ -261,12 +273,17 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
         groups = species_groups(catalog.served_species())
         user = counts.valid_user_id(request.headers.get("x-champis-user"))
         if user and settings.measure_secret:
-            hashed = counts.device_hash(settings.measure_secret, user)
-            if tracker.first_today(day, hashed):
-                try:
+            try:
+                # l'empreinte change chaque jour ; seul le jour du déploiement, s'il a commencé
+                # avec l'ancienne, se termine avec elle (pas de mélange dans un même jour)
+                if tracker.legacy(day, lambda: store.has_legacy_device_rows(day)):
+                    hashed = counts.legacy_device_hash(settings.measure_secret, user)
+                else:
+                    hashed = counts.device_hash(settings.measure_secret, user, day)
+                if tracker.first_today(day, hashed):
                     store.mark_device_day(day, hashed)
-                except Exception:
-                    log.exception("mesure : appareil actif non enregistré")
+            except Exception:
+                log.exception("mesure : appareil actif non enregistré")
         if request.method == "GET" and status == 200 and request.url.path in counts.LAYER_PATHS:
             client = (
                 "app" if user else "web" if request.headers.get("origin") == site_origin else None
@@ -303,9 +320,26 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             await asyncio.to_thread(counts.bump_quietly, store, "http_429")
         elif response.status_code >= 500:
             await asyncio.to_thread(counts.bump_quietly, store, "http_5xx")
-        if request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS:
+        # Appareils et couches : seulement une requête servie (2xx) sur un chemin soumis au
+        # limiteur (14 nov. 2026). Un `GET /tiles/x` en 404 avec un identifiant au hasard écrivait
+        # une ligne `device_days` par requête, sans limite de débit.
+        measured = 200 <= response.status_code < 300 and not request.url.path.startswith(
+            RATE_LIMIT_EXEMPT
+        )
+        # « Supprimer mes observations et mes coins » efface aussi les empreintes de l'appareil :
+        # cette requête-là n'en réécrit pas une
+        erasure = request.method == "DELETE" and request.url.path == "/observations"
+        if (
+            measured
+            and not erasure
+            and (request.headers.get("x-champis-user") or request.url.path in counts.LAYER_PATHS)
+        ):
             await asyncio.to_thread(_measure, store, request, response.status_code)
         return response
+
+    # En-têtes de sécurité du backoffice (CSP, cadres, HSTS) : ajouté en dernier, donc à
+    # l'extérieur, pour couvrir aussi les réponses du limiteur et les 404 d'un backoffice fermé.
+    app.add_middleware(AdminSecurityHeaders)
 
     app.include_router(species.router)
     app.include_router(weather.router)
@@ -345,6 +379,20 @@ def create_app(settings: Settings | None = None, state: State | None = None) -> 
             app.mount("/web", StaticFiles(directory=settings.web_dir / "web", html=True))
 
     return app
+
+
+def require_database(settings: Settings) -> None:
+    """Sur Railway, l'API ne démarre pas sans base (14 nov. 2026) : sans `DATABASE_URL` elle
+    retombait sur un fichier SQLite dans le conteneur, effacé au déploiement suivant, et les
+    observations et les coins de l'app partaient avec lui sans un mot. Le déploiement échoue à
+    la place (Railway garde le précédent). En local, le repli SQLite reste."""
+    if settings.on_railway and not settings.database_url:
+        raise RuntimeError(
+            "DATABASE_URL absente sur Railway : l'API ne démarre pas sans base (les observations "
+            "et les coins seraient écrits dans le conteneur et perdus au prochain déploiement). "
+            "Connecter le service Postgres au service de l'API (variable DATABASE_URL, "
+            ".railway/railway.ts), ou poser CHAMPIS_DATABASE_URL."
+        )
 
 
 def next_warm(now: datetime, hours: tuple[int, ...]) -> datetime:

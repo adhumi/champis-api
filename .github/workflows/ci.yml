@@ -8,6 +8,12 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Le jeton par défaut ne fait que lire le dépôt (14 nov. 2026) ; le déploiement passe par
+# RAILWAY_TOKEN, pas par lui. Les actions sont épinglées par SHA complet, le tag en commentaire :
+# un tag se déplace, pas un commit (`git ls-remote https://github.com/<action> 'refs/tags/v*'`).
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -19,7 +25,7 @@ jobs:
       # Le référentiel adhumi/champis est le sous-module champis/ ; tant qu'il est privé, le jeton
       # par défaut ne le lit pas : CHAMPIS_REFERENTIEL_TOKEN (jeton à granularité fine, lecture du
       # contenu de adhumi/champis seulement). Une fois le dépôt public, le secret devient inutile.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -39,7 +45,7 @@ jobs:
         env:
           REFERENTIEL_TOKEN: ${{ secrets.CHAMPIS_REFERENTIEL_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
         with:
           enable-cache: true
           cache-dependency-glob: uv.lock
@@ -62,10 +68,12 @@ jobs:
 
   # Railway ne récupère pas les sous-modules (build depuis un instantané sans .git) : la CI, qui a le
   # référentiel, déploie l'API, les deux crons et le service d'exécution avec `railway up` après des tests verts sur main, ou
-  # à la main (workflow_dispatch). RAILWAY_TOKEN : jeton de projet Railway (environnement production).
+  # à la main depuis main (workflow_dispatch). RAILWAY_TOKEN : jeton de projet Railway (environnement production).
   deploy:
     needs: python
-    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    # push sur main, ou lancement à la main depuis main seulement : une autre branche ne se
+    # déploie pas en production
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     concurrency:
       group: deploy-${{ matrix.service }}
@@ -85,7 +93,7 @@ jobs:
           - service: champis-jobs
             mode: --detach
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
 
@@ -105,7 +113,7 @@ jobs:
         env:
           REFERENTIEL_TOKEN: ${{ secrets.CHAMPIS_REFERENTIEL_TOKEN }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
 
@@ -117,12 +125,16 @@ jobs:
       - name: Railway CLI
         run: |
           for i in 1 2 3 4; do
-            if npm install -g @railway/cli && railway --version; then exit 0; fi
+            if npm install -g "@railway/cli@${RAILWAY_CLI_VERSION}" && railway --version; then exit 0; fi
             npm uninstall -g @railway/cli >/dev/null 2>&1 || true
             echo "installation de la CLI Railway refusée (essai $i), nouvel essai dans $((i * 15)) s"
             sleep $((i * 15))
           done
           exit 1
+        env:
+          # version fixe (14 nov. 2026) : la CLI tient le jeton du projet, on ne prend pas la
+          # dernière parue sans l'avoir choisie ; à relever ici, à la main
+          RAILWAY_CLI_VERSION: "5.74.0"
 
       # Empreinte du déploiement, lue par le backoffice (page Santé) : sha court et date UTC
       - name: Empreinte du build

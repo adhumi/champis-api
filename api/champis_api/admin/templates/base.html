@@ -8,8 +8,11 @@
 <title>{% block title %}Backoffice{% endblock %} · Champis</title>
 <link rel="stylesheet" href="/admin/static/{{ vendor.tabler_css }}">
 <link rel="stylesheet" href="/admin/static/admin.css">
+{# la CSP du backoffice n'admet ni script ni style en ligne (`security.py`) : htmx n'injecte pas
+   sa feuille d'indicateurs et n'évalue rien #}
+<meta name="htmx-config" content='{"includeIndicatorStyles":false,"allowEval":false}'>
 {# sans JavaScript, le menu replié des petits écrans reste ouvert #}
-<noscript><style>.navbar-collapse{display:block!important}.navbar-toggler,[data-js]{display:none!important}</style></noscript>
+<noscript><link rel="stylesheet" href="/admin/static/noscript.css"></noscript>
 </head>
 <body>
 <a class="visually-hidden-focusable" href="#contenu">Aller au contenu</a>
@@ -33,6 +36,7 @@
         <form class="mt-auto p-3" method="post" action="/admin/logout">
           {{ m.csrf_field(csrf) }}
           <button class="btn btn-outline-light w-100" type="submit">Se déconnecter</button>
+          <button class="btn btn-link link-light w-100 mt-2" type="submit" formaction="/admin/logout/all" title="Ferme la session de tous les navigateurs : la clé sera redemandée partout">Déconnecter toutes les sessions</button>
         </form>
       </div>
     </div>

@@ -16,6 +16,10 @@ les CLI (`QUIET_LOGGERS`), et tout ce qui est écrit passe par `redact`, par la 
 les handlers `logging` de l'API (`install`). Le niveau seul ne suffirait pas : `-v` le rétablit, et
 le message d'une exception httpx cite aussi l'adresse.
 
+Le journal d'accès de l'API, lui, perd la query string de chaque requête (`AccessQueryFilter`,
+14 nov. 2026) : elle porte la position demandée (`lat`, `lon`, emprise), qui n'a rien à faire
+dans un journal.
+
 Bibliothèque standard seulement, aucune E/S.
 """
 
@@ -79,6 +83,44 @@ class RedactFilter(logging.Filter):
         elif record.exc_text:
             record.exc_text = redact(record.exc_text)
         return True
+
+
+class AccessQueryFilter(logging.Filter):
+    """Journal d'accès d'uvicorn sans la query string (14 nov. 2026) : `GET /weather?lat=…&lon=…`
+    écrivait la position demandée à chaque requête. Restent la méthode, le chemin et le code.
+
+    Posé sur le logger `uvicorn.access`, dont l'enregistrement porte ses cinq arguments (adresse
+    de la connexion, méthode, chemin complet, version HTTP, code) : seul le chemin est réécrit,
+    le formateur d'uvicorn retrouve ses arguments. Un enregistrement d'une autre forme perd tout
+    ce qui suit un `?` dans son message."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) == 5 and isinstance(args[2], str):
+            record.args = (*args[:2], strip_query(args[2]), *args[3:])
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:  # message mal formé : logging s'en plaindra lui-même
+            return True
+        clean = _QUERY.sub("", message)
+        if clean != message:
+            record.msg, record.args = clean, None
+        return True
+
+
+_QUERY = re.compile(r"\?[^\s\"']*")
+
+
+def strip_query(path: str) -> str:
+    """Le chemin d'une requête sans sa query string."""
+    return path.split("?", 1)[0]
+
+
+def install_access_filter(logger: logging.Logger) -> None:
+    """Pose `AccessQueryFilter` sur ce logger (une seule fois)."""
+    if not any(isinstance(f, AccessQueryFilter) for f in logger.filters):
+        logger.addFilter(AccessQueryFilter())
 
 
 def quiet_libraries(level: int = logging.WARNING) -> None:

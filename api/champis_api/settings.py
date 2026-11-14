@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,6 +12,29 @@ from champis_pipeline.species import REFERENTIAL
 from champis_pipeline.storage import S3Config
 
 load_env()  # .env à la racine du dépôt (poste de travail) ; Railway fournit les variables
+
+
+# Variable que Railway pose dans chaque déploiement (docs.railway.com/variables/reference ›
+# Railway-provided variables, lue le 14 nov. 2026) : c'est à elle qu'on reconnaît la production.
+RAILWAY_MARKER = "RAILWAY_ENVIRONMENT_NAME"
+
+
+def running_on_railway(env: Mapping[str, str] | None = None) -> bool:
+    return bool((os.environ if env is None else env).get(RAILWAY_MARKER))
+
+
+def default_database_url(env: Mapping[str, str] | None = None) -> str:
+    """`CHAMPIS_DATABASE_URL`, sinon `DATABASE_URL` (injectée par le service Postgres de Railway).
+    Sans l'une ni l'autre : une base SQLite locale sur un poste, **rien sur Railway** (14 nov.
+    2026). Le repli y écrivait les observations et les coins dans le conteneur, perdus au
+    déploiement suivant, sans que rien ne le dise : l'API refuse alors de démarrer
+    (`app.lifespan`), la pré-chauffe se passe de base, la notification et le service d'exécution
+    s'arrêtent sur leur message habituel."""
+    env = os.environ if env is None else env
+    url = env.get("CHAMPIS_DATABASE_URL") or env.get("DATABASE_URL")
+    if url is not None:
+        return url
+    return "" if running_on_railway(env) else f"sqlite:///{DATA_DIR / 'champis.db'}"
 
 
 def _hours(value: str) -> tuple[int, ...]:
@@ -77,10 +101,11 @@ class Settings:
     # ≈ 33 Mo pour les 27. 0 = pas de cache, chaque requête relit son emprise.
     field_cache_mb: int = int(os.environ.get("CHAMPIS_FIELD_CACHE_MB", "64"))
     # Observations et coins : Postgres Railway (DATABASE_URL injectée par le service Postgres) ;
-    # sans Postgres, une base SQLite locale pour le développement. Vide = endpoints en 503.
-    database_url: str = os.environ.get("CHAMPIS_DATABASE_URL") or os.environ.get(
-        "DATABASE_URL", f"sqlite:///{DATA_DIR / 'champis.db'}"
-    )
+    # sans Postgres, une base SQLite locale pour le développement, jamais sur Railway
+    # (`default_database_url`). Vide = endpoints en 503.
+    database_url: str = default_database_url()
+    # Sur Railway (production) : pas de repli SQLite, et l'API ne démarre pas sans base
+    on_railway: bool = running_on_railway()
     # Notifications « mes coins » : clé APNs (.p8, contenu PEM ou chemin), identifiants Apple
     apns_key: str = os.environ.get("CHAMPIS_APNS_KEY", "")
     apns_key_id: str = os.environ.get("CHAMPIS_APNS_KEY_ID", "")
@@ -93,12 +118,16 @@ class Settings:
     rate_read_per_minute: float = float(os.environ.get("CHAMPIS_RATE_READ", "120"))
     rate_write_per_minute: float = float(os.environ.get("CHAMPIS_RATE_WRITE", "20"))
     max_body_bytes: int = int(os.environ.get("CHAMPIS_MAX_BODY", str(256 * 1024)))
+    # Observations nouvelles acceptées par identifiant d'appareil et par jour (heure de Paris) ;
+    # au-delà `POST /observations` répond 429 avec `Retry-After`. 0 = pas de quota.
+    observations_per_day: int = int(os.environ.get("CHAMPIS_OBSERVATIONS_PER_DAY", "500"))
     # Backoffice (spec › Backoffice, 7 nov. 2026) : la clé unique qui ouvre `/admin` ; vide =
     # le backoffice n'existe pas (404). Au moins 32 caractères aléatoires, variable secrète Railway.
     admin_key: str = os.environ.get("CHAMPIS_ADMIN_KEY", "")
     # Mesure minimale, appareils actifs (spec › Backoffice › Usage, tranché le 8 nov. 2026) :
-    # secret du HMAC qui remplace l'identifiant de l'app par une empreinte par jour ; vide = on ne
-    # compte pas les appareils. Le changer remet l'historique à zéro.
+    # secret du HMAC qui remplace l'identifiant de l'app par une empreinte différente chaque jour ;
+    # vide = on ne compte pas les appareils. Les empreintes écrites avec un ancien secret ne
+    # peuvent plus être effacées à la demande (`DELETE /observations`) : elles expirent seules.
     measure_secret: str = os.environ.get("CHAMPIS_MEASURE_SECRET", "")
     # Empreinte du déploiement écrite par la CI avant `railway up` (sha et date) ; absente en
     # développement

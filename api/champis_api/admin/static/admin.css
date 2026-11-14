@@ -13,8 +13,8 @@
 
 .bars { display: grid; grid-template-columns: max-content 1fr max-content; gap: .25rem .75rem; align-items: center; }
 .bars.wide { grid-template-columns: repeat(2, max-content 1fr max-content); }
-.bars .bar { background: var(--tblr-bg-surface-secondary); border-radius: 2px; height: .5rem; min-width: 3rem; }
-.bars .bar > div { background: var(--tblr-primary); border-radius: 2px; height: 100%; }
+.bars .bar { background: var(--tblr-bg-surface-secondary); border-radius: 2px; display: block; width: 100%; height: .5rem; min-width: 3rem; }
+.bars .bar rect { fill: var(--tblr-primary); }
 .bars .pct { font-variant-numeric: tabular-nums; text-align: right; color: var(--tblr-secondary); }
 
 .params { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; margin: 0; }
@@ -49,3 +49,9 @@ abbr.ref { font-size: .75rem; padding: 0 .35rem; border: 1px solid var(--tblr-bo
    tableau défilant : sans ce repère, ils élargissent la page sur un petit écran */
 .table-responsive { position: relative; }
 .card-body.datagrid { align-content: start; }
+
+/* avancement d'une tâche : un <progress> (pas de style en ligne), rouge en échec, vert une fois finie */
+progress.progress.failed::-webkit-progress-value { background-color: var(--tblr-red); }
+progress.progress.failed::-moz-progress-bar { background-color: var(--tblr-red); }
+progress.progress.done::-webkit-progress-value { background-color: var(--tblr-green); }
+progress.progress.done::-moz-progress-bar { background-color: var(--tblr-green); }

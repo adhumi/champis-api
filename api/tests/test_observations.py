@@ -105,3 +105,59 @@ async def test_without_store_endpoints_are_503(grid, client):
     ):
         assert (await c.get("/observations", headers=H)).status_code == 503
         assert (await c.get("/health")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_daily_quota_per_identifier(grid, client, store: Store):
+    """`CHAMPIS_OBSERVATIONS_PER_DAY` : au-delà, 429 avec `Retry-After`, le lot entier est refusé
+    (l'app le garde et le renvoie), un renvoi de lignes connues passe toujours, un autre appareil
+    n'est pas touché, et le quota repart le lendemain (heure de Paris)."""
+    from datetime import timedelta
+
+    import httpx
+    from champis_api.app import State, create_app
+    from champis_api.settings import Settings
+    from conftest import NOW
+
+    clock = [NOW]
+    client.now = lambda: clock[0]
+    app = create_app(
+        settings=Settings(observations_per_day=3),
+        state=State(grid=grid, client=client, cache=client.cache, store=store),
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        first = [_obs(), _obs()]
+        r = await c.post("/observations", json={"observations": first}, headers=H)
+        assert r.status_code == 201
+        # deux de plus dépasseraient : rien n'est écrit, pas même la première
+        r = await c.post("/observations", json={"observations": [_obs(), _obs()]}, headers=H)
+        assert r.status_code == 429 and "3 observations par jour" in r.json()["detail"]
+        # NOW = 14 h 30 à Paris : minuit est dans 9 h 30
+        assert 9 * 3600 < int(r.headers["retry-after"]) <= 9.5 * 3600 + 1
+        assert (await c.get("/observations", headers=H)).json()["count"] == 2
+        # le renvoi d'un lot déjà enregistré (coupure réseau) n'est jamais refusé
+        last = _obs()
+        r = await c.post("/observations", json={"observations": [*first, last]}, headers=H)
+        assert r.status_code == 201 and r.json() == {"inserted": 1, "duplicates": 2}
+        r = await c.post("/observations", json={"observations": [*first, last]}, headers=H)
+        assert r.status_code == 201 and r.json() == {"inserted": 0, "duplicates": 3}
+        assert (await c.post("/observations", json={"observations": [_obs()]}, headers=H)).status_code == 429  # fmt: skip
+        # un autre appareil a son propre quota
+        other = {"X-Champis-User": str(uuid.uuid4())}
+        r = await c.post("/observations", json={"observations": [_obs()]}, headers=other)
+        assert r.status_code == 201
+        # le lendemain, le lot refusé passe
+        clock[0] = NOW + timedelta(hours=10)
+        r = await c.post("/observations", json={"observations": [_obs(), _obs()]}, headers=H)
+        assert r.status_code == 201 and r.json()["inserted"] == 2
+    # sans quota (0), rien n'est refusé
+    assert store.add_observations(USER, [_row() for _ in range(10)], NOW, quota=0)["inserted"] == 10
+
+
+def _row():
+    from datetime import date
+
+    return _obs() | {"date": date.fromisoformat(_obs()["date"])}

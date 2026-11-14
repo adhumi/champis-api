@@ -10,6 +10,7 @@ développement sans Postgres), le code ne porte aucun SQL spécifique à un mote
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -23,6 +24,7 @@ from sqlalchemy import (
     Float,
     Integer,
     MetaData,
+    PrimaryKeyConstraint,
     SmallInteger,
     String,
     Table,
@@ -41,7 +43,12 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.pool import StaticPool
 
+log = logging.getLogger(__name__)
 metadata = MetaData()
+# Verrou consultatif Postgres de la création des tables et de la migration des clés primaires
+# (un entier arbitraire, fixe)
+MIGRATION_LOCK = 0x43484D50  # « CHMP »
+MIGRATION_LOCK_TIMEOUT = "10s"
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -56,8 +63,10 @@ def _iso(dt: datetime | None) -> str | None:
 observations = Table(
     "observations",
     metadata,
-    Column("id", String(36), primary_key=True),  # UUID généré par l'app : idempotence
+    Column("id", String(36), nullable=False),  # UUID généré par l'app : idempotence
     Column("user_id", String(36), nullable=False, index=True),
+    # un identifiant d'observation n'est unique que pour son appareil (`_migrate_owner_keys`)
+    PrimaryKeyConstraint("user_id", "id"),
     Column("species", String(64), nullable=False),
     Column("lat", Float, nullable=False),
     Column("lon", Float, nullable=False),
@@ -81,8 +90,9 @@ devices = Table(
 coins = Table(
     "coins",
     metadata,
-    Column("id", String(36), primary_key=True),
+    Column("id", String(36), nullable=False),
     Column("user_id", String(36), nullable=False, index=True),
+    PrimaryKeyConstraint("user_id", "id"),
     Column("name", String(80), nullable=False),
     Column("lat", Float, nullable=False),
     Column("lon", Float, nullable=False),
@@ -105,12 +115,24 @@ daily_counts = Table(
 
 # Appareils actifs (spec › Backoffice › Usage, tranché le 8 nov. 2026, `counts.py`) : une ligne
 # par appareil de l'app et par jour, l'appareil réduit à une empreinte HMAC (secret serveur),
-# jamais l'identifiant lui-même ; non recoupable avec les coins ni les observations. 400 jours.
+# différente chaque jour depuis le 14 nov. 2026, jamais l'identifiant lui-même ; non recoupable
+# avec les coins ni les observations, ni d'un jour à l'autre. 400 jours.
 device_days = Table(
     "device_days",
     metadata,
     Column("day", Date, primary_key=True),
     Column("device_hash", String(32), primary_key=True),
+)
+
+# Sessions du backoffice (14 nov. 2026, `admin/auth.py`) : une ligne par session ouverte, connue de
+# tous les workers et gardée d'un déploiement à l'autre ; `id` est le SHA-256 de l'identifiant que
+# porte le cookie, jamais l'identifiant. Supprimée à la déconnexion, purgée à son expiration.
+admin_sessions = Table(
+    "admin_sessions",
+    metadata,
+    Column("id", String(64), primary_key=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
 )
 
 # Journal des tâches (spec › Backoffice, 7 nov. 2026, `jobs.py`) : une ligne par exécution d'une
@@ -199,6 +221,14 @@ class Device:
     sandbox: bool
 
 
+class QuotaExceededError(Exception):
+    """Le lot ferait dépasser le quota d'observations du jour de cet identifiant."""
+
+    def __init__(self, quota: int, used: int) -> None:
+        super().__init__(f"quota de {quota} observations par jour atteint ({used} aujourd'hui)")
+        self.quota, self.used = quota, used
+
+
 class Store:
     """Une instance par service ; les méthodes sont synchrones (FastAPI les exécute hors de la
     boucle d'événements quand les endpoints sont des `def`)."""
@@ -210,8 +240,21 @@ class Store:
             if url in ("sqlite://", "sqlite:///:memory:"):
                 kwargs["poolclass"] = StaticPool
         self.engine: Engine = create_engine(url, **kwargs)
-        metadata.create_all(self.engine)
+        self._create_tables()
         self._add_missing_columns()
+        # vrai quand observations et coins ont leur clé primaire `(user_id, id)`
+        self.owner_keys = self._migrate_owner_keys()
+
+    def _create_tables(self) -> None:
+        """`create_all`, un processus à la fois sur Postgres : les workers de l'API, le service
+        d'exécution et les crons ouvrent la base au même déploiement, et deux `CREATE TABLE` de
+        la même table nouvelle se heurtaient (« duplicate key … pg_type_typname_nsp_index »)."""
+        if self.dialect != "postgresql":
+            metadata.create_all(self.engine)
+            return
+        with self.engine.begin() as conn:
+            conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK})
+            metadata.create_all(conn)
 
     def _add_missing_columns(self) -> None:
         """`create_all` ne touche pas une table qui existe : une colonne ajoutée au schéma (comme
@@ -235,22 +278,105 @@ class Store:
                     if col.name not in now:
                         raise
 
+    def _migrate_owner_keys(self) -> bool:
+        """Clé primaire `(user_id, id)` pour `observations` et `coins` (14 nov. 2026).
+
+        Jusque-là la clé était `id` seul : un appareil qui envoyait l'identifiant d'un autre
+        l'empêchait de l'enregistrer (et recevait un 500 pour ses coins). `create_all` ne touche
+        pas une table qui existe : celles d'avant sont migrées ici, une fois.
+
+        - Postgres : `ALTER TABLE … DROP CONSTRAINT <clé>, ADD PRIMARY KEY (user_id, id)`, une
+          seule instruction dans une transaction. L'ancienne clé garantit déjà l'unicité de `id`,
+          donc celle de `(user_id, id)` : la nouvelle ne peut pas être refusée par les données.
+          API, worker et crons ouvrent la base en même temps : un verrou consultatif de transaction
+          les met en file, et l'état est relu sous le verrou. `lock_timeout` borne l'attente du
+          verrou de table.
+        - SQLite (tests, développement) ne sait pas changer une clé primaire : la table est
+          recréée et recopiée dans une transaction (`BEGIN IMMEDIATE`, relu sous le verrou).
+
+        Idempotente. Un échec est journalisé et n'empêche pas le service : le code fonctionne
+        avec l'ancienne clé (comportement d'avant), la migration est retentée au prochain
+        démarrage et `champis-api doctor` le signale."""
+        done = True
+        for table in (observations, coins):
+            try:
+                if self._owner_key(self.engine, table):
+                    continue
+                with self.engine.begin() as conn:
+                    if self.dialect == "postgresql":
+                        self._migrate_postgres(conn, table)
+                    else:
+                        self._migrate_sqlite(conn, table)
+            except Exception:
+                done = False
+                log.exception(
+                    "base : clé primaire (user_id, id) de %s non posée ; l'ancienne clé reste en "
+                    "service, nouvel essai au prochain démarrage",
+                    table.name,
+                )
+        return done
+
+    @staticmethod
+    def _owner_key(bind, table: Table) -> bool:
+        columns = inspect(bind).get_pk_constraint(table.name).get("constrained_columns") or []
+        return set(columns) == {"user_id", "id"}
+
+    def _migrate_postgres(self, conn: Connection, table: Table) -> None:
+        conn.execute(text("SELECT pg_advisory_xact_lock(:k)"), {"k": MIGRATION_LOCK})
+        if self._owner_key(conn, table):  # un autre processus vient de le faire
+            return
+        name = inspect(conn).get_pk_constraint(table.name).get("name")
+        conn.execute(text(f"SET LOCAL lock_timeout = '{MIGRATION_LOCK_TIMEOUT}'"))
+        drop = f'DROP CONSTRAINT "{name}", ' if name else ""
+        conn.execute(text(f'ALTER TABLE "{table.name}" {drop}ADD PRIMARY KEY (user_id, id)'))
+        log.info("base : clé primaire (user_id, id) posée sur %s", table.name)
+
+    def _migrate_sqlite(self, conn: Connection, table: Table) -> None:
+        # pysqlite n'ouvre pas de transaction avant un DDL : on la demande, avec le verrou
+        # d'écriture ; `engine.begin()` la valide ou l'annule en sortie
+        conn.exec_driver_sql("BEGIN IMMEDIATE")
+        if self._owner_key(conn, table):
+            return
+        old = f"{table.name}_avant_cle"
+        names = ", ".join(f'"{c.name}"' for c in table.columns)
+        for index in inspect(conn).get_indexes(table.name):  # ils suivraient l'ancienne table
+            conn.exec_driver_sql(f'DROP INDEX "{index["name"]}"')
+        conn.exec_driver_sql(f'ALTER TABLE "{table.name}" RENAME TO "{old}"')
+        table.create(conn)
+        n = conn.exec_driver_sql(
+            f'INSERT INTO "{table.name}" ({names}) SELECT {names} FROM "{old}"'
+        ).rowcount
+        conn.exec_driver_sql(f'DROP TABLE "{old}"')
+        log.info("base : clé primaire (user_id, id) posée sur %s (%d lignes)", table.name, n)
+
     @property
     def dialect(self) -> str:
         return self.engine.dialect.name
 
     # ------------------------------------------------------------------ observations
 
-    def add_observations(self, user_id: str, rows: list[dict[str, Any]], now: datetime) -> dict:
-        """Insère les observations absentes (par `id`) ; les déjà connues sont ignorées, pas
-        écrasées : un renvoi après coupure réseau est sans effet."""
+    def add_observations(
+        self, user_id: str, rows: list[dict[str, Any]], now: datetime, quota: int = 0
+    ) -> dict:
+        """Insère les observations absentes (par `id`, pour cet appareil) ; les déjà connues sont
+        ignorées, pas écrasées : un renvoi après coupure réseau est sans effet. Un `id` répété
+        dans le lot ne compte qu'une fois (le premier), les suivants sont des doublons.
+
+        `quota` (0 = aucun) : nombre d'observations nouvelles qu'un identifiant peut enregistrer
+        par jour civil (heure de Paris). Un lot qui le ferait dépasser est refusé en entier
+        (`QuotaExceededError`), rien n'est écrit : l'app le garde et le renvoie tel quel le
+        lendemain. Un renvoi de lignes déjà connues n'est jamais refusé."""
         if not rows:
             return {"inserted": 0, "duplicates": 0}
-        ids = [r["id"] for r in rows]
+        unique = {r["id"]: r for r in reversed(rows)}  # le premier de chaque `id` l'emporte
         with self.engine.begin() as conn:
             known = {
                 r[0]
-                for r in conn.execute(select(observations.c.id).where(observations.c.id.in_(ids)))
+                for r in conn.execute(
+                    select(observations.c.id).where(
+                        observations.c.user_id == user_id, observations.c.id.in_(list(unique))
+                    )
+                )
             }
             fresh = [
                 {
@@ -266,19 +392,30 @@ class Store:
                     "shared": False,
                     "created_at": now.astimezone(UTC),
                 }
-                for r in rows
+                for r in reversed(unique.values())
                 if r["id"] not in known
             ]
             if fresh:
-                conn.execute(insert(observations), fresh)
-                # mesure minimale : observations reçues ce jour-là, en nombre seulement
-                from .counts import today
+                from .counts import day_start, today
 
                 day = today(now)
+                if quota > 0:
+                    used = conn.execute(
+                        select(func.count())
+                        .select_from(observations)
+                        .where(
+                            observations.c.user_id == user_id,
+                            observations.c.created_at >= day_start(day).astimezone(UTC),
+                        )
+                    ).scalar_one()
+                    if used + len(fresh) > quota:
+                        raise QuotaExceededError(quota, int(used))
+                conn.execute(insert(observations), fresh)
+                # mesure minimale : observations reçues ce jour-là, en nombre seulement
                 found = sum(1 for r in fresh if r["found"])
                 self._bump(conn, day, "observations_found", found)
                 self._bump(conn, day, "observations_not_found", len(fresh) - found)
-        return {"inserted": len(fresh), "duplicates": len(known)}
+        return {"inserted": len(fresh), "duplicates": len(rows) - len(fresh)}
 
     def observations_of(self, user_id: str) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
@@ -301,12 +438,18 @@ class Store:
                 for r in res
             ]
 
-    def delete_observations(self, user_id: str) -> int:
-        """Droit à l'effacement : toutes les lignes de l'identifiant, observations, coins et jeton."""
+    def delete_observations(self, user_id: str, device_prints: list[str] | None = None) -> int:
+        """Droit à l'effacement : toutes les lignes de l'identifiant, observations, coins et jeton,
+        et les empreintes de l'appareil dans `device_days` (`counts.device_prints` : celle de
+        chaque jour conservé et l'ancienne, que seul l'appelant sait recalculer)."""
         with self.engine.begin() as conn:
             n = conn.execute(delete(observations).where(observations.c.user_id == user_id)).rowcount
             conn.execute(delete(coins).where(coins.c.user_id == user_id))
             conn.execute(delete(devices).where(devices.c.user_id == user_id))
+            if device_prints:
+                conn.execute(
+                    delete(device_days).where(device_days.c.device_hash.in_(device_prints))
+                )
         return n
 
     # ------------------------------------------------------------------ coins et appareils
@@ -319,8 +462,10 @@ class Store:
         sandbox: bool,
         now: datetime,
     ) -> int:
-        """Remplace la liste complète des coins de l'appareil (pas de fusion) et son jeton APNs."""
+        """Remplace la liste complète des coins de l'appareil (pas de fusion) et son jeton APNs.
+        Un `id` répété dans la liste ne donne qu'un coin : le dernier."""
         ts = now.astimezone(UTC)
+        rows = list({r["id"]: r for r in rows}.values())
         with self.engine.begin() as conn:
             conn.execute(delete(coins).where(coins.c.user_id == user_id))
             if rows:
@@ -444,6 +589,7 @@ class Store:
                     jobs,
                     job_events,
                     workers,
+                    admin_sessions,
                 )
             }
 
@@ -460,17 +606,30 @@ class Store:
                 return False
         return True
 
-    def active_devices(self, end: date, days: int) -> int:
-        """Appareils distincts vus sur les `days` jours qui se terminent à `end` inclus."""
-        since = end - timedelta(days=days - 1)
+    def active_devices(self, day: date) -> int:
+        """Appareils vus ce jour-là. L'empreinte change chaque jour (`counts.device_hash`) : il
+        n'y a pas de compte d'appareils distincts sur plusieurs jours."""
         with self.engine.connect() as conn:
             return int(
                 conn.execute(
-                    select(func.count(func.distinct(device_days.c.device_hash))).where(
-                        device_days.c.day >= since, device_days.c.day <= end
-                    )
+                    select(func.count()).select_from(device_days).where(device_days.c.day == day)
                 ).scalar_one()
             )
+
+    def has_legacy_device_rows(self, day: date) -> bool:
+        """Ce jour a-t-il des lignes à l'ancienne empreinte (la même tous les jours) ?"""
+        from .counts import DAILY_PREFIX
+
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(device_days.c.device_hash)
+                .where(
+                    device_days.c.day == day,
+                    device_days.c.device_hash.not_like(f"{DAILY_PREFIX}%"),
+                )
+                .limit(1)
+            ).first()
+        return row is not None
 
     def daily_active_devices(self, since: date) -> dict[date, int]:
         """Appareils distincts par jour depuis `since`."""
@@ -485,6 +644,38 @@ class Store:
     def purge_device_days(self, before: date) -> int:
         with self.engine.begin() as conn:
             return conn.execute(delete(device_days).where(device_days.c.day < before)).rowcount
+
+    # ------------------------------------------------------------------ sessions du backoffice
+
+    def create_admin_session(self, digest: str, now: datetime, expires: datetime) -> None:
+        """Ouvre une session (`digest` : SHA-256 de son identifiant) ; les expirées partent."""
+        ts = now.astimezone(UTC)
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.expires_at <= ts))
+            conn.execute(
+                insert(admin_sessions).values(
+                    id=digest, created_at=ts, expires_at=expires.astimezone(UTC)
+                )
+            )
+
+    def admin_session_valid(self, digest: str, now: datetime) -> bool:
+        with self.engine.connect() as conn:
+            row = conn.execute(
+                select(admin_sessions.c.id).where(
+                    admin_sessions.c.id == digest,
+                    admin_sessions.c.expires_at > now.astimezone(UTC),
+                )
+            ).first()
+        return row is not None
+
+    def delete_admin_session(self, digest: str) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(delete(admin_sessions).where(admin_sessions.c.id == digest))
+
+    def delete_admin_sessions(self) -> int:
+        """« Déconnecter toutes les sessions » : le nombre de sessions fermées."""
+        with self.engine.begin() as conn:
+            return conn.execute(delete(admin_sessions)).rowcount
 
     # ------------------------------------------------------------------ journal des tâches
 

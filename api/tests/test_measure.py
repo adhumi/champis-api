@@ -21,12 +21,20 @@ KEY = "une-cle-de-test-suffisamment-longue-0123456789"
 SECRET = "un-secret-de-mesure"
 
 
-def test_device_hash_is_stable_short_and_keyed():
-    h = counts.device_hash(SECRET, USER)
-    assert len(h) == 32 and h == counts.device_hash(SECRET, USER.upper())  # même identifiant
-    assert h != counts.device_hash(SECRET, OTHER)
-    assert h != counts.device_hash("autre secret", USER)  # changer le secret remet à zéro
+def test_device_hash_is_keyed_short_and_changes_every_day():
+    h = counts.device_hash(SECRET, USER, D)
+    assert len(h) == 32 and h == counts.device_hash(SECRET, USER.upper(), D)  # même identifiant
+    assert h != counts.device_hash(SECRET, OTHER, D)
+    assert h != counts.device_hash("autre secret", USER, D)
     assert USER not in h
+    # salée par le jour : le même appareil n'a pas la même empreinte le lendemain
+    assert h != counts.device_hash(SECRET, USER, D + timedelta(days=1))
+    # l'ancienne empreinte, la même tous les jours, se reconnaît : 32 chiffres hexadécimaux
+    old = counts.legacy_device_hash(SECRET, USER)
+    assert len(old) == 32 and int(old, 16) >= 0 and h.startswith("j") and h != old
+    prints = counts.device_prints(SECRET, USER, D)
+    assert prints[0] == old and prints[1] == h and len(set(prints)) == 402  # 13 mois + l'ancienne
+    assert counts.device_hash(SECRET, USER, D - timedelta(days=400)) in prints
     assert counts.valid_user_id(USER) == USER and counts.valid_user_id("x") is None
     assert counts.valid_user_id(None) is None
 
@@ -36,6 +44,13 @@ def test_tracker_writes_each_device_once_a_day():
     assert t.first_today(D, "a") and not t.first_today(D, "a") and t.first_today(D, "b")
     assert t.first_today(D + timedelta(days=1), "a")  # nouveau jour : on recompte
     assert not t.first_today(D + timedelta(days=1), "a")
+
+
+def test_tracker_is_bounded():
+    t = counts.DeviceDayTracker(max_entries=2)
+    assert t.first_today(D, "a") and t.first_today(D, "b") and t.first_today(D, "c")
+    assert list(t.seen) == ["b", "c"]  # la plus ancienne est partie
+    assert t.first_today(D, "a") and not t.first_today(D, "c")
 
 
 def test_layer_targets_group_species_or_all():
@@ -64,22 +79,38 @@ def test_layer_shares_sum_over_a_window():
     assert counts.layer_shares(data, D, 30)["app"]["cepes"] == 103
 
 
-def test_store_counts_distinct_devices_per_window():
+def test_store_counts_devices_per_day_only():
     store = Store("sqlite://")
-    assert store.mark_device_day(D, "a") and not store.mark_device_day(D, "a")
-    store.mark_device_day(D, "b")
-    store.mark_device_day(D - timedelta(days=3), "a")
-    store.mark_device_day(D - timedelta(days=20), "c")
-    store.mark_device_day(D - timedelta(days=500), "z")
-    assert store.active_devices(D, 1) == 2
-    assert store.active_devices(D, 7) == 2
-    assert store.active_devices(D, 30) == 3
-    assert store.active_devices(D - timedelta(days=1), 1) == 0
+    assert store.mark_device_day(D, "ja") and not store.mark_device_day(D, "ja")
+    store.mark_device_day(D, "jb")
+    store.mark_device_day(D - timedelta(days=3), "jc")
+    store.mark_device_day(D - timedelta(days=20), "0f")  # ancienne empreinte
+    store.mark_device_day(D - timedelta(days=500), "0f")
+    assert store.active_devices(D) == 2
+    assert store.active_devices(D - timedelta(days=3)) == 1
+    assert store.active_devices(D - timedelta(days=1)) == 0
     assert store.daily_active_devices(D - timedelta(days=3)) == {D - timedelta(days=3): 1, D: 2}
+    assert not store.has_legacy_device_rows(D)
+    assert store.has_legacy_device_rows(D - timedelta(days=20))
     assert store.table_counts()["device_days"] == 5
     assert store.purge_device_days(D - timedelta(days=400)) == 1
-    assert store.active_devices(D, 400) == 3
+    assert store.table_counts()["device_days"] == 4
     store.close()
+
+
+def test_tracker_asks_once_a_day_whether_the_day_is_legacy():
+    t = counts.DeviceDayTracker()
+    asked = []
+
+    def probe(answer):
+        return lambda: asked.append(answer) or answer
+
+    assert t.legacy(D, probe(True)) and t.legacy(D, probe(False))  # une seule lecture par jour
+    assert not t.legacy(D + timedelta(days=1), probe(False))
+    assert asked == [True, False]
+    t.first_today(D, "ja")
+    t.forget(["ja", "absente"])
+    assert t.first_today(D, "ja")
 
 
 def test_morning_notification_records_yesterdays_actives_and_purges():
@@ -90,7 +121,7 @@ def test_morning_notification_records_yesterdays_actives_and_purges():
     store.mark_device_day(D - timedelta(days=500), "z")
     counts.record_notify(store, sent=1, failed=0, day=D)
     assert store.counts_since(yesterday)[yesterday] == {"active_devices": 2}
-    assert store.active_devices(D, 400) == 2  # la vieille ligne est partie
+    assert store.table_counts()["device_days"] == 2  # la vieille ligne est partie
     assert "2 appareils actifs" in counts.summary(store.counts_since(yesterday), yesterday)
     store.close()
 
@@ -132,8 +163,9 @@ async def test_requests_mark_devices_and_layers_without_keeping_identifiers(grid
         assert (await c.get(f"/weather/bbox?{bbox}&{q}")).status_code == 200
         # un identifiant mal formé : ignoré, la requête passe
         assert (await c.get("/species", headers={"X-Champis-User": "nope"})).status_code == 200
-    assert store.active_devices(D, 1) == 2
+    assert store.active_devices(D) == 2
     assert store.table_counts()["device_days"] == 2
+    assert not store.has_legacy_device_rows(D)  # empreintes du jour, pas l'ancienne
     today = store.counts_since(D)[D]
     assert today["layer_app:cepes"] == 2 and today["layer_app:boletus_edulis"] == 1
     assert today["layer_web:cepes"] >= 1
@@ -186,8 +218,96 @@ async def test_usage_page_exposes_devices_and_layer_shares(grid, client, store):
         u = r.json()
     d = u["devices"]
     assert d["enabled"] and d["today"] == 3 and d["yesterday"] == 1
-    assert d["week"] == 3 and d["month"] == 4 and d["unique"] == 4 and d["with_coins"] == 1
+    # l'empreinte change chaque jour : plus de compte sur 7 jours, 30 jours ou 13 mois
+    assert d["with_coins"] == 1 and not {"week", "month", "unique"} & set(d)
     assert d["daily"][D.isoformat()] == 3 and d["daily"][yesterday.isoformat()] == 1
     assert u["layers"]["7d"] == {"app": {"cepes": 6, "girolles": 2}}
     assert u["layers"]["30d"]["web"] == {"cepes": 5}
     assert "layer_app:cepes" in u["counters"]  # brut, la page les regroupe
+
+
+@pytest.mark.asyncio
+async def test_only_served_requests_on_limited_paths_are_measured(grid, client, store):
+    """Une réponse en erreur ou un chemin hors limiteur (relais de tuiles) n'écrit rien : un
+    identifiant au hasard par requête ne remplit plus `device_days`."""
+    app = _app(grid, client, store)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        h = {"X-Champis-User": USER}
+        assert (await c.get("/tiles/T-x.pmtiles", headers=h)).status_code == 404  # hors limiteur
+        assert (await c.get("/nulle-part", headers=h)).status_code == 404
+        assert (await c.get("/weather?cell=inconnue", headers=h)).status_code == 404
+        r = await c.post("/observations", json={"observations": []}, headers=h)
+        assert r.status_code == 422
+        assert store.table_counts()["device_days"] == 0
+        assert store.counts_since(D) == {}
+        assert (await c.get("/species", headers=h)).status_code == 200
+    assert store.table_counts()["device_days"] == 1
+
+
+async def _client(app):
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.asyncio
+async def test_deploy_day_keeps_the_legacy_hash_and_the_next_day_switches(
+    grid, client, store, monkeypatch
+):
+    """Les lignes d'avant gardent l'ancienne empreinte et expirent seules ; un jour ne mélange pas
+    les deux : le jour du déploiement finit à l'ancienne, le lendemain passe à la nouvelle."""
+    old = counts.legacy_device_hash(SECRET, USER)
+    store.mark_device_day(D - timedelta(days=1), old)
+    store.mark_device_day(D, old)  # vu ce matin, avant le déploiement
+    app = _app(grid, client, store)
+    async with app.router.lifespan_context(app), await _client(app) as c:
+        assert (await c.get("/species", headers={"X-Champis-User": USER})).status_code == 200
+        assert (await c.get("/species", headers={"X-Champis-User": OTHER})).status_code == 200
+        assert store.active_devices(D) == 2  # le même appareil n'est pas compté deux fois
+        tomorrow = D + timedelta(days=1)
+        monkeypatch.setattr(counts, "today", lambda now=None: tomorrow)
+        assert (await c.get("/species", headers={"X-Champis-User": USER})).status_code == 200
+    assert store.active_devices(tomorrow) == 1
+    assert not store.has_legacy_device_rows(tomorrow)
+    assert store.has_legacy_device_rows(D) and store.active_devices(D - timedelta(days=1)) == 1
+
+
+@pytest.mark.asyncio
+async def test_erasure_also_removes_the_device_prints(grid, client, store):
+    """`DELETE /observations` : les empreintes de l'appareil partent aussi, celle de chaque jour
+    conservé et l'ancienne ; celles des autres restent, et l'effacement n'en réécrit pas une."""
+    from conftest import NOW
+
+    today = counts.today(NOW)  # l'horloge de l'app de test
+    mine = [
+        (today, counts.device_hash(SECRET, USER, today)),
+        (today - timedelta(days=7), counts.device_hash(SECRET, USER, today - timedelta(days=7))),
+        (
+            today - timedelta(days=399),
+            counts.device_hash(SECRET, USER, today - timedelta(days=399)),
+        ),
+        (today - timedelta(days=30), counts.legacy_device_hash(SECRET, USER)),
+        (today - timedelta(days=31), counts.legacy_device_hash(SECRET, USER)),
+    ]
+    theirs = [
+        (today, counts.device_hash(SECRET, OTHER, today)),
+        (today - timedelta(days=30), counts.legacy_device_hash(SECRET, OTHER)),
+    ]
+    for day, h in mine + theirs:
+        store.mark_device_day(day, h)
+    app = _app(grid, client, store)
+    async with app.router.lifespan_context(app), await _client(app) as c:
+        r = await c.delete("/observations", headers={"X-Champis-User": USER})
+        assert r.status_code == 200 and r.json() == {"deleted": 0}
+    assert store.table_counts()["device_days"] == len(theirs)
+    assert (
+        store.active_devices(today) == 1 and store.active_devices(today - timedelta(days=30)) == 1
+    )
+    # sans secret, il n'y a pas d'empreinte à effacer ni à recalculer
+    app = _app(grid, client, store, secret="")
+    async with app.router.lifespan_context(app), await _client(app) as c:
+        assert (
+            await c.delete("/observations", headers={"X-Champis-User": USER})
+        ).status_code == 200
+    assert store.table_counts()["device_days"] == len(theirs)

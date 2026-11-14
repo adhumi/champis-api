@@ -67,9 +67,12 @@
 <span class="trapwrap"><svg class="trap" viewBox="0 0 {{ t.w }} {{ t.h }}" aria-hidden="true"><line class="axis" x1="{{ t.x1 }}" y1="{{ t.bottom }}" x2="{{ t.x2 }}" y2="{{ t.bottom }}"/><polygon points="{{ t.points }}"/></svg> <span class="text-secondary">{{ t.label }}</span></span>
 {% endmacro %}
 
+{# une barre remplie à `pct` % : un SVG, pas un `style="width:…"` (la CSP refuse les styles en ligne) #}
+{% macro bar(pct) %}<svg class="bar" viewBox="0 0 100 1" preserveAspectRatio="none" aria-hidden="true"><rect width="{{ pct }}" height="1"/></svg>{% endmacro %}
+
 {% macro bars(rows, wide=false) %}
 <div class="bars{{ ' wide' if wide or rows | length > 12 }}">
-{% for r in rows %}<span>{{ r.key }}</span><div class="bar"><div style="width:{{ r.pct }}%"></div></div><span class="pct">{{ r.value | num }}</span>{% endfor %}
+{% for r in rows %}<span>{{ r.key }}</span>{{ bar(r.pct) }}<span class="pct">{{ r.value | num }}</span>{% endfor %}
 </div>
 {% endmacro %}
 

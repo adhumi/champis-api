@@ -13,11 +13,11 @@
 <div class="card mb-3">
   <div class="card-body">
     <div class="row g-3 mb-3">
-      {% for value, label in ((d.today, "aujourd'hui"), (d.yesterday, "hier"), (d.week, "7 jours"), (d.month, "30 jours"), (d.unique, "13 mois"), (d.with_coins, "avec coins")) %}
+      {% for value, label in ((d.today, "aujourd'hui"), (d.yesterday, "hier"), (d.with_coins, "avec coins")) %}
       <div class="col-4 col-md-2"><div class="h1 m-0">{{ value | n }}</div><div class="text-secondary">{{ label }}</div></div>
       {% endfor %}
     </div>
-    <p class="text-secondary">Appareils distincts par jour sur {{ days }} jours ; un appareil hors ligne ne compte pas.</p>
+    <p class="text-secondary">Appareils distincts par jour sur {{ days }} jours ; un appareil hors ligne ne compte pas. L'empreinte d'un appareil change chaque jour : il n'y a pas de compte sur plusieurs jours.</p>
     {{ m.spark(devices_spark) }}
   </div>
 </div>
@@ -30,7 +30,7 @@
     <div class="card-body">
       {% if l.total %}
       <p class="text-secondary">{{ l.total | n }} requêtes météo</p>
-      <div class="bars">{% for r in l.rows %}<span>{{ r.key }}</span><div class="bar"><div style="width:{{ r.pct }}%"></div></div><span class="pct">{{ r.pct }} % · {{ r.n | n }}</span>{% endfor %}</div>
+      <div class="bars">{% for r in l.rows %}<span>{{ r.key }}</span>{{ m.bar(r.pct) }}<span class="pct">{{ r.pct }} % · {{ r.n | n }}</span>{% endfor %}</div>
       {% else %}<p class="text-secondary m-0">Rien de relevé.</p>{% endif %}
     </div>
   </div></div>

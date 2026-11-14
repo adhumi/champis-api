@@ -42,16 +42,65 @@ async def admin(grid, client, store):
 # ------------------------------------------------------------------ accès
 
 
-def test_tokens_and_keys():
-    t = auth.make_token(KEY, now=1000.0, ttl_s=60)
-    assert auth.token_valid(KEY, t, now=1059.0)
-    assert not auth.token_valid(KEY, t, now=1061.0)  # expiré
-    assert not auth.token_valid("autre-cle-tout-aussi-longue-0123456789", t, now=1000.0)
-    assert not auth.token_valid(KEY, "n-importe-quoi", now=1000.0)
-    assert not auth.token_valid(KEY, None)
+def test_session_cookies_and_keys():
+    sid = auth.new_session_id()
+    cookie = auth.session_cookie(KEY, sid)
+    assert auth.session_id_of(KEY, cookie) == sid and sid != auth.new_session_id()
+    assert auth.session_id_of("autre-cle-tout-aussi-longue-0123456789", cookie) is None
+    assert auth.session_id_of(KEY, cookie + "0") is None  # signature retouchée
+    assert auth.session_id_of(KEY, "n-importe-quoi") is None
+    assert auth.session_id_of(KEY, None) is None and auth.session_id_of("", cookie) is None
+    # l'ancien cookie `<expiration>.<signature>` n'est plus une session
+    assert auth.session_id_of(KEY, "1999999999.0123456789abcdef0123456789abcdef01234567") is None
+    # le serveur ne garde que le condensé de l'identifiant
+    assert len(auth.session_digest(sid)) == 64 and sid not in auth.session_digest(sid)
+    now = datetime(2026, 11, 14, tzinfo=UTC)
+    memory = auth.MemorySessions()
+    memory.create_admin_session("a", now, now + timedelta(seconds=60))
+    assert memory.admin_session_valid("a", now + timedelta(seconds=59))
+    assert not memory.admin_session_valid("a", now + timedelta(seconds=61))  # expirée
+    memory.create_admin_session("b", now + timedelta(seconds=90), now + timedelta(seconds=120))
+    assert list(memory.sessions) == ["b"]  # les expirées partent à l'ouverture d'une autre
+    memory.delete_admin_session("absente")
+    assert memory.delete_admin_sessions() == 1 and not memory.sessions
     assert auth.key_matches(KEY, KEY) and not auth.key_matches(KEY, KEY + "x")
     assert not auth.key_matches("courte", "courte")  # une clé trop courte n'ouvre rien
     assert not auth.key_matches("", "")
+
+
+def test_key_must_be_at_least_32_characters():
+    """`MIN_KEY_LENGTH` = 32, comme la doc et `.env.example` le disent ; plus courte, la clé
+    n'ouvre rien et `key_problem` dit pourquoi (démarrage de l'API, `doctor`)."""
+    assert auth.MIN_KEY_LENGTH == 32
+    short, exact = "k" * 31, "k" * 32
+    assert not auth.key_matches(short, short) and auth.key_matches(exact, exact)
+    assert auth.key_problem("") is None and auth.key_problem(exact) is None
+    problem = auth.key_problem(short)
+    assert "31 caractères" in problem and "au moins 32" in problem and "404" in problem
+
+
+@pytest.mark.asyncio
+async def test_a_short_key_keeps_the_backoffice_closed_and_says_so(grid, client, store, caplog):
+    short = "k" * 31
+    with caplog.at_level("ERROR", logger="champis_api.app"):
+        app = create_app(
+            settings=Settings(admin_key=short, s3=None, apns_key="", database_url="sqlite://"),
+            state=State(grid=grid, client=client, cache=client.cache, store=store),
+        )
+    assert "CHAMPIS_ADMIN_KEY fait 31 caractères" in caplog.text
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as c,
+    ):
+        assert (await c.get("/admin/login")).status_code == 404
+        r = await c.get("/admin/api/me", headers={"Authorization": f"Bearer {short}"})
+        assert r.status_code == 404
+    from champis_api import doctor
+
+    check = doctor._admin(Settings(admin_key=short))
+    assert check.status == doctor.MISSING and "31 caractères" in check.detail
+    assert doctor._admin(Settings(admin_key="")).status == doctor.INFO
+    assert doctor._admin(Settings(admin_key=KEY)).status == doctor.OK
 
 
 @pytest.mark.asyncio

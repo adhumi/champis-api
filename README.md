@@ -11,7 +11,7 @@ Ce dépôt est `adhumi/champis-api` depuis le découpage des dépôts (spec › 
 
 Premier clone : `git clone --recurse-submodules` (ou `git submodule update --init` après coup). `make referential` amène le sous-module à la dernière version du référentiel ; le commit qui le déplace se fait ici.
 
-Où et quand cueillir des champignons en France, à l'échelle de la parcelle forestière. Outil personnel, gratuit, construit sur de l'open data (IGN BD Forêt V2, Copernicus DEM, SoilGrids, Open-Meteo) et sur la littérature mycologique.
+Où et quand cueillir des champignons en France, à l'échelle de la parcelle forestière. Outil personnel, gratuit, construit sur de l'open data (IGN BD Forêt V2 et BD TOPO V3, Copernicus DEM, SoilGrids, Open-Meteo) et sur la littérature mycologique.
 
 Score d'un pixel de 25 m pour une espèce et un jour : `S = T × M × Φ` — potentiel terrain (statique, ce dépôt le calcule), indice météo (dynamique, API), fenêtre phénologique. Le modèle complet est dans `champis/species/SCHEMA.md` (référentiel).
 
@@ -21,7 +21,7 @@ Prérequis : Python 3.12+, [uv](https://docs.astral.sh/uv/), ~5 Go de disque pou
 
 ```bash
 make setup                         # uv sync --group dev, .env depuis .env.example
-make test                          # ~210 tests, dont une chaîne complète sur un département synthétique
+make test                          # ~500 tests, dont une chaîne complète sur un département synthétique
 make dept DEPT=25                  # = uv run champis-pipeline all --dept 25
 ```
 
@@ -80,7 +80,8 @@ all --dept 25 · 7 espèce(s)
 | `api/tests/test_weather_api.py`, `test_departements.py`, `test_observations.py`, `test_coins.py`, `test_ratelimit.py` | Contrats des endpoints, cache 12 h, pannes et quotas Open-Meteo, amorçage, indice par département, retour terrain, coins et notifications, limitation de débit |
 | `api/tests/test_app_lifespan.py`, `test_api_cli.py`, `test_doctor.py` | Démarrage réel de l'API en mode dégradé, planificateurs, commandes `champis-api` de bout en bout |
 | `api/tests/test_admin_pages.py` | Pages du backoffice (lot BO6) : une adresse par écran, connexion et retour à la page demandée, jeton `csrf`, POST puis redirection, tri, filtres et page dans la query string, fragments htmx, erreurs par champ, confirmations, états vides, sans base ni bucket |
-| `api/tests/test_admin.py`, `test_jobs.py` | Backoffice `/admin` : fermé sans clé, cookie signé, Bearer, origine et essais limités, pages Santé, Usage et Tâches ; journal des tâches, puits de la console, inscription des commandes, compteurs 429 et 5xx |
+| `api/tests/test_admin_security.py`, `test_store_migration.py` | Correctifs du 14 nov. 2026 : session révocable du backoffice, `Bearer` refusés comptés, en-têtes de sécurité et gabarits sans script ni style en ligne ; clé primaire `(user_id, id)` et migration d'une base à l'ancien schéma (SQLite, et Postgres avec `CHAMPIS_TEST_POSTGRES_URL`) |
+| `api/tests/test_admin.py`, `test_jobs.py` | Backoffice `/admin` : fermé sans clé, session, Bearer, origine et essais limités, pages Santé, Usage et Tâches ; journal des tâches, puits de la console, inscription des commandes, compteurs 429 et 5xx |
 | `api/tests/test_species.py` | Onglet Espèces : état par espèce depuis le fichier, le manifeste et l'inventaire du worker, tâches qui la concernent, inventaire du volume, champ espèces des outils, `CHAMPIS_DATA_DIR` |
 | `api/tests/test_measure.py`, `test_worker.py`, `test_render.py`, `pipeline/tests/test_artifacts.py` | Appareils actifs par empreinte et parts d'espèces ; catalogue d'outils, service d'exécution (file, battement, annulation, sortes exclusives, garde du disque), passerelle `champis-api pipeline`, routes de lancement et sorties à committer ; carte HD rendue depuis des PMTiles synthétiques lus par plages ; `batch --clean-raw`, dépôt de `weather_grid.json` dans le bucket |
 
@@ -94,7 +95,7 @@ uv run uvicorn champis_api.app:app --reload     # /species, /weather, /weather/b
 
 ## Déploiement
 
-Railway, quatre services construits par le même `Dockerfile` (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python) :
+Railway, quatre services construits par le même `Dockerfile` (plus le site, `champis-web`, dans le même projet) (décision du 4 nov. 2026, spec › Points ouverts › Tuiles hors du processus Python) :
 
 | Service (`.railway/railway.ts`) | Commande | Rôle |
 | --- | --- | --- |
@@ -111,4 +112,14 @@ Le bucket Railway porte les PMTiles (`champis-pipeline publish`, `GET /tiles`), 
 
 ## Licences des données
 
-BD Forêt V2 © IGN, Licence Ouverte 2.0 · Copernicus DEM © ESA/Airbus · SoilGrids © ISRIC, CC-BY 4.0 · Weather data by Open-Meteo.com, CC-BY 4.0 · Observations GBIF, CC-BY / CC-BY-NC selon jeu.
+Ce que le pipeline et l'API téléchargent, et sous quelles conditions :
+
+- **BD Forêt V2** © IGN, Licence Ouverte 2.0 (Etalab).
+- **BD TOPO V3** © IGN, Licence Ouverte 2.0 (Etalab) : zones de végétation hors forêt, tronçons et surfaces hydrographiques (palier 3).
+- **Copernicus DEM** (GLO-30) : © DLR e.V. 2010-2014 et © Airbus Defence and Space GmbH 2014-2018, fourni sous licence COPERNICUS par l'Union européenne et l'ESA ; tous droits réservés.
+- **SoilGrids** © ISRIC, CC-BY 4.0.
+- **Open-Meteo** : Weather data by Open-Meteo.com, CC-BY 4.0.
+- **ERA5-Land** (climatologie du sol, `champis-pipeline soil-clim`, et archive de l'amorçage) : Copernicus Climate Change Service ; contient des informations Copernicus modifiées.
+- **GBIF** : occurrences utilisées pour un contrôle interne, non commercial, de la crédibilité des cartes (`champis-pipeline check`) ; licences CC0, CC-BY ou CC-BY-NC selon le jeu.
+
+Code et contenus de tiers copiés dans le dépôt (Tabler, htmx, skill `modern-python`) : `THIRD_PARTY.md`.

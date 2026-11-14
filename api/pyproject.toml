@@ -2,6 +2,7 @@
 name = "champis-api"
 version = "0.1.0"
 description = "API Champis : indice météo M, fenêtre Φ, tuiles, observations"
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "champis-pipeline",

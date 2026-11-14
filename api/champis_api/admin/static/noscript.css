@@ -1,0 +1,4 @@
+/* Backoffice Champis : chargée seulement sans JavaScript (<noscript> de base.html). Le menu replié
+   des petits écrans reste ouvert, et ce qui n'existe que pour les scripts disparaît. */
+.navbar-collapse { display: block !important; }
+.navbar-toggler, [data-js] { display: none !important; }
