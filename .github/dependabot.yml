@@ -1,0 +1,32 @@
+# Dependabot : une passe par semaine et par écosystème, mises à jour groupées pour limiter le bruit.
+# Les actions de la CI et les images du Dockerfile sont épinglées par SHA ou par condensé : Dependabot
+# relève l'épingle et la version ensemble. La CLI Railway (version fixe dans .github/workflows/ci.yml)
+# et les bibliothèques vendorées du backoffice (api/champis_api/admin/static/vendor/) ne sont pas
+# suivies : elles se relèvent à la main.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Dépendances Python du workspace uv (pyproject.toml racine, pipeline/, api/ ; uv.lock)
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  # Images de base du Dockerfile
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      images:
+        patterns: ["*"]
