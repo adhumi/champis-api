@@ -11,6 +11,7 @@ champis/      sous-module adhumi/champis : species/ (+ SCHEMA.md, validate.py), 
 pipeline/     champis_pipeline : download → grid → terrain → tiles ; artifacts.py (sorties à committer, déposées dans le bucket par le worker)   (skill geo-pipeline)
 api/          champis_api : FastAPI, scoring M/Φ, vecteurs, mesure minimale, backoffice /admin (admin/ : pages.py, views.py, templates/, router.py ; jobs.py, tools.py, worker.py, render.py)   (skill open-meteo)
 data/         téléchargements et rasters, jamais commités (sauf weather_grid.json et weather_seed.json)
+docs/         pipeline.md (étapes du pipeline, affichage), tests.md (ce que chaque fichier de test garantit), deploiement.md (services Railway), backoffice-bo6.md ; la référence de l'API reste api/README.md
 ```
 
 ## Outillage
