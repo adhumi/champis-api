@@ -220,10 +220,19 @@ async def test_observations_batch_limit_and_bounds(api):
             await api.post("/observations", json={"observations": [bad]}, headers=H)
         ).status_code == 422
     assert (await api.get("/observations", headers=H)).json()["count"] == 0
+    # 200 passe la validation du lot, mais pas le quota du jour par défaut (100 observations
+    # nouvelles par identifiant, 16 nov. 2026) : 429, rien n'est écrit
     r = await api.post(
         "/observations", json={"observations": [obs() for _ in range(200)]}, headers=H
     )
-    assert r.status_code == 201 and r.json()["inserted"] == 200
+    assert r.status_code == 429 and "100 observations par jour" in r.json()["detail"]
+    assert (await api.get("/observations", headers=H)).json()["count"] == 0
+    r = await api.post(
+        "/observations", json={"observations": [obs() for _ in range(100)]}, headers=H
+    )
+    assert r.status_code == 201 and r.json()["inserted"] == 100
+    r = await api.post("/observations", json={"observations": [obs()]}, headers=H)
+    assert r.status_code == 429
 
 
 @pytest.mark.asyncio

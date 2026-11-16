@@ -119,8 +119,9 @@ class Settings:
     rate_write_per_minute: float = float(os.environ.get("CHAMPIS_RATE_WRITE", "20"))
     max_body_bytes: int = int(os.environ.get("CHAMPIS_MAX_BODY", str(256 * 1024)))
     # Observations nouvelles acceptées par identifiant d'appareil et par jour (heure de Paris) ;
-    # au-delà `POST /observations` répond 429 avec `Retry-After`. 0 = pas de quota.
-    observations_per_day: int = int(os.environ.get("CHAMPIS_OBSERVATIONS_PER_DAY", "500"))
+    # au-delà `POST /observations` répond 429 avec `Retry-After`. 0 = pas de quota. 100 par défaut
+    # (décision du 16 nov. 2026, 500 avant) : une observation se saisit à la main, une par une.
+    observations_per_day: int = int(os.environ.get("CHAMPIS_OBSERVATIONS_PER_DAY", "100"))
     # Backoffice (spec › Backoffice, 7 nov. 2026) : la clé unique qui ouvre `/admin` ; vide =
     # le backoffice n'existe pas (404). Au moins 32 caractères aléatoires, variable secrète Railway.
     admin_key: str = os.environ.get("CHAMPIS_ADMIN_KEY", "")
