@@ -1507,3 +1507,68 @@ def test_bdtopo_download_pages_the_wfs(tmp_path, monkeypatch):
         download.bdtopo("25", (0, 0, 1, 1), http=Http()) == paths and len(calls) == n_calls
     )  # cache
     assert config.RAW_DIR  # le module reste importable
+
+
+def test_bdtopo_retries_a_page_the_wfs_did_not_serve_as_json(tmp_path, monkeypatch):
+    """Lot France du 16 nov. 2026 : le WFS a rendu une fois autre chose que du JSON et le
+    département entier est tombé sur un `JSONDecodeError`. Une page inutilisable (200 sans JSON,
+    5xx, connexion coupée) est redemandée ; si rien n'y fait, l'erreur dit ce que le serveur a
+    renvoyé ; un refus 400 n'est pas redemandé."""
+    import httpx
+    from champis_pipeline import download
+
+    monkeypatch.setattr(download, "RAW_DIR", tmp_path / "raw")
+    waits: list[float] = []
+    monkeypatch.setattr(download.time, "sleep", waits.append)
+
+    class R:
+        def __init__(self, status=200, body=None, text="", kind="application/json"):
+            self.status_code, self._body, self.text = status, body, text
+            self.headers = {"content-type": kind}
+
+        def json(self):
+            if self._body is None:
+                raise json.JSONDecodeError("Expecting value", self.text, 0)
+            return self._body
+
+    ok = R(body={"type": "FeatureCollection", "totalFeatures": 0, "features": []})
+
+    class Http:
+        def __init__(self, script):
+            self.script, self.calls = list(script), 0
+
+        def get(self, url, params=None):
+            self.calls += 1
+            step = self.script.pop(0) if self.script else ok
+            if isinstance(step, Exception):
+                raise step
+            return step
+
+    bbox = (900_000, 6_600_000, 1_000_000, 6_700_000)
+    flaky = Http(
+        [
+            R(text="", kind="text/html"),
+            R(status=503),
+            httpx.ReadTimeout("trop long"),
+        ]
+    )
+    paths = download.bdtopo("25", bbox, http=flaky)
+    assert all(p.exists() for p in paths.values())
+    assert flaky.calls == 6 and waits == list(download.WFS_RETRY_WAITS)  # 3 échecs puis 3 couches
+
+    waits.clear()
+    xml = "<ows:ExceptionReport><ows:ExceptionText>java.io.IOException</ows:ExceptionText>"
+    down = Http([R(text=xml, kind="application/xml")] * 10)
+    with pytest.raises(download.WfsError) as err:
+        download.bdtopo("39", bbox, http=down)
+    msg = str(err.value)
+    assert "BD TOPO 39 zone_de_vegetation (objets 0 à 5000)" in msg
+    assert "application/xml" in msg and "ExceptionReport" in msg
+    assert down.calls == 1 + len(download.WFS_RETRY_WAITS)
+    assert not (tmp_path / "raw" / "39" / "bdtopo" / "vegetation.geojson").exists()
+
+    waits.clear()
+    refused = Http([R(status=400)] * 5)
+    with pytest.raises(download.WfsError, match="HTTP 400"):
+        download.bdtopo("70", bbox, http=refused)
+    assert refused.calls == 1 and waits == []
