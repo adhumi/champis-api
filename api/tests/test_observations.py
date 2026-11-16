@@ -109,8 +109,9 @@ async def test_without_store_endpoints_are_503(grid, client):
 
 @pytest.mark.asyncio
 async def test_daily_quota_per_identifier(grid, client, store: Store):
-    """`CHAMPIS_OBSERVATIONS_PER_DAY` : au-delà, 429 avec `Retry-After`, le lot entier est refusé
-    (l'app le garde et le renvoie), un renvoi de lignes connues passe toujours, un autre appareil
+    """`CHAMPIS_OBSERVATIONS_PER_DAY` : une fois le quota atteint, 429 avec `Retry-After`, le lot
+    entier est refusé (l'app le garde et le renvoie) ; le lot qui franchit le quota passe en
+    entier ; un renvoi de lignes connues passe toujours, un autre appareil
     n'est pas touché, et le quota repart le lendemain (heure de Paris)."""
     from datetime import timedelta
 
@@ -132,18 +133,21 @@ async def test_daily_quota_per_identifier(grid, client, store: Store):
         first = [_obs(), _obs()]
         r = await c.post("/observations", json={"observations": first}, headers=H)
         assert r.status_code == 201
-        # deux de plus dépasseraient : rien n'est écrit, pas même la première
+        # le lot qui franchit le quota passe en entier (l'app renvoie le même lot tant qu'il est
+        # refusé : un lot plus grand que le quota ne doit pas rester bloqué sans fin)
+        second = [_obs(), _obs()]
+        r = await c.post("/observations", json={"observations": second}, headers=H)
+        assert r.status_code == 201 and r.json()["inserted"] == 2
+        first = [*first, *second]
+        # le quota du jour est atteint : rien de nouveau n'est écrit, pas même une ligne
         r = await c.post("/observations", json={"observations": [_obs(), _obs()]}, headers=H)
         assert r.status_code == 429 and "3 observations par jour" in r.json()["detail"]
         # NOW = 14 h 30 à Paris : minuit est dans 9 h 30
         assert 9 * 3600 < int(r.headers["retry-after"]) <= 9.5 * 3600 + 1
-        assert (await c.get("/observations", headers=H)).json()["count"] == 2
+        assert (await c.get("/observations", headers=H)).json()["count"] == 4
         # le renvoi d'un lot déjà enregistré (coupure réseau) n'est jamais refusé
-        last = _obs()
-        r = await c.post("/observations", json={"observations": [*first, last]}, headers=H)
-        assert r.status_code == 201 and r.json() == {"inserted": 1, "duplicates": 2}
-        r = await c.post("/observations", json={"observations": [*first, last]}, headers=H)
-        assert r.status_code == 201 and r.json() == {"inserted": 0, "duplicates": 3}
+        r = await c.post("/observations", json={"observations": first}, headers=H)
+        assert r.status_code == 201 and r.json() == {"inserted": 0, "duplicates": 4}
         assert (await c.post("/observations", json={"observations": [_obs()]}, headers=H)).status_code == 429  # fmt: skip
         # un autre appareil a son propre quota
         other = {"X-Champis-User": str(uuid.uuid4())}

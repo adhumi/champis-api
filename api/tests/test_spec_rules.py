@@ -220,19 +220,17 @@ async def test_observations_batch_limit_and_bounds(api):
             await api.post("/observations", json={"observations": [bad]}, headers=H)
         ).status_code == 422
     assert (await api.get("/observations", headers=H)).json()["count"] == 0
-    # 200 passe la validation du lot, mais pas le quota du jour par défaut (100 observations
-    # nouvelles par identifiant, 16 nov. 2026) : 429, rien n'est écrit
+    # 200 passe la validation du lot et le quota du jour (100 observations nouvelles par
+    # identifiant, 16 nov. 2026) : le lot qui franchit le quota est accepté en entier, pour
+    # qu'une file de 200 observations en attente dans l'app ne reste pas refusée sans fin
     r = await api.post(
         "/observations", json={"observations": [obs() for _ in range(200)]}, headers=H
     )
-    assert r.status_code == 429 and "100 observations par jour" in r.json()["detail"]
-    assert (await api.get("/observations", headers=H)).json()["count"] == 0
-    r = await api.post(
-        "/observations", json={"observations": [obs() for _ in range(100)]}, headers=H
-    )
-    assert r.status_code == 201 and r.json()["inserted"] == 100
+    assert r.status_code == 201 and r.json()["inserted"] == 200
+    # ensuite le quota du jour est atteint : plus rien de nouveau
     r = await api.post("/observations", json={"observations": [obs()]}, headers=H)
-    assert r.status_code == 429
+    assert r.status_code == 429 and "100 observations par jour" in r.json()["detail"]
+    assert (await api.get("/observations", headers=H)).json()["count"] == 200
 
 
 @pytest.mark.asyncio

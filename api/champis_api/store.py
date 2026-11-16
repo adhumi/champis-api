@@ -222,7 +222,7 @@ class Device:
 
 
 class QuotaExceededError(Exception):
-    """Le lot ferait dépasser le quota d'observations du jour de cet identifiant."""
+    """Le quota d'observations du jour de cet identifiant est déjà atteint."""
 
     def __init__(self, quota: int, used: int) -> None:
         super().__init__(f"quota de {quota} observations par jour atteint ({used} aujourd'hui)")
@@ -363,9 +363,10 @@ class Store:
         dans le lot ne compte qu'une fois (le premier), les suivants sont des doublons.
 
         `quota` (0 = aucun) : nombre d'observations nouvelles qu'un identifiant peut enregistrer
-        par jour civil (heure de Paris). Un lot qui le ferait dépasser est refusé en entier
-        (`QuotaExceededError`), rien n'est écrit : l'app le garde et le renvoie tel quel le
-        lendemain. Un renvoi de lignes déjà connues n'est jamais refusé."""
+        par jour civil (heure de Paris). Une fois ce nombre atteint, tout lot qui apporte du
+        nouveau est refusé en entier (`QuotaExceededError`), rien n'est écrit : l'app le garde et
+        le renvoie tel quel le lendemain. Le lot qui franchit le quota est accepté en entier
+        (jamais de lot refusé indéfiniment). Un renvoi de lignes déjà connues n'est jamais refusé."""
         if not rows:
             return {"inserted": 0, "duplicates": 0}
         unique = {r["id"]: r for r in reversed(rows)}  # le premier de chaque `id` l'emporte
@@ -408,7 +409,12 @@ class Store:
                             observations.c.created_at >= day_start(day).astimezone(UTC),
                         )
                     ).scalar_one()
-                    if used + len(fresh) > quota:
+                    # Refus quand le quota du jour est déjà atteint, pas quand le lot le ferait
+                    # dépasser : l'app envoie ses observations en attente par lots de 200
+                    # (`MAX_BATCH`) et renvoie le même lot tant qu'il est refusé ; un lot plus
+                    # grand que le quota serait refusé chaque jour, sans fin. Un appareil écrit
+                    # donc au plus `quota - 1 + MAX_BATCH` observations par jour.
+                    if used >= quota:
                         raise QuotaExceededError(quota, int(used))
                 conn.execute(insert(observations), fresh)
                 # mesure minimale : observations reçues ce jour-là, en nombre seulement
