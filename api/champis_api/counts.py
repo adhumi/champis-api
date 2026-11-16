@@ -78,7 +78,7 @@ LAYER_PATHS = (
     "/weather/bbox",
     "/weather/field",
 )  # ce que les clients demandent par couche
-ALL_SPECIES = "toutes"  # requête sans `species` : toutes les espèces
+ALL_SPECIES = "toutes"  # requête sans `species` : toutes les espèces (422 sur `/weather/field`)
 DEVICE_HASH_LENGTH = 32  # la colonne `device_days.device_hash`
 DAILY_PREFIX = "j"  # empreinte salée par le jour ; l'ancienne est faite de 32 chiffres hexadécimaux
 TRACKER_MAX_ENTRIES = 50_000  # empreintes du jour gardées en mémoire par worker (≈ 5 Mo au pire)

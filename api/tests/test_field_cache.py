@@ -105,7 +105,7 @@ async def test_field_answers_are_the_same_with_and_without_the_cache(api, app, g
     await _precompute(grid, client)
     fields = app.state.champis.field_cache
     queries = [
-        BBOX_FR | {"day": J},
+        BBOX_FR | {"day": J, "species": "cantharellus_cibarius"},
         BBOX_FR | {"day": J, "species": SP},
         [*ONE_CELL.items(), ("day", J), ("species", "cantharellus_cibarius"), ("species", SP)],
         NOWHERE | {"day": J, "species": SP},

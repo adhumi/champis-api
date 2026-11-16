@@ -82,7 +82,7 @@ async def test_species_list_longer_than_the_catalogue_is_refused(api, grid, clie
     for path, extra in (
         ("/weather", [("cell", CELL)]),
         ("/weather/bbox", list(BBOX.items())),
-        ("/weather/field", [*BBOX.items(), ("day", J)]),
+        ("/weather/field", [*BBOX.items(), ("day", J)]),  # `species` obligatoire, ici fournie
         ("/departements", []),
     ):
         r = await api.get(path, params=extra + too_many)
@@ -123,7 +123,9 @@ async def test_heavy_work_of_public_routes_runs_in_threads(api, grid, client, st
     assert (await api.get("/weather/bbox", params=BBOX | {"species": SP})).status_code == 200
     await compute(grid, client, cache, list_species())
     assert (await api.get("/weather/bbox", params=BBOX)).status_code == 200
-    assert (await api.get("/weather/field", params=BBOX | {"day": J})).status_code == 200
+    assert (
+        await api.get("/weather/field", params=BBOX | {"day": J, "species": SP})
+    ).status_code == 200
     assert (await api.get("/departements")).status_code == 200
     user = {"X-Champis-User": str(uuid.uuid4())}
     coin = {
