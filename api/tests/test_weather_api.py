@@ -102,15 +102,15 @@ async def test_coordinates_must_be_finite_and_bounded(api, bad):
     for name in box:
         params = box | {name: bad if bad != "91" else "721"}
         assert (await api.get("/weather/bbox", params=params)).status_code == 422, name
-        r = await api.get("/weather/field", params=params | {"day": J})
-        assert r.status_code == 422, name
+        r = await api.get("/weather/field", params=params | {"day": J, "species": "boletus_edulis"})
+        assert r.status_code == 422 and "species" not in r.text, name
 
 
 @pytest.mark.asyncio
 async def test_wide_map_extents_are_still_accepted(api):
     """Une carte dézoomée envoie une emprise plus large que le globe : toujours servie."""
     wide = {"min_lon": -200.5, "min_lat": -95.1, "max_lon": 200.5, "max_lat": 136.1}
-    r = await api.get("/weather/field", params=wide | {"day": J})
+    r = await api.get("/weather/field", params=wide | {"day": J, "species": "boletus_edulis"})
     assert r.status_code == 200, r.text
     r = await api.get("/weather", params={"lat": 90, "lon": -180, "species": "boletus_edulis"})
     assert r.status_code == 200, r.text
@@ -1045,6 +1045,8 @@ async def test_large_json_responses_are_gzipped(api):
 # ------------------------------------------------------------------ champ compact (4 nov. 2026)
 
 BBOX_FR = {"min_lon": -6.0, "min_lat": 41.0, "max_lon": 10.0, "max_lat": 52.0}
+# `species` est obligatoire sur `/weather/field` (16 nov. 2026) : une emprise et une espèce
+FIELD_FR = {**BBOX_FR, "species": "boletus_edulis"}
 
 
 def _eleven_rows(today: date, by_alt: dict) -> list[dict]:
@@ -1109,23 +1111,48 @@ async def test_field_is_m_eff_times_phi_rounded_from_the_precomputed_weather(
 
 
 @pytest.mark.asyncio
-async def test_field_default_species_is_all_and_unknown_is_404(api, grid, client):
-
+async def test_field_species_is_required_and_unknown_is_404(api, grid, client, monkeypatch):
+    """`species` obligatoire (décision du 16 nov. 2026) : sans elle, ou vide, 422 avec un message
+    qui dit quoi envoyer, sans lire le précalcul ; le champ de tout le catalogue ne se sert plus
+    par défaut, mais reste servi à qui nomme toutes les espèces. Les autres routes gardent leur
+    défaut."""
     await _precompute(grid, client)
-    r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
+    reads: list[int] = []
+    real = client.cache.cell_field
+    monkeypatch.setattr(
+        client.cache, "cell_field", lambda *a, **k: reads.append(1) or real(*a, **k)
+    )
+    for params in (
+        {**BBOX_FR, "day": J},
+        {**BBOX_FR, "day": J, "species": ""},
+        {**BBOX_FR, "day": J, "species": ["", " "]},
+        BBOX_FR,  # ni `day` ni `species`
+    ):
+        r = await api.get("/weather/field", params=params)
+        assert r.status_code == 422, params
+        assert r.json()["detail"] == (
+            "species obligatoire : préciser au moins une espèce "
+            "(species=<id>, répétable ; la liste est dans /species)"
+        )
+    assert reads == []
+    every = load_species_ids()
+    r = await api.get("/weather/field", params={**BBOX_FR, "day": J, "species": every})
+    assert r.status_code == 200 and r.json()["cells"]
+    assert all(set(c["f"]) == set(every) for c in r.json()["cells"])
+    r = await api.get("/weather/bbox", params={**BBOX_FR, "day": J})  # défaut inchangé
     assert r.status_code == 200
-    assert all(set(c["f"]) == set(load_species_ids()) for c in r.json()["cells"])  # complètes
+    assert all(set(c["species"]) == set(every) for c in r.json()["cells"])
     r = await api.get("/weather/field", params={**BBOX_FR, "day": J, "species": "amanita_x"})
     assert r.status_code == 404 and "amanita_x" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
 async def test_field_day_is_required_and_bounded_to_the_window(api):
-    r = await api.get("/weather/field", params=BBOX_FR)
-    assert r.status_code == 422  # `day` obligatoire
+    r = await api.get("/weather/field", params=FIELD_FR)
+    assert r.status_code == 422 and "day" in r.text  # `day` obligatoire
     for off in (-4, 8):
         bad = (TODAY + timedelta(days=off)).isoformat()
-        r = await api.get("/weather/field", params={**BBOX_FR, "day": bad})
+        r = await api.get("/weather/field", params={**FIELD_FR, "day": bad})
         assert r.status_code == 422, off
         assert r.json()["detail"] == (
             f"day={bad} hors de la fenêtre J−3 → J+7 "
@@ -1133,7 +1160,7 @@ async def test_field_day_is_required_and_bounded_to_the_window(api):
         )
     for off in (-3, 7):  # bornes incluses : rien à servir, mais pas une erreur
         r = await api.get(
-            "/weather/field", params={**BBOX_FR, "day": (TODAY + timedelta(days=off)).isoformat()}
+            "/weather/field", params={**FIELD_FR, "day": (TODAY + timedelta(days=off)).isoformat()}
         )
         assert r.status_code == 200 and r.json()["cells"] == []
 
@@ -1143,7 +1170,7 @@ async def test_field_never_computes_on_demand(api, scenario, client):
     """Cellules absentes du précalcul : omises et comptées, jamais calculées ni demandées à
     Open-Meteo (contrairement à `/weather/bbox`), `computed_at` nul sans cellule servie."""
     assert client.cache.cell_weather_count() == 0
-    r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
+    r = await api.get("/weather/field", params={**FIELD_FR, "day": J})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["cells"] == [] and body["unavailable"] == 2 and body["computed_at"] is None
@@ -1225,7 +1252,7 @@ async def test_field_reads_the_bbox_in_one_sql_query(api, grid, client):
     statements: list[str] = []
     client.cache.db.set_trace_callback(statements.append)
     try:
-        r = await api.get("/weather/field", params={**BBOX_FR, "day": J})
+        r = await api.get("/weather/field", params={**FIELD_FR, "day": J})
     finally:
         client.cache.db.set_trace_callback(None)
     assert r.status_code == 200 and len(r.json()["cells"]) == 2
@@ -1263,7 +1290,7 @@ async def test_field_is_gzipped_and_unbounded(client, store, monkeypatch):
         transport_ = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport_, base_url="http://test") as api:
             r = await api.get(
-                "/weather/field", params={**BBOX_FR, "day": J}, headers={"Accept-Encoding": "gzip"}
+                "/weather/field", params={**FIELD_FR, "day": J}, headers={"Accept-Encoding": "gzip"}
             )
             assert r.status_code == 200 and r.headers.get("content-encoding") == "gzip"
             body = r.json()
@@ -1333,7 +1360,7 @@ async def test_rebuild_cell_field_migrates_a_cache_from_before_the_table(api, gr
     import logging
 
     await _precompute(grid, client)
-    before = (await api.get("/weather/field", params={**BBOX_FR, "day": J})).json()
+    before = (await api.get("/weather/field", params={**FIELD_FR, "day": J})).json()
     assert before["cells"]
     cache = client.cache
     reference = sorted(cache.db.execute("SELECT * FROM cell_field").fetchall())
@@ -1342,7 +1369,7 @@ async def test_rebuild_cell_field_migrates_a_cache_from_before_the_table(api, gr
     # écriture hors des méthodes du cache : on la signale comme elles le font, sans quoi le champ
     # gardé en mémoire (`field_cache`) servirait encore l'ancien
     cache.field_generation += 1
-    assert (await api.get("/weather/field", params={**BBOX_FR, "day": J})).json()["cells"] == []
+    assert (await api.get("/weather/field", params={**FIELD_FR, "day": J})).json()["cells"] == []
     status = cache.cell_field_status()
     assert status.present and not status.current and status.field_rows == 0
 
@@ -1352,7 +1379,7 @@ async def test_rebuild_cell_field_migrates_a_cache_from_before_the_table(api, gr
     assert sorted(cache.db.execute("SELECT * FROM cell_field").fetchall()) == reference
     assert cache.cell_field_status().current and cache.ensure_cell_field() is None
     assert cache.rebuild_cell_field() == n  # idempotente
-    assert (await api.get("/weather/field", params={**BBOX_FR, "day": J})).json() == before
+    assert (await api.get("/weather/field", params={**FIELD_FR, "day": J})).json() == before
 
     # une entrée d'hier (J−4 → J+6) : seul J−4 est hors de la fenêtre du `today` le plus récent
     cache.put_cell_weather(

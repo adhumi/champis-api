@@ -25,7 +25,7 @@ from ..weather_service import (
     SeriesGapError,
     cell_weather,
 )
-from .query import Species
+from .query import RequiredSpecies, Species
 
 router = APIRouter(prefix="/weather", tags=["weather"])
 
@@ -389,7 +389,7 @@ async def get_weather_field(
     client: Client,
     cache: Cache,
     fields: Fields,
-    species: Species,
+    species: RequiredSpecies,
     day: date,
     min_lon: BoxCoord,
     min_lat: BoxCoord,
@@ -400,7 +400,8 @@ async def get_weather_field(
     ouverts › Carte visible dès l'ouverture, 4 nov. 2026) : par cellule (`id`, `lat`, `lon`,
     `elevation_m`, `alt_classes`), `f[espèce][classe] = M_eff × phi` arrondi à trois décimales,
     pour le seul jour `day`, obligatoire, dans la fenêtre J−3 → J+7 de `today` (sinon 422).
-    Les classes sont celles de `by_alt` de `/weather/bbox`.
+    Les classes sont celles de `by_alt` de `/weather/bbox`. `species` est obligatoire, au moins
+    une (décision du 16 nov. 2026) : sans elle, 422, et non plus le champ de tout le catalogue.
 
     Servi **uniquement** depuis `cell_field`, la table compacte par jour que la pré-chauffe
     dérive de `cell_weather` dans la même transaction (spec › Points ouverts › Stockage compact
