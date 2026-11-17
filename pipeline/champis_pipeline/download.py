@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 
 import httpx
@@ -73,6 +74,50 @@ def bdforet(dept: str) -> Path:
 
 WFS_URL = "https://data.geopf.fr/wfs/ows"
 WFS_PAGE = 5000  # maximum servi par page par la Géoplateforme
+# Un département demande des dizaines de pages d'une dizaine de Mo : une page qui échoue (erreur
+# HTTP, connexion coupée, corps vide ou qui n'est pas du JSON, le serveur répondant parfois 200
+# avec une page d'erreur) est redemandée après ces attentes, en secondes, avant d'abandonner.
+WFS_RETRY_WAITS = (5, 20, 60)
+
+
+class WfsError(RuntimeError):
+    """Le flux WFS n'a pas rendu une page GeoJSON lisible, malgré les nouvelles tentatives."""
+
+
+def _wfs_page(http: httpx.Client, params: dict, what: str) -> dict:
+    """Une page GeoJSON du WFS, redemandée sur toute réponse inutilisable. Le message d'échec dit
+    ce que le serveur a renvoyé (code, type, début du corps) : un `JSONDecodeError` nu ne disait
+    rien de la cause (lot France du 16 nov. 2026)."""
+    last = ""
+    for attempt in range(len(WFS_RETRY_WAITS) + 1):
+        if attempt:
+            wait = WFS_RETRY_WAITS[attempt - 1]
+            log.warning("%s : %s ; nouvel essai dans %d s", what, last, wait)
+            time.sleep(wait)
+        try:
+            r = http.get(WFS_URL, params=params)
+        except httpx.HTTPError as e:
+            last = f"{type(e).__name__} : {e}"
+            continue
+        status = getattr(r, "status_code", 200)
+        if status >= 400:
+            last = f"HTTP {status}"
+            if status < 500 and status not in (408, 429):
+                break  # requête refusée : la redemander ne change rien
+            continue
+        try:
+            body = r.json()
+        except ValueError:
+            kind = getattr(r, "headers", {}).get("content-type", "type inconnu")
+            start = " ".join(getattr(r, "text", "")[:200].split())
+            last = f"réponse {status} qui n'est pas du JSON ({kind}) : {start or 'corps vide'}"
+            continue
+        if isinstance(body, dict) and isinstance(body.get("features"), list):
+            return body
+        last = f"JSON sans liste `features` : {str(body)[:200]}"
+    raise WfsError(f"{what} : {last}")
+
+
 BDTOPO_LAYERS = {
     # couche WFS → (fichier, filtre CQL en plus de l'emprise, propriétés gardées)
     "zone_de_vegetation": (
@@ -93,7 +138,8 @@ def bdtopo(
 ) -> dict[str, Path]:
     """Les objets BD TOPO V3 de l'emprise du département (Lambert-93), par le flux WFS de la
     Géoplateforme : zones de végétation hors forêt fermée, tronçons hydrographiques non fictifs,
-    surfaces en eau ; GeoJSON réduit à la nature et à la géométrie, pages de `WFS_PAGE` objets,
+    surfaces en eau ; GeoJSON réduit à la nature et à la géométrie, pages de `WFS_PAGE` objets (chacune redemandée si le serveur
+    rend autre chose qu'un GeoJSON, `_wfs_page`),
     un fichier par couche dans data/raw/<dept>/bdtopo/. Idempotent : un fichier présent est gardé."""
     out_dir = RAW_DIR / dept / "bdtopo"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -114,9 +160,9 @@ def bdtopo(
             features: list[dict] = []
             offset = 0
             while True:
-                r = http.get(
-                    WFS_URL,
-                    params={
+                body = _wfs_page(
+                    http,
+                    {
                         "SERVICE": "WFS",
                         "VERSION": "2.0.0",
                         "REQUEST": "GetFeature",
@@ -128,10 +174,9 @@ def bdtopo(
                         "STARTINDEX": offset,
                         "CQL_FILTER": cql,
                     },
+                    f"BD TOPO {dept} {layer} (objets {offset} à {offset + WFS_PAGE})",
                 )
-                r.raise_for_status()
-                body = r.json()
-                page = body.get("features", [])
+                page = body["features"]
                 features += page
                 total = body.get("totalFeatures") or body.get("numberMatched")
                 log.info("BD TOPO %s %s : %d objets", dept, layer, len(features))
