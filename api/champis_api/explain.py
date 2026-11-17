@@ -4,6 +4,9 @@ Construites depuis les facteurs déjà calculés, avec des seuils génériques i
 une seule source pour l'app et le site, qui ne font qu'afficher (spec › Backend, `GET /weather` ›
 `summary`). Le terrain (T) n'est connu que des clients, par les tuiles : la phrase de terrain se
 déduit chez eux du libellé de la palette. Aucune valeur d'espèce ici.
+
+`summary` donne une liste de phrases courtes ; `sentence` (17 nov. 2026) les mêmes faits en une
+phrase rédigée. Un fait ajouté à l'une s'ajoute à l'autre (un test compare leur nombre).
 """
 
 from __future__ import annotations
@@ -91,3 +94,90 @@ def summary(
     else:
         out.append("pleine saison" if phi >= 1.0 else "en marge de la saison")
     return out
+
+
+# ---------------------------------------------------------------- la même chose en une phrase
+
+
+def _join(parts: list[str]) -> str:
+    """« a », « a et b », « a, b et c »."""
+    if len(parts) <= 1:
+        return "".join(parts)
+    return ", ".join(parts[:-1]) + " et " + parts[-1]
+
+
+def _in_days(low: int, high: int) -> str:
+    if low == high:
+        return f"dans {low} jour{'s' if low > 1 else ''}"
+    return f"dans {low} à {high} jours"
+
+
+def rain_clause(trigger_days: int | None, lag: dict[str, float] | None) -> str:
+    """La grosse pluie en proposition rédigée : mêmes cas que `rain_phrase`, mêmes bornes lues dans `lag_days` de l'espèce."""
+    if trigger_days is None:
+        return "il n'y a pas eu de grosse pluie récemment"
+    if trigger_days <= 0:
+        head = "la dernière grosse pluie est tombée aujourd'hui"
+    elif trigger_days == 1:
+        head = "la dernière grosse pluie est tombée hier"
+    else:
+        head = f"la dernière grosse pluie remonte à {trigger_days} jours"
+    if not lag:
+        return head
+    low, high = round(lag["opt_low"]), round(lag["opt_high"])
+    if trigger_days < low:
+        wait = _in_days(low - trigger_days, high - trigger_days)
+        return f"{head}, c'est trop tôt et la pousse est attendue {wait}"
+    if trigger_days <= high:
+        return f"{head}, en plein dans le délai de pousse"
+    return f"{head} et la pousse s'essouffle"
+
+
+def sentence(
+    factors: dict[str, float],
+    phi: float,
+    trigger_days: int | None,
+    lag: dict[str, float] | None = None,
+    phase: str | None = None,
+) -> str:
+    """`summary` rédigé en une phrase (spec › App iOS › Fiche d'un point, 17 nov. 2026) : la grosse
+    pluie, puis ce qui joue en faveur, puis « mais » et ce qui freine. Sans majuscule initiale ni
+    point final : le client l'écrit derrière le terrain du pixel (« Terrain favorable : … »), qu'il
+    est seul à connaître. Mêmes arguments et mêmes seuils génériques que `summary`."""
+    if phi <= 0:
+        return "hors saison pour cette espèce"
+    rain = rain_clause(trigger_days, lag)
+    good: list[str] = []
+    bad: list[str] = []
+    soil = factors.get("soil_moisture")
+    if soil is not None:
+        if soil >= SOIL_WET:
+            good.append("le sol est bien humide")
+        elif soil >= SOIL_DRY:
+            good.append("le sol est moyennement humide")
+        else:
+            bad.append("le sol est sec")
+    if factors.get("frost", 1.0) < 1.0:
+        bad.append("il a gelé ces dernières nuits")
+    if factors.get("heat", 1.0) < 1.0:
+        bad.append("il a fait trop chaud ces derniers jours")
+    if factors.get("water_balance", 1.0) < 1.0:
+        bad.append("il s'évapore plus d'eau qu'il n'en tombe")
+    if factors.get("memory", 1.0) < MEMORY_DRY:
+        bad.append("il a peu plu ces derniers mois")
+    temp = factors.get("temp")
+    if temp is not None and temp < TEMP_BAD:
+        bad.append("les températures sont défavorables")
+    soil_temp = factors.get("soil_temp")
+    if soil_temp is not None and soil_temp < TEMP_BAD:
+        bad.append("le sol est trop froid ou trop chaud")
+    if phase == "debut":
+        good.append("la saison commence")
+    elif phase == "fin":
+        bad.append("la saison touche à sa fin")
+    elif phase == "pleine" or (phase not in SEASON_WORDS and phi >= 1.0):
+        good.append("c'est la pleine saison")
+    else:
+        bad.append("on est en marge de la saison")
+    rest = f"{_join(good)}, mais {_join(bad)}" if good and bad else _join(good or bad)
+    return f"{rain} ; {rest}"

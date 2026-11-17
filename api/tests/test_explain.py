@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
-from champis_api.explain import ago, rain_phrase, summary
+from champis_api.explain import ago, rain_clause, rain_phrase, sentence, summary
 from champis_api.scoring import factor_trigger, season_phase, trigger_event
 from champis_pipeline.species import load_species
 from conftest import TODAY, make_series
@@ -169,3 +169,54 @@ async def test_weather_detail_carries_summary_and_trigger_days_but_bbox_does_not
         for row in cell["species"]["boletus_edulis"]
         for a in row["by_alt"].values()
     )
+
+
+def test_sentence_says_the_summary_in_one_sentence():
+    """Fiche d'un point (spec › App iOS, 17 nov. 2026) : la pluie, ce qui aide, « mais », ce qui
+    freine ; sans majuscule ni point, le client l'écrit derrière le terrain."""
+    high = round(LAG["opt_high"])
+    assert sentence(_factors(frost=0.5), 0.6, high + 5, LAG, "fin") == (
+        f"la dernière grosse pluie remonte à {high + 5} jours et la pousse s'essouffle ; "
+        "le sol est bien humide, mais il a gelé ces dernières nuits et la saison touche à sa fin"
+    )
+    assert sentence(_factors(), 1.0, round(LAG["opt_low"]), LAG, "pleine") == (
+        f"la dernière grosse pluie remonte à {round(LAG['opt_low'])} jours, en plein dans le délai "
+        "de pousse ; le sol est bien humide et c'est la pleine saison"
+    )
+    dry = _factors(soil_moisture=0.1, heat=0.4, water_balance=0.5, memory=0.2, temp=0.1)
+    assert sentence(dry, 0.5, None, LAG) == (
+        "il n'y a pas eu de grosse pluie récemment ; le sol est sec, il a fait trop chaud ces "
+        "derniers jours, il s'évapore plus d'eau qu'il n'en tombe, il a peu plu ces derniers mois, "
+        "les températures sont défavorables et on est en marge de la saison"
+    )
+    assert sentence(_factors(), 0.0, 3, LAG, "hors") == "hors saison pour cette espèce"
+    assert sentence(_factors(soil_moisture=0.5), 0.4, 12, None, "debut").endswith(
+        "; le sol est moyennement humide et la saison commence"
+    )
+
+
+def test_rain_clause_follows_the_species_lag():
+    low, high = round(LAG["opt_low"]), round(LAG["opt_high"])
+    assert rain_clause(0, LAG) == (
+        "la dernière grosse pluie est tombée aujourd'hui, c'est trop tôt et la pousse est "
+        f"attendue dans {low} à {high} jours"
+    )
+    assert rain_clause(1, None) == "la dernière grosse pluie est tombée hier"
+    assert rain_clause(low - 1, {"opt_low": low, "opt_high": low}).endswith("attendue dans 1 jour")
+    assert rain_clause(low - 3, {"opt_low": low, "opt_high": low}).endswith("dans 3 jours")
+
+
+def test_sentence_and_summary_tell_the_same_facts():
+    """Chaque phrase de `summary` a sa proposition dans `sentence` : même nombre d'éléments."""
+    cases = [
+        (_factors(), 1.0, 12, LAG, "pleine"),
+        (_factors(frost=0.2, heat=0.3, soil_temp=0.1), 0.7, None, LAG, "debut"),
+        (_factors(soil_moisture=0.1, memory=0.1, temp=0.0), 0.3, 40, LAG, None),
+    ]
+    for case in cases:
+        text = sentence(*case)
+        rest = text.split(" ; ", 1)[1]
+        parts = [
+            p for chunk in rest.split(", mais ") for p in chunk.replace(" et ", ", ").split(", ")
+        ]
+        assert len(parts) == len(summary(*case)) - 1, text
