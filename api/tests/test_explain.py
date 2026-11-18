@@ -6,7 +6,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 import pytest
-from champis_api.explain import ago, rain_clause, rain_phrase, sentence, summary
+from champis_api.explain import ago, rain_clause, rain_phrase, sentence, sentence_tone, summary
 from champis_api.scoring import factor_trigger, season_phase, trigger_event
 from champis_pipeline.species import load_species
 from conftest import TODAY, make_series
@@ -220,3 +220,16 @@ def test_sentence_and_summary_tell_the_same_facts():
             p for chunk in rest.split(", mais ") for p in chunk.replace(" et ", ", ").split(", ")
         ]
         assert len(parts) == len(summary(*case)) - 1, text
+
+
+def test_sentence_tone_says_which_way_the_first_clause_goes():
+    """Liaison entre le terrain et la phrase (spec › App iOS, 18 nov. 2026) : le client écrit « et »,
+    « mais » ou une virgule d'après le sens de la proposition de pluie."""
+    low, high = round(LAG["opt_low"]), round(LAG["opt_high"])
+    assert sentence_tone(1.0, low, LAG) == "favorable"
+    assert sentence_tone(1.0, high, LAG) == "favorable"
+    assert sentence_tone(1.0, low - 1, LAG) == "defavorable"
+    assert sentence_tone(1.0, high + 1, LAG) == "defavorable"
+    assert sentence_tone(1.0, None, LAG) == "defavorable"
+    assert sentence_tone(1.0, 5, None) == "neutre"
+    assert sentence_tone(0.0, low, LAG) == "defavorable"  # hors saison

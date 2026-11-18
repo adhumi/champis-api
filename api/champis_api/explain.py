@@ -112,6 +112,27 @@ def _in_days(low: int, high: int) -> str:
     return f"dans {low} à {high} jours"
 
 
+FAVORABLE, UNFAVORABLE, NEUTRAL = "favorable", "defavorable", "neutre"
+
+
+def rain_tone(trigger_days: int | None, lag: dict[str, float] | None) -> str:
+    """Sens de la proposition de pluie (`rain_clause`) : favorable en plein dans le délai de pousse,
+    défavorable sans grosse pluie, trop tôt ou trop tard, neutre quand `lag_days` manque."""
+    if trigger_days is None:
+        return UNFAVORABLE
+    if not lag:
+        return NEUTRAL
+    low, high = round(lag["opt_low"]), round(lag["opt_high"])
+    return FAVORABLE if low <= trigger_days <= high else UNFAVORABLE
+
+
+def sentence_tone(phi: float, trigger_days: int | None, lag: dict[str, float] | None = None) -> str:
+    """Sens de la première proposition de `sentence` (spec › App iOS › Liaison entre le terrain et
+    la phrase, 18 nov. 2026) : le client, seul à connaître le terrain, choisit d'après lui « et »
+    (même sens), « mais » (sens opposés) ou une virgule (l'un des deux neutre)."""
+    return UNFAVORABLE if phi <= 0 else rain_tone(trigger_days, lag)
+
+
 def rain_clause(trigger_days: int | None, lag: dict[str, float] | None) -> str:
     """La grosse pluie en proposition rédigée : mêmes cas que `rain_phrase`, mêmes bornes lues dans `lag_days` de l'espèce."""
     if trigger_days is None:
@@ -143,7 +164,7 @@ def sentence(
     """`summary` rédigé en une phrase (spec › App iOS › Fiche d'un point, 17 nov. 2026) : la grosse
     pluie, puis ce qui joue en faveur, puis « mais » et ce qui freine. Sans majuscule initiale ni
     point final : le client l'écrit derrière le terrain du pixel (« Terrain favorable : … »), qu'il
-    est seul à connaître. Mêmes arguments et mêmes seuils génériques que `summary`."""
+    est seul à connaître, avec la liaison que `sentence_tone` lui permet de choisir. Mêmes arguments et mêmes seuils génériques que `summary`."""
     if phi <= 0:
         return "hors saison pour cette espèce"
     rain = rain_clause(trigger_days, lag)

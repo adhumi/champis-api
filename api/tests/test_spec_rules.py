@@ -156,7 +156,7 @@ async def test_weather_covers_eleven_days_per_altitude_class_with_eight_factors(
     for row in rows:
         assert set(row["by_alt"]) == {"450", "1350"}
         for alt in row["by_alt"].values():
-            assert set(alt) >= {"M", "M_eff", "phi", "factors", "summary", "sentence", "trigger_days"}  # fmt: skip
+            assert set(alt) >= {"M", "M_eff", "phi", "factors", "summary", "sentence", "sentence_tone", "trigger_days"}  # fmt: skip
             assert isinstance(alt["sentence"], str) and alt["sentence"]
             assert isinstance(alt["summary"], list) and all(
                 isinstance(p, str) for p in alt["summary"]

@@ -12,7 +12,7 @@ from typing import Any
 from champis_pipeline import SCORING_VERSION
 from champis_pipeline.species import all_species_hash, load_species
 
-from .explain import sentence, summary
+from .explain import sentence, sentence_tone, summary
 from .grid import Cell
 from .scoring import (
     DailySeries,
@@ -147,6 +147,8 @@ def cell_weather(
                     row["summary"] = summary(factors, phi, trigger_days, lag=lag, phase=phase)
                     # la même chose en une phrase (fiche d'un point, 17 nov. 2026)
                     row["sentence"] = sentence(factors, phi, trigger_days, lag=lag, phase=phase)
+                    # sens de sa première proposition, pour la liaison avec le terrain (18 nov. 2026)
+                    row["sentence_tone"] = sentence_tone(phi, trigger_days, lag)
                 by_alt[str(int(alt))] = row
             day_rows.append({"date": d.isoformat(), "by_alt": by_alt})
         out_species[sid] = day_rows
