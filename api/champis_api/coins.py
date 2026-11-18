@@ -57,6 +57,9 @@ class CoinScore:
     days: tuple[CoinDay, ...] = ()
     # phrases du jour pour l'espèce qui porte le score, à la classe du coin (étape B2, 6 nov. 2026)
     summary: tuple[str, ...] = ()
+    # score du jour de chaque espèce du coin, du meilleur au moins bon (18 nov. 2026 : un coin
+    # est générique, la liste de Mes coins nomme toutes les espèces qui y valent quelque chose)
+    species: tuple[tuple[str, float], ...] = ()
 
 
 def nearest_alt_class(cell: Cell, alt_m: float) -> str:
@@ -110,6 +113,7 @@ def score_coins(
             continue
         ids = corners.ids if corners else (home.id,)
         per_day: dict[date, tuple[float, str]] = {}
+        today_by_species: dict[str, float] = {}
         for d in all_days:
             day = d.isoformat()
             best_v, best_sid = None, None
@@ -122,6 +126,8 @@ def score_coins(
                 if f is None:
                     continue
                 v = t * f
+                if d == today:
+                    today_by_species[sid] = v
                 if best_v is None or v > best_v or (v == best_v and sid < best_sid):
                     best_v, best_sid = v, sid
             if best_v is not None:
@@ -139,10 +145,11 @@ def score_coins(
         phrases = tuple(today_row["by_alt"][alt].get("summary", ()))
         later = [(v, d) for d, (v, _) in per_day.items() if d > today]
         best = max(later, default=None)
+        ranked = tuple(sorted(today_by_species.items(), key=lambda kv: (-kv[1], kv[0])))
         if best and best[0] > t_val:
-            out.append(CoinScore(coin, t_val, best[1], best[0], lead, days, phrases))
+            out.append(CoinScore(coin, t_val, best[1], best[0], lead, days, phrases, ranked))
         else:
-            out.append(CoinScore(coin, t_val, None, None, lead, days, phrases))
+            out.append(CoinScore(coin, t_val, None, None, lead, days, phrases, ranked))
     return out
 
 
