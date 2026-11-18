@@ -96,6 +96,11 @@ def test_score_coins_uses_pixel_t_and_cell_weather(grid):
         d.value == pytest.approx(0.72) and d.leading == "boletus_edulis" for d in scores[0].days
     )
     assert len(scores[2].days) == 11 and all(d.value is None for d in scores[2].days)
+    # un coin est générique (18 nov. 2026) : le score du jour de chacune de ses espèces, du
+    # meilleur au moins bon ; rien sans météo
+    assert [sid for sid, _ in scores[0].species] == ["boletus_edulis", "boletus_aereus"]
+    assert [v for _, v in scores[0].species] == pytest.approx([0.9 * 0.8, 0.3 * 0.8])
+    assert scores[2].species == ()
 
 
 def test_score_coins_interpolates_between_cell_centres(grid):
@@ -238,6 +243,13 @@ async def test_put_and_get_coins(api, store: Store):
     # étape B2 : les phrases du jour de l'espèce porteuse, à la classe du coin, pour sa fiche
     phrases = body["coins"][0]["summary"]
     assert phrases and all(isinstance(p, str) for p in phrases)
+    # 18 nov. 2026 : le score du jour par espèce du coin, le premier étant celui du coin
+    per_species = body["coins"][0]["species"]
+    assert {s["id"] for s in per_species} <= set(coin2["t"]) and per_species
+    assert per_species[0] == {"id": body["coins"][0]["leading"], "value": body["coins"][0]["score"]}
+    assert [s["value"] for s in per_species] == sorted(
+        (s["value"] for s in per_species), reverse=True
+    )
     # validation : cible inconnue, espèce inconnue dans t, T hors [0, 1], trop de coins
     bad = _coin(target="morilles")
     assert (await api.put("/coins", json={"coins": [bad]}, headers=H)).status_code == 422

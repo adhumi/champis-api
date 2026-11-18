@@ -98,6 +98,8 @@ async def get_coins(user: UserId, store: StoreDep, request: Request) -> dict[str
                 ],
                 # phrases du jour, espèce porteuse, classe du coin (étape B2, 6 nov. 2026)
                 "summary": list(s.summary),
+                # score du jour par espèce du coin, du meilleur au moins bon (18 nov. 2026)
+                "species": [{"id": sid, "value": v} for sid, v in s.species],
             }
             for s in scores
         ],
