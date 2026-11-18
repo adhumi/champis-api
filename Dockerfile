@@ -12,10 +12,13 @@
 # `/app/data/logs` du conteneur, `uv run` dans `/app/.venv` : passer à un utilisateur sans
 # privilège demande un point d'entrée qui rend ces chemins à cet utilisateur avant de lâcher root,
 # à essayer sur un service Railway, pas à l'aveugle (un cron qui n'écrit plus échoue sans bruit).
-# Python 3.12, pas plus récent tant que toutes les dépendances n'ont pas de roue pour la version
-# visée : l'image n'a pas de compilateur (18 nov. 2026, `inflate64`, tiré par `py7zr`, n'en a pas
-# pour 3.15). Dependabot ne relève que le condensé de cette ligne (`.github/dependabot.yml`).
-FROM python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+#
+# Python : la dernière version stable, relevée par Dependabot (18 nov. 2026, pour suivre les
+# correctifs de sécurité). Quelques dépendances n'ont pas encore de roue pour une version toute
+# neuve de Python (pour 3.15 : `inflate64`, `pybcj`, `pyppmd`, tirés par `py7zr`, et `pyyaml`) :
+# l'étape `deps` les compile avec un compilateur qui ne va pas dans l'image finale, laquelle ne
+# reçoit que l'environnement `.venv` déjà construit.
+FROM python:3.15-slim-bookworm@sha256:96599df822d0e1c6bb700014a05c7f3c8cabc6e0f7ff3c4f9f69cee033b4b5d9 AS base
 
 # rasterio (pipeline : climatologie du sol et, lot BO4, terrain et tuiles sur le service
 # champis-jobs) embarque son GDAL mais pas libexpat ; l'API, elle, n'importe jamais rasterio.
@@ -28,11 +31,21 @@ COPY --from=ghcr.io/astral-sh/uv:0.11.32@sha256:df4cae8f3a96d175e2e5f992e5975500
 WORKDIR /app
 ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy UV_NO_DEV=1 UV_FROZEN=1
 
-# dépendances d'abord (cache Docker), code ensuite
+# Dépendances, dans une étape à part qui a un compilateur : celles qui n'ont pas de roue pour
+# cette version de Python se construisent ici.
+FROM base AS deps
+RUN apt-get update && apt-get install -y --no-install-recommends build-essential && rm -rf /var/lib/apt/lists/*
 COPY pyproject.toml uv.lock ./
 COPY pipeline/pyproject.toml pipeline/pyproject.toml
 COPY api/pyproject.toml api/pyproject.toml
 RUN uv sync --no-install-workspace
+
+# Image finale, sans compilateur : l'environnement de `deps` (cache Docker), le code ensuite.
+FROM base
+COPY --from=deps /app/.venv /app/.venv
+COPY pyproject.toml uv.lock ./
+COPY pipeline/pyproject.toml pipeline/pyproject.toml
+COPY api/pyproject.toml api/pyproject.toml
 
 COPY pipeline pipeline
 COPY api api

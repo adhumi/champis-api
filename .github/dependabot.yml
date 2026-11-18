@@ -30,8 +30,3 @@ updates:
     groups:
       images:
         patterns: ["*"]
-    # la version de Python de l'image se change à la main, avec les dépendances : une version sans
-    # roue pour l'une d'elles casse la construction (pas de compilateur dans l'image)
-    ignore:
-      - dependency-name: python
-        update-types: ["version-update:semver-major", "version-update:semver-minor"]
