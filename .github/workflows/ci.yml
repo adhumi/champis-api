@@ -66,6 +66,11 @@ jobs:
       - name: Fichiers espèces
         run: uv run python champis/species/validate.py
 
+      # L'image se construit avant la fusion : une image de base ou une dépendance qui ne s'installe
+      # plus (pas de compilateur dans l'image) casse sinon le déploiement, après la fusion.
+      - name: Image Docker
+        run: docker build -t champis-api:ci .
+
   # Railway ne récupère pas les sous-modules (build depuis un instantané sans .git) : la CI, qui a le
   # référentiel, déploie l'API, les deux crons et le service d'exécution avec `railway up` après des tests verts sur main, ou
   # à la main depuis main (workflow_dispatch). RAILWAY_TOKEN : jeton de projet Railway (environnement production).
