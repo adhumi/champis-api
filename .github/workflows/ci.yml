@@ -66,6 +66,21 @@ jobs:
       - name: Fichiers espèces
         run: uv run python champis/species/validate.py
 
+      # L'image se construit avant la fusion : une image de base ou une dépendance qui ne s'installe
+      # plus casse sinon le déploiement, après la fusion. L'archive 7z est le chemin des
+      # dépendances compilées dans l'image (py7zr) : on vérifie qu'elle se lit, sans compilateur.
+      - name: Image Docker
+        run: |
+          docker build -t champis-api:ci .
+          docker run --rm champis-api:ci sh -c '! command -v gcc && uv run python -c "
+          import sys, tempfile, pathlib, py7zr, rasterio, champis_api
+          d = pathlib.Path(tempfile.mkdtemp()); (d / \"a.txt\").write_text(\"champis\" * 1000)
+          with py7zr.SevenZipFile(d / \"t.7z\", \"w\") as z: z.write(d / \"a.txt\", \"a.txt\")
+          with py7zr.SevenZipFile(d / \"t.7z\", \"r\") as z: z.extractall(d / \"out\")
+          assert len((d / \"out\" / \"a.txt\").read_text()) == 7000
+          print(sys.version)
+          "'
+
   # Railway ne récupère pas les sous-modules (build depuis un instantané sans .git) : la CI, qui a le
   # référentiel, déploie l'API, les deux crons et le service d'exécution avec `railway up` après des tests verts sur main, ou
   # à la main depuis main (workflow_dispatch). RAILWAY_TOKEN : jeton de projet Railway (environnement production).
