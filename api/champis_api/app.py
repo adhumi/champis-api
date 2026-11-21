@@ -441,7 +441,9 @@ def _refresh_cache(cache_db: Path, bucket: BucketLike, work_dir: Path):
     requêtes en cours, qui voient l'ancien état puis le nouveau (WAL)."""
     cache = WeatherCache(cache_db, shared=True)
     try:
-        return sync_cache(cache, bucket, work_dir)
+        meta = sync_cache(cache, bucket, work_dir)
+        cache.checkpoint()  # à chaque tour : un import écrit toute la base dans le journal
+        return meta
     finally:
         cache.close()
 

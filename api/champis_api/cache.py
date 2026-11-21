@@ -445,6 +445,20 @@ class WeatherCache:
         path.unlink(missing_ok=True)
         self.db.execute("VACUUM INTO ?", (str(path),))
 
+    @_locked
+    def checkpoint(self) -> None:
+        """Reporte le journal WAL dans la base et le vide. Sans cela il ne fait que grossir tant
+        qu'un lecteur garde un instantané, et sa reprise au démarrage suivant bloque la base
+        (21 nov. 2026 : 100 s, déploiement en échec). Au mieux : un lecteur en cours fait
+        simplement remettre le vidage au tour suivant."""
+        try:
+            busy, pages, done = self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except sqlite3.OperationalError as e:
+            log.warning("journal du cache non reporté (%s)", e)
+            return
+        if busy or pages > 0:
+            log.info("journal du cache : %d pages, %d reportées, vidé : %s", pages, done, not busy)
+
     # ------------------------------------------------------------------ indice par département
 
     META_DEPT_INDEX_AT = "dept_index_computed_at"

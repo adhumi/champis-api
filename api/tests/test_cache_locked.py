@@ -101,3 +101,14 @@ def test_opening_gives_up_after_the_deadline(tmp_path, short_wait, monkeypatch):
     with pytest.raises(sqlite3.OperationalError, match="locked"):
         WeatherCache(path, shared=True)
     other.execute("ROLLBACK")
+
+
+def test_checkpoint_empties_the_wal(tmp_path):
+    path = tmp_path / "cache.db"
+    cache = WeatherCache(path, shared=True)
+    cache.put(CELL, "forecast", "b", {"v": "x" * 50_000}, NOW)
+    wal = path.with_name(path.name + "-wal")
+    assert wal.stat().st_size > 0
+    cache.checkpoint()
+    assert wal.stat().st_size == 0
+    assert cache.get(CELL, "forecast", "b") == {"v": "x" * 50_000}

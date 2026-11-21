@@ -9,6 +9,7 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 healthcheckPath = "/health"
-healthcheckTimeout = 120
+# 300 s (21 nov. 2026) : après un arrêt brutal, la reprise du journal du cache a pris 100 s
+healthcheckTimeout = 300
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 5
