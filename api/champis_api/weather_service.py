@@ -126,11 +126,13 @@ def cell_weather(
         if s.i(days[0]) < need:
             raise HistoryTooShortError(sid, need, s.i(days[0]), today)
         day_rows = []
+        # facteurs bruts par jour, par classe d'altitude : partagés entre les onze jours
+        memos: dict[float, dict[date, dict[str, float]]] = {alt: {} for alt in cell.alt_classes}
         for d in days:
             by_alt = {}
             trigger_days = trigger_event(sp, s, d)[1] if detail else None
             for alt in cell.alt_classes:
-                w = weather_index(sp, s, d, alt)
+                w = weather_index(sp, s, d, alt, memos[alt])
                 phi = phenology_window(sp, d, alt)
                 row = {
                     "M": w["M"],
