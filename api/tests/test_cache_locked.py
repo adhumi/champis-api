@@ -6,6 +6,7 @@ rangée."""
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 
 import pytest
@@ -71,3 +72,32 @@ async def test_forecast_is_served_when_the_cache_cannot_be_written(
     # verrou relâché : l'appel suivant redemande la prévision et la range
     await client.fetch_cells_partial(cells)
     assert client.cache.get(CELL, "forecast", bucket_now(NOW)) is not None
+
+
+def test_opening_waits_for_a_worker_that_holds_the_database(tmp_path, short_wait):
+    """Deux workers démarrent ensemble : celui qui trouve la base tenue plus longtemps que
+    l'attente d'un essai recommence, au lieu de faire échouer le démarrage du service."""
+    path = tmp_path / "cache.db"
+    WeatherCache(path).close()  # pas encore en WAL : l'ouverture partagée doit attendre son tour
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    other.execute("BEGIN EXCLUSIVE")
+    release = threading.Timer(0.3, lambda: other.execute("ROLLBACK"))
+    release.start()
+    try:
+        cache = WeatherCache(path, shared=True)  # six essais de 50 ms avant le relâchement
+    finally:
+        release.join()
+        other.close()
+    cache.put(CELL, "forecast", "b", {"v": 1}, NOW)
+    assert cache.get(CELL, "forecast", "b") == {"v": 1}
+
+
+def test_opening_gives_up_after_the_deadline(tmp_path, short_wait, monkeypatch):
+    monkeypatch.setattr(WeatherCache, "OPEN_TIMEOUT_S", 0.1)
+    path = tmp_path / "cache.db"
+    WeatherCache(path).close()  # pas encore en WAL : l'ouverture partagée doit attendre son tour
+    other = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
+    other.execute("BEGIN EXCLUSIVE")
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        WeatherCache(path, shared=True)
+    other.execute("ROLLBACK")
