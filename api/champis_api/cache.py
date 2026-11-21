@@ -135,12 +135,24 @@ def cell_field_status(db: sqlite3.Connection) -> CellFieldStatus:
 
 
 def _locked[**P, R](method: Callable[P, R]) -> Callable[P, R]:
-    """Méthode qui se sert de la connexion principale : un fil à la fois (`WeatherCache._lock`)."""
+    """Méthode qui se sert de la connexion principale : un fil à la fois (`WeatherCache._lock`).
+
+    Une méthode qui échoue ne laisse jamais de transaction ouverte (21 nov. 2026). `sqlite3`
+    ouvre la transaction avant la première écriture et ne l'annule pas quand celle-ci échoue
+    (verrou d'écriture tenu par un autre processus au-delà de `BUSY_TIMEOUT_S`) : la lecture
+    suivante y figeait un instantané de la base, et dès qu'un autre worker avait écrit, toute
+    écriture de cette connexion échouait aussitôt (« database is locked », sans attente),
+    jusqu'au redémarrage du worker."""
 
     @functools.wraps(method)
     def locked(*args: P.args, **kwargs: P.kwargs) -> R:
-        with args[0]._lock:  # type: ignore[attr-defined]
-            return method(*args, **kwargs)
+        cache = args[0]
+        with cache._lock:  # type: ignore[attr-defined]
+            try:
+                return method(*args, **kwargs)
+            except BaseException:
+                cache._rollback()  # type: ignore[attr-defined]
+                raise
 
     return locked
 
@@ -193,6 +205,14 @@ class WeatherCache:
             self.db.execute("PRAGMA synchronous=NORMAL")  # suffisant en WAL, bien plus rapide
         self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
         self.db.commit()
+
+    def _rollback(self) -> None:
+        """Annule la transaction qu'une méthode en échec laisserait ouverte (voir `_locked`)."""
+        try:
+            if self.db.in_transaction:
+                self.db.rollback()
+        except sqlite3.Error:  # connexion fermée ou inutilisable : l'erreur d'origine prime
+            log.exception("cache : transaction en échec non annulée")
 
     @contextmanager
     def _reading(self) -> Iterator[sqlite3.Connection]:
