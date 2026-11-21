@@ -167,6 +167,7 @@ class WeatherCache:
     SQL_CHUNK = 500  # identifiants par requête `IN (...)`, loin sous la limite de variables SQLite
 
     BUSY_TIMEOUT_S = 30.0  # plusieurs workers uvicorn écrivent dans le même fichier (4 nov. 2026)
+    OPEN_TIMEOUT_S = 300.0  # attente totale à l'ouverture, par essais de `BUSY_TIMEOUT_S`
     # Tables copiées en bloc par `import_cache_db` : l'état complet d'une pré-chauffe
     TABLES = ("raw", "history", "soil_clim", "dept_index", "cell_weather", "cell_field", "meta")
     REBUILD_BATCH = 20_000  # lignes `cell_field` par `executemany` à la reconstruction
@@ -200,11 +201,23 @@ class WeatherCache:
         self._local = threading.local()
         self.field_generation = 0
         self.db = sqlite3.connect(str(path), timeout=self.BUSY_TIMEOUT_S, check_same_thread=False)
-        if shared and str(path) != ":memory:":
-            self.db.execute("PRAGMA journal_mode=WAL")
-            self.db.execute("PRAGMA synchronous=NORMAL")  # suffisant en WAL, bien plus rapide
-        self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
-        self.db.commit()
+        deadline = time.monotonic() + self.OPEN_TIMEOUT_S
+        while True:
+            try:
+                if shared and str(path) != ":memory:":
+                    self.db.execute("PRAGMA journal_mode=WAL")
+                    self.db.execute("PRAGMA synchronous=NORMAL")  # suffisant en WAL, plus rapide
+                self.db.executescript(SCHEMA)  # schéma partagé avec la base d'amorçage du pipeline
+                self.db.commit()
+                break
+            except sqlite3.OperationalError as e:
+                # un autre worker tient la base à l'ouverture (reprise du journal après un arrêt,
+                # import) : on attend son tour au lieu de faire échouer le démarrage du service
+                # (21 nov. 2026 : un déploiement en échec sur ce verrou, API arrêtée)
+                self._rollback()
+                if "locked" not in str(e) or time.monotonic() >= deadline:
+                    raise
+                log.warning("cache météo verrouillé à l'ouverture (%s) : nouvel essai", e)
 
     def _rollback(self) -> None:
         """Annule la transaction qu'une méthode en échec laisserait ouverte (voir `_locked`)."""
@@ -431,6 +444,20 @@ class WeatherCache:
         sans journal WAL à côté, prêt à être téléversé."""
         path.unlink(missing_ok=True)
         self.db.execute("VACUUM INTO ?", (str(path),))
+
+    @_locked
+    def checkpoint(self) -> None:
+        """Reporte le journal WAL dans la base et le vide. Sans cela il ne fait que grossir tant
+        qu'un lecteur garde un instantané, et sa reprise au démarrage suivant bloque la base
+        (21 nov. 2026 : 100 s, déploiement en échec). Au mieux : un lecteur en cours fait
+        simplement remettre le vidage au tour suivant."""
+        try:
+            busy, pages, done = self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        except sqlite3.OperationalError as e:
+            log.warning("journal du cache non reporté (%s)", e)
+            return
+        if busy or pages > 0:
+            log.info("journal du cache : %d pages, %d reportées, vidé : %s", pages, done, not busy)
 
     # ------------------------------------------------------------------ indice par département
 

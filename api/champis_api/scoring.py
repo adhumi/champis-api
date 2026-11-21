@@ -261,17 +261,34 @@ def weather_index_raw(
 
 
 def weather_index(
-    species: dict[str, Any], s: DailySeries, day: date, alt_m: float
+    species: dict[str, Any],
+    s: DailySeries,
+    day: date,
+    alt_m: float,
+    memo: dict[date, dict[str, float]] | None = None,
 ) -> dict[str, float]:
-    """M, M_eff (persistance puis gel et bilan hydrique réappliqués) et détail des facteurs."""
-    today = weather_index_raw(species, s, day, alt_m)
+    """M, M_eff (persistance puis gel et bilan hydrique réappliqués) et détail des facteurs.
+
+    `memo` : facteurs bruts déjà calculés par jour, pour **cette** espèce, cette série et cette
+    altitude. La persistance relit les `days` jours d'avant : sur onze jours consécutifs, les
+    mêmes jours reviennent presque à chaque fois (253 calculs pour 33 jours distincts) ; l'appelant
+    qui enchaîne les jours passe le même dictionnaire, le résultat est identique (21 nov. 2026)."""
+
+    def raw(d: date) -> dict[str, float]:
+        if memo is None:
+            return weather_index_raw(species, s, d, alt_m)
+        if d not in memo:
+            memo[d] = weather_index_raw(species, s, d, alt_m)
+        return memo[d]
+
+    today = dict(raw(day))
     days = int(species["weather"]["persistence"]["days"])
     m_eff = today["M"]
     for k in range(1, days + 1):
         past_day = day - timedelta(days=k)
         if past_day not in s.index:
             break
-        past = weather_index_raw(species, s, past_day, alt_m)["M"]
+        past = raw(past_day)["M"]
         m_eff = max(m_eff, past * (1.0 - k / days))
     m_eff = m_eff * today["frost"] * today["water_balance"]
     today["M_eff"] = min(1.0, max(0.0, m_eff))

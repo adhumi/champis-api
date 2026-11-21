@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
 from datetime import date, timedelta
 
+import numpy as np
 import pytest
 from champis_api.scoring import (
     PHI_FLOOR,
@@ -426,3 +428,48 @@ def test_phi_exact_edges():
     )
     assert phenology_window(EDULIS, d(p["season"]["end"]), ref) == PHI_FLOOR
     assert phenology_window(EDULIS, d(p["season"]["end"]) + timedelta(days=1), ref) == 0.0
+
+
+# ------------------------------------------------------------------ chemins rapides (21 nov. 2026)
+
+
+def test_trapezoid_scalar_path_equals_array_path():
+    """Un nombre seul ne passe plus par numpy : même valeur, au bit près, que le chemin tableau,
+    sur les trapèzes de toutes les espèces, bornes infinies et marches comprises."""
+    shapes = [
+        {"min": 2, "opt_low": 4, "opt_high": 6, "max": 8},
+        {"min": 4, "opt_low": 4, "opt_high": 6, "max": 6},  # marches
+        {"min": -3.0, "opt_low": 0.5, "opt_high": math.inf, "max": math.inf},  # gel
+    ]
+    for sid in list_species():
+        w = load_species(sid)["weather"]
+        shapes += [w["temp_mean"]["c"], w["rain"]["mm"], w["trigger"]["lag_days"]]
+        shapes += [w["soil_moisture_pct"], w["memory"]["mm"]]
+    for t in shapes:
+        finite = [v for v in t.values() if math.isfinite(v)]
+        lo, hi = min(finite) - 3, max(finite) + 3
+        xs = [lo + (hi - lo) * k / 997 for k in range(998)] + finite + [math.nan, math.inf]
+        array = trapezoid(np.array(xs), t)
+        for x, expected in zip(xs, array, strict=True):
+            assert trapezoid(x, t) == expected, (x, t)
+            assert type(trapezoid(x, t)) is float
+        assert trapezoid(int(finite[0]), t) == trapezoid(np.array(int(finite[0])), t)
+
+
+@pytest.mark.parametrize("sid", list_species())
+def test_weather_index_memo_changes_nothing(sid):
+    """`cell_weather` partage les facteurs bruts entre les onze jours : même résultat que le
+    calcul jour par jour, pour chaque espèce, y compris quand la météo varie d'un jour à l'autre."""
+    sp = load_species(sid)
+    s = make_series(date(2026, 1, 1), 320, soil_temp=11.0)
+    for i in range(len(s.dates)):  # météo qui bouge : pluie par à-coups, froid qui s'installe
+        s.rain[i] = (i * 7) % 11 * 1.3
+        s.t_mean[i] = 15.0 - (i % 23) * 0.6
+        s.t_min[i] = s.t_mean[i] - 6.0
+        s.t_max[i] = s.t_mean[i] + 9.0
+        s.soil_moisture_pct[i] = (i % 10) / 10
+    for alt in (300.0, 1500.0):
+        memo: dict = {}
+        for k in range(11):
+            day = s.dates[-12] + timedelta(days=k)
+            assert weather_index(sp, s, day, alt, memo) == weather_index(sp, s, day, alt)

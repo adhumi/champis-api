@@ -32,7 +32,7 @@ export default defineRailway(() => {
   // référencés par les crons ; `preserve()` garde les valeurs déjà dans Railway, jamais dans le dépôt.
   const api = service("champis", {
     healthcheck: "/health",
-    healthcheckTimeout: 120,
+    healthcheckTimeout: 300, // reprise du journal du cache après un arrêt brutal : 100 s (21 nov. 2026)
     deploy: { restartPolicyType: "on_failure", restartPolicyMaxRetries: 5 },
     replicas: { "europe-west4-drams3a": 1 },
     volumeMounts: { "/data": data },

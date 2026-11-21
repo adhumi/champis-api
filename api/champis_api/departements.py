@@ -90,7 +90,7 @@ async def compute(
     """Recalcule l'indice pour toute la grille à partir du cache (après une pré-chauffe, aucune
     requête Open-Meteo n'est nécessaire) et l'enregistre.
 
-    Le calcul (≈ 14 ms par cellule et par espèce, des dizaines de minutes sur la France) et ses
+    Le calcul (≈ 6 ms par cellule et par espèce depuis le 21 nov. 2026, des minutes sur la France) et ses
     écritures se font dans un fil (13 nov. 2026) : lancé par la pré-chauffe intégrée d'un worker
     de l'API (repli sans cron), il ne gèle plus ses requêtes le temps de la passe."""
     cells = [c for c in grid.cells.values() if c.t_sum]

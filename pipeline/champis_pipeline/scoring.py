@@ -27,6 +27,17 @@ def trapezoid(x: Any, t: dict[str, float]) -> Any:
     est une marche : x == min vaut 1.
     """
     lo, ol, oh, hi = t["min"], t["opt_low"], t["opt_high"], t["max"]
+    if isinstance(x, (int, float)):
+        # un nombre seul : les mêmes comparaisons et la même division en double précision, sans
+        # tableau numpy (21 nov. 2026 : la moitié du temps du score météo d'une cellule y passait)
+        x = float(x)
+        if ol <= x <= oh:
+            return 1.0
+        if ol > lo and lo <= x < ol:
+            return (x - lo) / (ol - lo)
+        if hi > oh and oh < x <= hi:
+            return (hi - x) / (hi - oh)
+        return 0.0
     x = np.asarray(x, dtype=np.float64)
     out = np.zeros_like(x)
     inside = (x >= ol) & (x <= oh)
