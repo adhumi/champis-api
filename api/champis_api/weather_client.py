@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -157,6 +158,7 @@ class OpenMeteoClient:
         unavailable: dict[str, str] = {}
         retry_after: int | None = None
         missing: list[Cell] = []
+        writable = True  # faux dès qu'une écriture du cache échoue
         for c in cells:
             cached = self.cache.get(c.id, "forecast", bucket)
             if cached is None:
@@ -181,9 +183,18 @@ class OpenMeteoClient:
                         stale.add(c.id)
                 continue
             for c, p in zip(batch, payloads, strict=True):
-                self.cache.put(c.id, "forecast", bucket, p, now)
-                self.cache.put_history(c.id, _past_rows(p, today), "forecast")
                 forecasts[c.id] = p
+                if not writable:
+                    continue
+                try:
+                    self.cache.put(c.id, "forecast", bucket, p, now)
+                    self.cache.put_history(c.id, _past_rows(p, today), "forecast")
+                except sqlite3.OperationalError as e:
+                    # base verrouillée par un autre processus au-delà de l'attente : la prévision
+                    # reçue est servie quand même, et redemandée au prochain appel (21 nov. 2026) ;
+                    # une seule attente par appel, pas une par cellule
+                    writable = False
+                    log.warning("cache météo non écrit (%s) : prévision servie sans cache", e)
         raws: dict[str, CellRaw] = {}
         for c in cells:
             if c.id not in forecasts:
