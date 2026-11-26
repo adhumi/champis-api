@@ -18,6 +18,7 @@
         <div class="datagrid-item"><dt class="datagrid-title">Dossier</dt><dd class="datagrid-content"><code>{{ h.disk.path }}</code></dd></div>
         <div class="datagrid-item"><dt class="datagrid-title">Libre</dt><dd class="datagrid-content">{{ h.disk.free_bytes | size }} sur {{ h.disk.total_bytes | size }}</dd></div>
         <div class="datagrid-item"><dt class="datagrid-title">Cache SQLite</dt><dd class="datagrid-content">{{ h.disk.cache_db_bytes | size }}</dd></div>
+        <div class="datagrid-item"><dt class="datagrid-title">Mémoire du conteneur</dt><dd class="datagrid-content">{% if h.memory %}{{ h.memory.current | size }}, dont {{ h.memory.file | default(0) | size }} de cache de fichiers{% else %}inconnue{% endif %}</dd></div>
         <div class="datagrid-item"><dt class="datagrid-title">Cache des tuiles</dt><dd class="datagrid-content">{% if h.tile_cache %}{{ h.tile_cache.entries | n }} plages, {{ h.tile_cache.bytes | size }} sur {{ h.tile_cache.max_bytes | size }}{{ '' if h.tile_cache.complete else ' (parcours partiel)' }}{% else %}désactivé{% endif %}</dd></div>
       </dl></div></div>
 

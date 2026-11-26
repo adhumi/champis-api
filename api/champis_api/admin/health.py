@@ -18,6 +18,7 @@ from typing import Any
 from champis_pipeline.storage import MANIFEST_KEY, BucketLike
 
 from .. import counts, doctor, jobs
+from ..memory import container_memory
 from ..seed import SEED_META_KEY
 from ..settings import Settings
 from ..snapshot import META_CACHE_PUBLISHED, published_cache
@@ -236,6 +237,8 @@ def gather(
             "tiles_mode": settings.tiles_mode,
         },
         "cache": cache_section(state, alerts),
+        # ce que le cgroup du conteneur compte : processus (`anon`) et cache de fichiers (`file`)
+        "memory": container_memory(),
         "disk": disk_section(settings, alerts),
         "tile_cache": tile_cache_section(state, settings),
         "database": database_section(store, alerts),
