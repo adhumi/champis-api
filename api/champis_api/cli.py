@@ -158,7 +158,7 @@ def _publish_cache_step(steps, settings: Settings, cache: WeatherCache, bucket) 
             bar.close()
         step.note(
             f"{info['published']}, {info['cells']} cellules, {info['cell_weather']} entrées, "
-            f"{console.size(info['bytes'])}"
+            f"{console.size(info['bytes'])}, {console.size(info['sent_bytes'])} envoyés"
         )
 
 
