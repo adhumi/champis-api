@@ -932,6 +932,9 @@ def test_steps_and_confirmations():
     assert steps["tiles"].disabled.startswith("le terrain du groupe") and steps["publish"].disabled
 
     assert views.confirmation("warm", {}) is None
+    # nettoyage du volume : à blanc rien à confirmer, l'effacement réel oui
+    assert views.confirmation("clean", {"apply": "False"}) is None
+    assert "supprimés" in views.confirmation("clean", {"apply": "True"})
     assert views.confirmation("publish", {"dry_run": "True", "prune": "True"}) is None
     assert "toutes les espèces" in views.confirmation("publish", {"dry_run": "False", "prune": "False", "species": ""})  # fmt: skip
     assert views.confirmation("publish", {"dry_run": "False", "prune": "True"}) == tools.TOOLS["publish"].confirm  # fmt: skip

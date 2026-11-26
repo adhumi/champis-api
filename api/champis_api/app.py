@@ -46,6 +46,7 @@ from .departements import compute as compute_dept_index
 from .field_cache import MB, FieldCache
 from .grid import WeatherGrid
 from .locks import file_lock, try_lock
+from .memory import drop_file_cache
 from .ratelimit import RateLimitMiddleware
 from .routers import coins, departements, observations, species, tiles, weather
 from .seed import sync_seed
@@ -443,9 +444,13 @@ def _refresh_cache(cache_db: Path, bucket: BucketLike, work_dir: Path):
     try:
         meta = sync_cache(cache, bucket, work_dir)
         cache.checkpoint()  # à chaque tour : un import écrit toute la base dans le journal
-        return meta
     finally:
         cache.close()
+    if meta is not None:
+        # l'import vient d'écrire toute la base : sans cela ses pages restent comptées dans la
+        # mémoire du conteneur pendant des heures (`memory.py`)
+        drop_file_cache(cache_db)
+    return meta
 
 
 async def cache_refresher(

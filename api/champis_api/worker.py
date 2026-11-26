@@ -83,6 +83,7 @@ def inventory() -> dict[str, Any]:
     return {
         "at": datetime.now(UTC).isoformat(timespec="seconds"),
         "data_dir": str(config.DATA_DIR),
+        "sizes": folder_sizes(),
         "depts": len(batch.DEPTS_ALL),
         "t": t,
         "tiles": tiles,
@@ -92,6 +93,22 @@ def inventory() -> dict[str, Any]:
             "last": max(finished) if finished else None,
         },
     }
+
+
+SIZES_EVERY_S = 3600.0  # le parcours du volume coûte des secondes : une fois par heure suffit
+_sizes: tuple[float, dict[str, int]] | None = None
+
+
+def folder_sizes(clock: Callable[[], float] = time.monotonic) -> dict[str, int]:
+    """Octets par dossier du volume (`clean.folder_sizes`), gardés `SIZES_EVERY_S` : la page
+    Santé dit ce qui occupe le volume sans que chaque battement le reparcoure."""
+    global _sizes
+    from champis_pipeline import clean
+
+    now = clock()
+    if _sizes is None or now - _sizes[0] >= SIZES_EVERY_S:
+        _sizes = (now, clean.folder_sizes())
+    return _sizes[1]
 
 
 def disk_mb(path: Path) -> tuple[int | None, int | None]:

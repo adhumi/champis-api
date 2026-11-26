@@ -774,6 +774,8 @@ def confirmation(kind: str, args: Mapping[str, str]) -> str | None:
             f"Refaire la carte HD z{args.get('zoom')} de {args.get('species')} et remplacer "
             "celle du bucket ?"
         )
+    if kind == "clean":  # à blanc, rien n'est effacé : rien à confirmer
+        return tool.confirm if args.get("apply") == "True" else None
     if tool.confirm and kind != "publish":
         return tool.confirm
     return None

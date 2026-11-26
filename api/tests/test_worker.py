@@ -119,6 +119,26 @@ def _fake_command(script: str):
     return command
 
 
+def test_clean_tool_is_dry_unless_asked_and_volume_sizes_are_walked_hourly(tmp_path, monkeypatch):
+    from champis_api import worker as worker_module
+    from champis_pipeline import clean
+
+    assert tools.validate("clean", {}) == {"apply": "False"}
+    assert tools.command("clean", {"apply": "False"})[-2:] == ["pipeline", "clean"]
+    assert tools.command("clean", {"apply": "True"})[-3:] == ["pipeline", "clean", "--apply"]
+
+    walks = []
+    monkeypatch.setattr(clean, "folder_sizes", lambda: walks.append(1) or {"tiles": len(walks)})
+    monkeypatch.setattr(worker_module, "_sizes", None)
+    now = [0.0]
+    assert worker_module.folder_sizes(lambda: now[0]) == {"tiles": 1}
+    now[0] = worker_module.SIZES_EVERY_S - 1
+    assert worker_module.folder_sizes(lambda: now[0]) == {"tiles": 1}  # pas de nouveau parcours
+    now[0] = worker_module.SIZES_EVERY_S
+    assert worker_module.folder_sizes(lambda: now[0]) == {"tiles": 2}
+    assert "sizes" in worker_module.inventory()
+
+
 def test_worker_takes_the_oldest_queued_job_runs_it_and_beats(tmp_path: Path):
     settings = _settings(tmp_path)
     store = Store(settings.database_url)

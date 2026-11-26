@@ -5,6 +5,7 @@ fichier (amorçage sérialisé, un seul meneur), relais du cache publié par le 
 from __future__ import annotations
 
 import asyncio
+import gzip
 import json
 import logging
 import sqlite3
@@ -23,6 +24,7 @@ from champis_api.settings import Settings
 from champis_api.snapshot import (
     CACHE_DB_KEY,
     CACHE_META_KEY,
+    LEGACY_CACHE_DB_KEY,
     META_CACHE_PUBLISHED,
     publish_cache,
     sync_cache,
@@ -149,9 +151,12 @@ def test_publish_and_sync_cache_through_the_bucket(tmp_path: Path):
     assert info["published"] == "2026-11-04T02:40:00+00:00"
     assert info["cells"] == 1 and info["cell_weather"] == 1 and info["today"] == TODAY.isoformat()
     assert info["cell_field"] == 1
-    assert info["bytes"] == len(bucket.objects[CACHE_DB_KEY]) > 0
+    # compressé pour le voyage : la fiche dit où, comment, et les deux tailles
+    assert info["key"] == CACHE_DB_KEY and info["compression"] == "gzip"
+    assert info["sent_bytes"] == len(bucket.objects[CACHE_DB_KEY]) > 0
+    assert info["bytes"] == len(gzip.decompress(bucket.objects[CACHE_DB_KEY])) > info["sent_bytes"]
     assert bucket.json[CACHE_META_KEY] == info
-    assert not (tmp_path / "work" / "weather_cache.publish.db").exists()
+    assert list((tmp_path / "work").iterdir()) == []  # ni instantané ni archive laissés
     assert cron.meta_get(META_CACHE_PUBLISHED) == info["published"]  # pas de réimport de soi-même
     assert sync_cache(cron, bucket, tmp_path / "work") is None
 
@@ -163,7 +168,48 @@ def test_publish_and_sync_cache_through_the_bucket(tmp_path: Path):
     # fiche sans `published` (incomplète) : ignorée
     bucket.json[CACHE_META_KEY] = {"cells": 1}
     assert sync_cache(api, bucket, tmp_path / "work") is None
+    assert list((tmp_path / "work").iterdir()) == []
     cron.close()
+    api.close()
+
+
+def test_sync_still_reads_a_snapshot_published_before_compression(tmp_path: Path):
+    """Le temps d'un déploiement, la fiche du bucket décrit encore un instantané non compressé
+    (ni `key` ni `compression`) : il s'importe ; la publication suivante le retire du bucket."""
+    bucket = MemoryBucket()
+    cron = _filled(tmp_path / "cron.db", "avant")
+    snap = tmp_path / "snap.db"
+    cron.snapshot(snap)
+    bucket.upload(snap, LEGACY_CACHE_DB_KEY)
+    bucket.json[CACHE_META_KEY] = {"published": "2026-11-25T02:40:00+00:00", "cells": 1}
+    api = WeatherCache(tmp_path / "api.db", shared=True)
+    assert sync_cache(api, bucket, tmp_path / "work") is not None
+    assert api.get(CELL, "forecast", "2026-10-17T12") == {"tag": "avant"}
+    assert bucket.downloads == [LEGACY_CACHE_DB_KEY]
+
+    publish_cache(bucket, cron, tmp_path / "work")
+    assert LEGACY_CACHE_DB_KEY not in bucket.objects and CACHE_DB_KEY in bucket.objects
+    cron.close()
+    api.close()
+
+
+def test_sync_ignores_a_snapshot_in_a_format_it_does_not_know(tmp_path: Path, caplog):
+    """Une fiche qui annonce une autre clé ou une autre compression (version plus récente du
+    cron, fiche altérée) : rien n'est téléchargé, le cache en place reste servi."""
+    bucket = MemoryBucket()
+    api = _filled(tmp_path / "api.db", "en place")
+    for extra in (
+        {"key": "ailleurs/autre.db", "compression": "gzip"},
+        {"key": CACHE_DB_KEY, "compression": "zstd"},
+        {"key": CACHE_DB_KEY},
+    ):
+        bucket.json[CACHE_META_KEY] = {"published": "2026-11-26T02:40:00+00:00", **extra}
+        with caplog.at_level(logging.ERROR):
+            assert sync_cache(api, bucket, tmp_path / "work") is None
+        assert "format inconnu" in caplog.text
+    assert bucket.downloads == [] and api.get(CELL, "forecast", "2026-10-17T12") == {
+        "tag": "en place"
+    }
     api.close()
 
 
