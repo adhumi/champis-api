@@ -240,6 +240,23 @@ TOOLS: dict[str, Tool] = {
             Field("to_bucket", "bool", "déposer les rapports dans le bucket (reports/)", True),
         ),
     ),
+    # 26 nov. 2026 : le volume ne gardait rien de moins au fil des passages du pipeline
+    "clean": Tool(
+        "clean",
+        PIPELINE,
+        "secondes à quelques minutes",
+        "le volume du worker ; n'efface que les T et PMTiles d'anciennes empreintes et les variantes",
+        (
+            Field(
+                "apply",
+                "bool",
+                "effacer réellement (décoché : montrer seulement ce qui le serait)",
+                False,
+            ),
+        ),
+        exclusive=True,
+        confirm="Avec « effacer réellement » coché, les fichiers périmés du volume sont supprimés. Lance d'abord sans, et lis le journal. Continuer ?",
+    ),
 }
 
 

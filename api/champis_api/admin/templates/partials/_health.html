@@ -50,6 +50,7 @@
         <div class="list-group-item">
           <div>{{ m.status("manque" if w.silent_min is not none and w.silent_min > 2 else "ok") }} <strong>{{ w.name }}</strong> · battement {{ w.heartbeat_at | ago(now) }}</div>
           <div class="text-secondary">{% if w.disk_free_mb is not none %}{{ (w.disk_free_mb * 1000000) | size }} libres sur {{ (w.disk_total_mb * 1000000) | size }}{% else %}volume inconnu{% endif %} · {% if w.current_job %}tâche en cours <a href="/admin/jobs/{{ w.current_job }}">{{ w.current_job[:8] }}</a>{% else %}libre{% endif %} · version {{ w.build or '—' }}</div>
+          {% if w.inventory and w.inventory.sizes %}<div class="text-secondary">Occupé : {% for name, bytes in w.inventory.sizes.items() %}{% if loop.index <= 8 %}<code>{{ name }}</code> {{ bytes | size }}{{ '' if loop.last or loop.index == 8 else ' · ' }}{% endif %}{% endfor %}</div>{% endif %}
         </div>
         {% endfor %}
       </div>

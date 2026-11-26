@@ -103,6 +103,10 @@ stats: ## Mesure minimale : compteurs agrégés par jour (carte, observations, c
 status: ## Où en est chaque département (raw, grid, T, batch, tuiles, G compris) et le jeu DEPTS (local, bucket)
 	$(PIPELINE) status --depts $(DEPTS) $(GR) $(SP)
 
+.PHONY: data-clean
+data-clean: ## Ce qui occupe data/ et ce qui n'y sert plus (T et PMTiles périmés, variantes) ; APPLY=1 l'efface
+	$(PIPELINE) clean $(if $(APPLY),--apply)
+
 # ------------------------------------------------------------------ Pipeline terrain (un département : DEPT)
 
 .PHONY: download

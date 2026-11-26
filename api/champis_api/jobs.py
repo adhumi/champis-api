@@ -51,11 +51,22 @@ KINDS: dict[str, str] = {
     "status": "état des départements",
     # 12 nov. 2026 : le contrôle GBIF depuis le backoffice, avec variante lisière (test d'entrée)
     "check": "contrôle GBIF (AUC)",
+    # 26 nov. 2026 : ce qui occupe le volume du service d'exécution, et le retrait du périmé
+    "clean": "nettoyage du volume",
 }
 
 # ce que `champis-api pipeline <étape>` accepte : les commandes longues ou qui écrivent, et le
 # contrôle GBIF ; les diagnostics summary et explain restent sur un poste
-PIPELINE_KINDS = ("batch", "tiles", "publish", "weather-grid", "status", "soil-clim", "check")
+PIPELINE_KINDS = (
+    "batch",
+    "tiles",
+    "publish",
+    "weather-grid",
+    "status",
+    "soil-clim",
+    "check",
+    "clean",
+)
 
 # ce que les crons Railway sont censés faire : au-delà, la page Santé alerte
 EXPECTED_EVERY_H: dict[str, float] = {"warm": 14.0, "notify": 26.0}

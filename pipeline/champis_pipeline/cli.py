@@ -523,6 +523,42 @@ def cmd_status(args) -> None:
             c.info(f"-----  {name}  {console.size(size)}  ({why})")
 
 
+def cmd_clean(args) -> None:
+    """Ce qui occupe le dossier des données et ce qui n'y sert plus ; `--apply` l'efface."""
+    from . import clean
+    from .config import DATA_DIR
+
+    c = console.get()
+    steps = c.steps(3 if args.apply else 2)
+    with steps.step(f"occupation de {DATA_DIR}") as step:
+        sizes = clean.folder_sizes()
+        step.note(console.size(sum(sizes.values())))
+    for name, size in sizes.items():
+        c.info(f"{console.size(size):>10}  {name}")
+    with steps.step("fichiers périmés") as step:
+        p = clean.plan()
+        step.note(f"{len(p.items)} entrée(s), {console.size(p.total_bytes)}")
+    for label, items in (
+        ("T d'une ancienne empreinte d'espèce", p.stale_t),
+        ("PMTiles hors des jeux courants", p.other_tiles),
+        ("T de variantes (tests d'entrée)", p.variants),
+    ):
+        c.info(f"{label} : {len(items)}, {console.size(sum(b for _, b in items))}")
+        for path, size in items:
+            c.info(f"{console.size(size):>10}  {path.relative_to(DATA_DIR)}")
+    if not args.apply:
+        c.summary(
+            f"{console.size(p.total_bytes)} à rendre ; rien n'est effacé sans --apply"
+            if p.items
+            else "rien de périmé"
+        )
+        return
+    with steps.step("effacement") as step:
+        freed = clean.apply(p)
+        step.note(console.size(freed))
+    c.summary(f"{console.size(freed)} rendus")
+
+
 # ---------------------------------------------------------------------- entrée
 
 
@@ -643,6 +679,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="effacer data/raw/<dept> dès que ses T sont écrits (volume borné du service d'exécution)",
     )
     p.set_defaults(fn=cmd_batch)
+    p = sub.add_parser(
+        "clean",
+        parents=[common],
+        help="occupation de data/ et fichiers périmés (T et PMTiles d'anciennes empreintes, variantes)",
+    )
+    p.add_argument(
+        "--apply",
+        action="store_true",
+        help="effacer ; sans cela, montrer seulement ce qui le serait",
+    )
+    p.set_defaults(fn=cmd_clean)
     return ap
 
 
